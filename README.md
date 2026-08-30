@@ -13,18 +13,33 @@ Velo aims to push beyond existing languages by combining:
 ## Key Features (Roadmap)
 
 - **Self-Optimizing Semantics (SOS)** — Compiler rewrites code for optimal execution
-- **Cache-Oblivious Hot Path** — Deterministic L1 cache optimization
+- **Cache-Oblivious Hot Path** — Deterministic L1 cache optimization (`hot` regions)
 - **Time-Travel Memory (Epochs)** — Arena-based memory with zero overhead
 - **Context Polymorphism** — Code adapts to calling context
 - **Proof-Carrying Safety** — Compiler-verified invariants
 
 ## Project Architecture
+
 ```text
 velo/
-├── frontend/ # Python parser with Lark
-├── backend/ # C++ code generator with LLVM
-├── tools/ # Go CLI tools
-└── examples/ # Sample programs
+├── frontend/            # Python parser (Lark) -> typed JSON AST
+│   ├── grammar/velo.lark
+│   └── src/             # parser.py, transformer.py, ast.py, main.py
+├── backend/             # C++ code generator (LLVM)
+│   ├── include/         # json_reader.hpp, codegen.hpp
+│   └── src/             # json_reader.cpp, codegen.cpp, main.cpp
+├── tools/               # Go CLI orchestrating the whole pipeline
+│   └── cmd/velo/main.go
+└── examples/            # Sample programs (.velo)
+```
+
+## Compiler Pipeline
+
+```text
+main.velo ──► [frontend: Python + Lark] ──► ast.json
+     ──► [backend: C++] ──► output.ll (LLVM IR)
+     ──► [llc] ──► output.o
+     ──► [clang] ──► program (executable)
 ```
 
 ## Getting Started
@@ -33,27 +48,28 @@ velo/
 
 - Python 3.8+
 - C++ compiler with C++17 support
-- LLVM 14+
+- **LLVM** (installed via Homebrew: `brew install llvm`)
 - Go 1.21+
+
+> Note: the Go CLI in `tools/cmd/velo/main.go` hardcodes the LLVM path to
+> `/opt/homebrew/opt/llvm/bin`. Adjust the `llvmBin` constant if your install
+> differs.
 
 ### Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/velo.git
-cd velo
-
-# Setup Python environment
+# Setup Python environment (venv + dependencies)
 make setup
 
 # Activate virtual environment
 ./activate.sh
 
-# Build the compiler
+# Build the C++ backend
 make build
 
-# Run an example
-make run
+# Compile + run an example
+make run                  # uses examples/test_full.velo by default
+make run FILE=examples/test.velo
 ```
 
 ### Example
@@ -61,12 +77,22 @@ make run
 ```velo
 let x = 10;
 let y = 20;
+let z = x + y;
+let w = z * 2;
+let n = -w;
 
 hot {
-    let z = x + y;
-    return z;
+    let t = n + 1;
+    print t;
 }
 ```
+
+## Current Syntax Support
+
+- `let <name> = <expr>;` — variable declaration
+- `print <expr>;` — print an expression
+- `hot { ... }` — hot region block (statements)
+- Expressions: numbers, variables, `+ - * /`, unary minus `-x`
 
 ## License
 
@@ -84,7 +110,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Status
 
-🚧 Alpha — Under active development. Not yet production-ready.
+🚧 Alpha — Under active development. Not yet production-ready. Frontend and backend pipeline currently working end-to-end.
 
 ## Acknowledgments
 

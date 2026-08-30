@@ -1,5 +1,8 @@
 .PHONY: setup build clean run test
 
+ROOT := $(shell pwd)
+FILE ?= examples/test_full.velo
+
 setup:
 	@echo "🔄 Setting up Python venv..."
 	python3 -m venv venv
@@ -7,19 +10,17 @@ setup:
 	@echo "✅ Setup complete!"
 
 build:
-	@echo "🔨 Building..."
-	cd backend && mkdir -p build && cd build && cmake .. && make
-	@echo "✅ Build complete!"
+	@echo "🔨 Building backend..."
+	cd backend/build && cmake -DLLVM_DIR="$$(brew --prefix llvm)/lib/cmake/llvm" .. && make
+	@echo "✅ Backend build complete!"
 
-run: build
-	@echo "🚀 Running program..."
-	cd tools && go run cmd/velo/main.go -run
+run:
+	@echo "🚀 Compiling and running $(FILE)..."
+	cd tools && go run ./cmd/velo -root "$(ROOT)" -run "$(FILE)"
 
 clean:
 	@echo "🧹 Cleaning..."
-	rm -rf venv
-	rm -rf backend/build
-	rm -f program output.ll output.o ast.json
+	cd tools && go run ./cmd/velo -root "$(ROOT)" -clean
 	@echo "✅ Clean complete!"
 
 test:
