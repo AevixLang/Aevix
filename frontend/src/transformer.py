@@ -5,18 +5,29 @@ from .ast import (
 )
 
 class VeloTransformer(Transformer):
-    # Terminals
-    def term(self, items):
+    # Atoms (NUMBER / CNAME / unary minus)
+    def factor(self, items):
+        if len(items) == 2:
+            return Neg(value=items[1])
         tok = items[0]
         if tok.type == "NUMBER":
             return Number(value=int(tok))
         return Variable(value=str(tok))
 
-    # Expressions
-    def expr(self, items):
-        if len(items) == 1:
-            return items[0]
+    # mul/div
+    def term(self, items):
+        result = items[0]
+        for i in range(1, len(items), 2):
+            op = items[i]
+            right = items[i + 1]
+            if str(op) == '*':
+                result = Mul(left=result, right=right)
+            elif str(op) == '/':
+                result = Div(left=result, right=right)
+        return result
 
+    # add/sub
+    def expr(self, items):
         result = items[0]
         for i in range(1, len(items), 2):
             op = items[i]
