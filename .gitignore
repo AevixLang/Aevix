@@ -1,0 +1,37 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# C++
+build/
+*.o
+*.ll
+*.out
+program
+CMakeCache.txt
+CMakeFiles/
+
+# Go
+tools/velo
+*.exe
+*.test
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# JSON (временные файлы)
+*.json
+!ast.json  # если хочешь сохранять для дебага
