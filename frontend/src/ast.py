@@ -27,6 +27,20 @@ class Variable:
     value: str
     type: str = "Variable"
 
+@dataclass
+class Float:
+    value: float
+    type: str = "Float"
+
+@dataclass
+class Bool:
+    value: bool
+    type: str = "Bool"
+
+@dataclass
+class String:
+    value: str
+    type: str = "String"
 
 @dataclass
 class Add:
@@ -67,6 +81,7 @@ class Neg:
 class Let:
     name: str
     value: object
+    var_type: Optional[str] = None
     type: str = "Let"
 
 
