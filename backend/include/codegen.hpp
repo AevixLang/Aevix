@@ -14,6 +14,7 @@ private:
     llvm::Function* main_func;
     llvm::BasicBlock* entry_block;
     std::map<std::string, llvm::Value*> named_values;
+    std::map<std::string, llvm::Type*> named_types;
 
 public:
     CodeGenerator();

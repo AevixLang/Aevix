@@ -12,6 +12,21 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
         num->value = j["value"];
         return num;
     }
+    else if (type == "Float") {
+        auto fl = std::make_shared<Float>();
+        fl->value = j["value"];
+        return fl;
+    }
+    else if (type == "Bool") {
+        auto b = std::make_shared<Bool>();
+        b->value = j["value"];
+        return b;
+    }
+    else if (type == "String") {
+        auto s = std::make_shared<String>();
+        s->value = j["value"];
+        return s;
+    }
     else if (type == "Variable") {
         auto var = std::make_shared<Variable>();
         var->name = j["value"];
@@ -54,6 +69,9 @@ static void parse_let(const json& j, Program& program) {
     Let let;
     let.name = j["name"];
     let.value = parse_expr(j["value"]);
+    if (j.contains("var_type") && !j["var_type"].is_null()) {
+        let.var_type = j["var_type"];
+    }
     program.lets.push_back(let);
 }
 
@@ -64,6 +82,9 @@ static void parse_hot(const json& j, Program& program) {
             Let let;
             let.name = inner["name"];
             let.value = parse_expr(inner["value"]);
+            if (inner.contains("var_type") && !inner["var_type"].is_null()) {
+                let.var_type = inner["var_type"];
+            }
             hot.body.push_back(let);
         }
     }

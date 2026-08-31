@@ -15,6 +15,18 @@ struct Number : public Expr {
     int value;
 };
 
+struct Float : public Expr {
+    double value;
+};
+
+struct Bool : public Expr {
+    bool value;
+};
+
+struct String : public Expr {
+    std::string value;
+};
+
 struct Variable : public Expr {
     std::string name;
 };
@@ -47,6 +59,7 @@ struct Neg : public Expr {
 struct Let {
     std::string name;
     std::shared_ptr<Expr> value;
+    std::string var_type;   // "int" | "float" | "bool" | "string" | "" (auto)
 };
 
 struct Hot {
