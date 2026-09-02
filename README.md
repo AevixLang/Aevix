@@ -18,6 +18,17 @@ Aevix aims to push beyond existing languages by combining:
 - **Context Polymorphism** — Code adapts to calling context
 - **Proof-Carrying Safety** — Compiler-verified invariants
 
+## Documentation
+
+### 📘 Language Documentation
+*For those writing code in Aevix.*
+- [Aevix Manifest](Aevix-Manifest.md) — The vision, core pillars, and high-level goals.
+- [Language Syntax](Syntax.md) — Complete grammar, type system, and usage guide.
+
+### 🛠 Compiler Documentation
+*For those contributing to the Aevix toolchain.*
+- [System Architecture](Aevix-Architecture.md) — Technical breakdown of the Python/C++/Go pipeline.
+
 ## Project Architecture
 
 ```text
@@ -86,13 +97,6 @@ hot {
     print t;
 }
 ```
-
-## Current Syntax Support
-
-- `let <name> = <expr>;` — variable declaration
-- `print <expr>;` — print an expression
-- `hot { ... }` — hot region block (statements)
-- Expressions: numbers, variables, `+ - * /`, unary minus `-x`
 
 ## License
 
