@@ -6,22 +6,47 @@ stmt: let_stmt
     | expr_stmt
     | print_stmt
     | if_stmt
+    | while_stmt
+    | for_stmt
+    | return_stmt
+    | assign_stmt
+    | func_decl
+
+func_decl: "func" CNAME "(" params ")" (":" type_name)? block
+params: (param ("," param)*)?
+param: CNAME (":" type_name)?
 
 let_stmt: "let" CNAME (":" type_name)? "=" expr ";"
 hot_block: "hot" block
-block: "{" stmt* "}"
 expr_stmt: expr ";"
 print_stmt: "print" expr ";"
-if_stmt: "if" "(" comparision ")" block ("else" else_branch)?
+if_stmt: "if" "(" expr ")" block ("else" else_branch)?
 else_branch: if_stmt | block
+while_stmt: "while" "(" expr ")" block
+for_stmt: "for" "(" for_init? ";" expr? ";" for_step? ")" block
+for_init: for_let | for_assign | expr
+for_let: "let" CNAME (":" type_name)? "=" expr
+for_assign: CNAME "=" expr
+for_step: for_assign | expr
+return_stmt: "return" expr? ";"
+assign_stmt: CNAME "=" expr ";"
 
-// Priority: unary > mul/div > add/sub
-expr: comparision
+block: "{" stmt* "}"
+
+// Precedence: or >> and >> comparison >> +- >> */ >> unary(-, !) >> atom
+expr: or_
+or_: and_ (OROP and_)*
+and_: comparision (ANDOP comparision)*
 comparision: arith (CMPOP arith)*
 arith: term (ADDOP term)*
 term: factor (MULOP factor)*
-factor: NUMBER | FLOAT | BOOL | STRING | CNAME | MINUS factor
+factor: MINUS factor | BANG factor | atom
+atom: NUMBER | FLOAT | BOOL | STRING | CNAME call_suffix? | "(" expr ")"
+call_suffix: "(" arg_list? ")"
+arg_list: expr ("," expr)*
 
+OROP: "||"
+ANDOP: "&&"
 CMPOP: "==" | "!=" | "<" | ">" | "<=" | ">="
 
 type_name: T_INT | T_FLOAT | T_BOOL | T_STRING
@@ -33,8 +58,9 @@ T_STRING: "string"
 ADDOP: "+" | "-"
 MULOP: "*" | "/"
 MINUS: "-"
+BANG: "!"
 
-BOOL: "true" | "false"
+BOOL.1: "true" | "false"
 STRING: /"[^"]*"/
 CNAME: /[a-zA-Z_][a-zA-Z0-9_]*/
 NUMBER: /[0-9]+/

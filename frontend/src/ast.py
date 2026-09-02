@@ -1,3 +1,10 @@
+# ============================================================================
+# Aevix frontend — AST node definitions
+#
+# One dataclass per language construct, plus `to_dict` which produces the JSON
+# schema that json_reader (backend) consumes. Use the `type` string equality
+# guard when such a node already carried a field named "type".
+# ============================================================================
 from dataclasses import dataclass, field
 from typing import List, Union, Optional
 
@@ -84,6 +91,33 @@ class CmpOp:
     type: str = "CmpOp"
 
 
+@dataclass
+class And:
+    left: object
+    right: object
+    type: str = "And"
+
+
+@dataclass
+class Or:
+    left: object
+    right: object
+    type: str = "Or"
+
+
+@dataclass
+class Not:
+    value: object
+    type: str = "Not"
+
+
+@dataclass
+class Call:
+    callee: str
+    args: list
+    type: str = "Call"
+
+
 # Statements
 @dataclass
 class Let:
@@ -111,6 +145,51 @@ class If:
     then_body: list
     else_body: Optional[list] = None
     type: str = "If"
+
+
+@dataclass
+class While:
+    condition: object
+    body: list
+    type: str = "While"
+
+
+@dataclass
+class For:
+    body: list
+    init: Optional[object] = None
+    condition: Optional[object] = None
+    step: Optional[object] = None
+    type: str = "For"
+
+
+@dataclass
+class Return:
+    value: Optional[object] = None
+    type: str = "Return"
+
+
+@dataclass
+class Assign:
+    name: str
+    value: object
+    type: str = "Assign"
+
+
+@dataclass
+class Param:
+    name: str
+    var_type: Optional[str] = None
+    type: str = "Param"
+
+
+@dataclass
+class FuncDecl:
+    name: str
+    params: list
+    body: list
+    return_type: Optional[str] = None
+    type: str = "FuncDecl"
 
 
 @dataclass

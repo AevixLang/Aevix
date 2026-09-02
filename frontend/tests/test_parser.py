@@ -87,3 +87,107 @@ def test_multiple_else_if():
     assert lvl2["type"] == "If"
     assert lvl3["type"] == "If"
     assert lvl3["else_body"][0]["type"] == "Print"
+
+
+def test_func_decl_typed():
+    ast = parse_dict("func add(a: int, b: int) : int { return a + b; }\n")
+    fd = ast["body"][0]
+    assert fd["type"] == "FuncDecl"
+    assert fd["name"] == "add"
+    assert fd["return_type"] == "int"
+    assert len(fd["params"]) == 2
+    assert fd["params"][0]["name"] == "a"
+    assert fd["params"][0]["var_type"] == "int"
+    assert fd["body"][0]["type"] == "Return"
+    assert fd["body"][0]["value"]["type"] == "Add"
+
+
+def test_func_decl_void():
+    ast = parse_dict("func greet(name: string) { print name; }\n")
+    fd = ast["body"][0]
+    assert fd["type"] == "FuncDecl"
+    assert fd["return_type"] is None
+    assert fd["params"][0]["var_type"] == "string"
+
+
+def test_func_call():
+    ast = parse_dict("print add(4, 5);\n")
+    call = ast["body"][0]["value"]
+    assert call["type"] == "Call"
+    assert call["callee"] == "add"
+    assert len(call["args"]) == 2
+    assert call["args"][0]["value"] == 4
+
+
+def test_while_stmt():
+    ast = parse_dict("while (i < 10) { i = i + 1; }\n")
+    w = ast["body"][0]
+    assert w["type"] == "While"
+    assert w["condition"]["op"] == "<"
+    assign = w["body"][0]
+    assert assign["type"] == "Assign"
+    assert assign["name"] == "i"
+
+
+def test_for_stmt():
+    ast = parse_dict(
+        "for (let i = 0; i < 10; i = i + 1) { print i; }\n"
+    )
+    f = ast["body"][0]
+    assert f["type"] == "For"
+    assert f["init"]["type"] == "Let"
+    assert f["condition"]["op"] == "<"
+    assert f["step"]["type"] == "Assign"
+    assert f["step"]["value"]["type"] == "Add"
+    assert f["body"][0]["type"] == "Print"
+
+
+def test_for_assign_init():
+    ast = parse_dict(
+        "let i = 0;\nfor (i = 0; i < 10; i = i + 1) { print i; }\n"
+    )
+    f = ast["body"][1]
+    assert f["type"] == "For"
+    assert f["init"]["type"] == "Assign"
+
+
+def test_return_stmt_bare():
+    ast = parse_dict("func f() { return; }\n")
+    fd = ast["body"][0]
+    assert fd["body"][0]["type"] == "Return"
+    assert fd["body"][0]["value"] is None
+
+
+def test_logical_and():
+    ast = parse_dict("if (a > 1 && b < 5) { print 1; }\n")
+    cond = ast["body"][0]["condition"]
+    assert cond["type"] == "And"
+    assert cond["left"]["type"] == "CmpOp"
+    assert cond["right"]["type"] == "CmpOp"
+
+
+def test_logical_or():
+    ast = parse_dict("if (a == 1 || b == 2) { print 1; }\n")
+    cond = ast["body"][0]["condition"]
+    assert cond["type"] == "Or"
+    assert cond["left"]["type"] == "CmpOp"
+
+
+def test_logical_not():
+    ast = parse_dict("if (!flag) { print 1; }\n")
+    cond = ast["body"][0]["condition"]
+    assert cond["type"] == "Not"
+    assert cond["value"]["type"] == "Variable"
+
+
+def test_neg_vs_not():
+    ast = parse_dict("let n = -x; let b = !y;\n")
+    assert ast["body"][0]["value"]["type"] == "Neg"
+    assert ast["body"][1]["value"]["type"] == "Not"
+
+
+def test_bool_literal():
+    ast = parse_dict("let f: bool = true; let g: bool = false;\n")
+    assert ast["body"][0]["value"]["type"] == "Bool"
+    assert ast["body"][0]["value"]["value"] is True
+    assert ast["body"][1]["value"]["value"] is False
