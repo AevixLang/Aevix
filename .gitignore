@@ -34,4 +34,6 @@ tools/aevix
 
 # JSON
 *.json
-!ast.json 
+ast.json
+examples/
+notes/
