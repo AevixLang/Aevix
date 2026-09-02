@@ -76,6 +76,14 @@ class Neg:
     type: str = "Neg"
 
 
+@dataclass
+class CmpOp:
+    op: str
+    left: object
+    right: object
+    type: str = "CmpOp"
+
+
 # Statements
 @dataclass
 class Let:
@@ -95,6 +103,14 @@ class Hot:
 class Print:
     value: object
     type: str = "Print"
+
+
+@dataclass
+class If:
+    condition: object
+    then_body: list
+    else_body: Optional[list] = None
+    type: str = "If"
 
 
 @dataclass

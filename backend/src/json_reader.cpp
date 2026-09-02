@@ -61,40 +61,71 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
         neg->value = parse_expr(j["value"]);
         return neg;
     }
+    else if (type == "CmpOp") {
+        auto cmp = std::make_shared<CmpOp>();
+        cmp->op = j["op"];
+        cmp->left = parse_expr(j["left"]);
+        cmp->right = parse_expr(j["right"]);
+        return cmp;
+    }
 
     return nullptr;
 }
 
-static void parse_let(const json& j, Program& program) {
-    Let let;
-    let.name = j["name"];
-    let.value = parse_expr(j["value"]);
-    if (j.contains("var_type") && !j["var_type"].is_null()) {
-        let.var_type = j["var_type"];
+static std::shared_ptr<Stmt> parse_stmt(const json& j);
+
+static std::shared_ptr<Block> parse_block(const json& j) {
+    auto block = std::make_shared<Block>();
+    for (const auto& inner : j) {
+        auto stmt = parse_stmt(inner);
+        if (stmt) block->body.push_back(stmt);
     }
-    program.lets.push_back(let);
+    return block;
 }
 
-static void parse_hot(const json& j, Program& program) {
-    Hot hot;
-    for (const auto& inner : j["body"]) {
-        if (inner["type"] == "Let") {
-            Let let;
-            let.name = inner["name"];
-            let.value = parse_expr(inner["value"]);
-            if (inner.contains("var_type") && !inner["var_type"].is_null()) {
-                let.var_type = inner["var_type"];
-            }
-            hot.body.push_back(let);
+static std::shared_ptr<Stmt> parse_stmt(const json& j) {
+    if (!j.contains("type")) return nullptr;
+
+    const std::string type = j["type"];
+
+    auto stmt = std::make_shared<Stmt>();
+
+    if (type == "Let") {
+        stmt->kind = Stmt::Kind::Let;
+        stmt->let.name = j["name"];
+        stmt->let.value = parse_expr(j["value"]);
+        if (j.contains("var_type") && !j["var_type"].is_null()) {
+            stmt->let.var_type = j["var_type"];
         }
     }
-    program.hots.push_back(hot);
-}
+    else if (type == "Hot") {
+        stmt->kind = Stmt::Kind::Hot;
+        for (const auto& inner : j["body"]) {
+            auto child = parse_stmt(inner);
+            if (child && child->kind == Stmt::Kind::Let) {
+                stmt->hot.body.push_back(child->let);
+            }
+        }
+    }
+    else if (type == "Print") {
+        stmt->kind = Stmt::Kind::Print;
+        stmt->print.value = parse_expr(j["value"]);
+    }
+    else if (type == "If") {
+        stmt->kind = Stmt::Kind::If;
+        auto if_stmt = std::make_shared<If>();
+        if_stmt->condition = parse_expr(j["condition"]);
+        if_stmt->then_block = parse_block(j["then_body"]);
+        if (j.contains("else_body") && !j["else_body"].is_null()) {
+            if_stmt->else_block = parse_block(j["else_body"]);
+        }
+        stmt->if_stmt = if_stmt;
+    }
+    else {
+        return nullptr;
+    }
 
-static void parse_print(const json& j, Program& program) {
-    Print print;
-    print.value = parse_expr(j["value"]);
-    program.prints.push_back(print);
+    return stmt;
 }
 
 Program parse_json(const std::string& filename) {
@@ -110,19 +141,8 @@ Program parse_json(const std::string& filename) {
     Program program;
 
     for (const auto& stmt : data["body"]) {
-        if (!stmt.contains("type")) continue;
-
-        const std::string type = stmt["type"];
-
-        if (type == "Let") {
-            parse_let(stmt, program);
-        }
-        else if (type == "Hot") {
-            parse_hot(stmt, program);
-        }
-        else if (type == "Print") {
-            parse_print(stmt, program);
-        }
+        auto s = parse_stmt(stmt);
+        if (s) program.body.push_back(s);
     }
 
     return program;

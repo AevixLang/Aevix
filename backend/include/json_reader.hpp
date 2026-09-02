@@ -55,6 +55,12 @@ struct Neg : public Expr {
     std::shared_ptr<Expr> value;
 };
 
+struct CmpOp : public Expr {
+    std::string op;
+    std::shared_ptr<Expr> left;
+    std::shared_ptr<Expr> right;
+};
+
 // Operators
 struct Let {
     std::string name;
@@ -70,10 +76,28 @@ struct Print {
     std::shared_ptr<Expr> value;
 };
 
+struct Stmt;
+struct Block {
+    std::vector<std::shared_ptr<Stmt>> body;
+};
+
+struct If : public Expr {
+    std::shared_ptr<Expr> condition;
+    std::shared_ptr<Block> then_block;
+    std::shared_ptr<Block> else_block;   // null if no else
+};
+
+struct Stmt {
+    enum class Kind { Let, Hot, Print, If };
+    Kind kind;
+    Let let;
+    Hot hot;
+    Print print;
+    std::shared_ptr<If> if_stmt;
+};
+
 struct Program {
-    std::vector<Let> lets;
-    std::vector<Hot> hots;
-    std::vector<Print> prints;
+    std::vector<std::shared_ptr<Stmt>> body;
 };
 
 

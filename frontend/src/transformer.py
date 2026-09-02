@@ -1,6 +1,6 @@
 from lark import Transformer, Token
 from .ast import (
-    Program, Let, Hot, Print,
+    Program, Let, Hot, Print, If, CmpOp,
     Number, Variable, Float, Bool, String, Add, Sub, Mul, Div, Neg
 )
 
@@ -37,7 +37,7 @@ class VeloTransformer(Transformer):
         return result
 
     # add/sub
-    def expr(self, items):
+    def arith(self, items):
         result = items[0]
         for i in range(1, len(items), 2):
             op = items[i]
@@ -46,6 +46,19 @@ class VeloTransformer(Transformer):
                 result = Add(left=result, right=right)
             elif str(op) == '-':
                 result = Sub(left=result, right=right)
+        return result
+
+    # expr -> comparision
+    def expr(self, items):
+        return items[0]
+
+    # comparision (==, !=, <, >, <=, >=)
+    def comparision(self, items):
+        result = items[0]
+        for i in range(1, len(items), 2):
+            op = items[i]
+            right = items[i + 1]
+            result = CmpOp(op=str(op), left=result, right=right)
         return result
 
     # Types (type_name: "int" | "float" | "bool" | "string")
@@ -72,11 +85,28 @@ class VeloTransformer(Transformer):
             value = items[2]
         return Let(name=name, value=value, var_type=var_type)
 
+    def block(self, items):
+        return list(items)
+
     def hot_block(self, items):
-        return Hot(body=items)
+        return Hot(body=items[0])
 
     def print_stmt(self, items):
         return Print(value=items[0])
+
+    def if_stmt(self, items):
+        condition = items[0]
+        then_body = items[1]
+        else_body = None
+        if len(items) > 2:
+            else_body = items[2]
+        return If(condition=condition, then_body=then_body, else_body=else_body)
+
+    def else_branch(self, items):
+        branch = items[0]
+        if isinstance(branch, If):
+            return [branch]
+        return list(branch)
 
     # Program
     def start(self, items):

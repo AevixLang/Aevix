@@ -6,6 +6,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include <iostream>
 #include <map>
+#include <stack>
 
 CodeGenerator::CodeGenerator()
     : context(std::make_unique<llvm::LLVMContext>())
@@ -16,6 +17,38 @@ CodeGenerator::CodeGenerator()
     main_func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, "main", module.get());
     entry_block = llvm::BasicBlock::Create(*context, "entry", main_func);
     builder->SetInsertPoint(entry_block);
+
+    named_values.emplace_back();
+    named_types.emplace_back();
+}
+
+void CodeGenerator::push_scope() {
+    named_values.emplace_back();
+    named_types.emplace_back();
+}
+
+void CodeGenerator::pop_scope() {
+    named_values.pop_back();
+    named_types.pop_back();
+}
+
+void CodeGenerator::define_var(const std::string& name, llvm::Value* alloc,
+                               llvm::Type* ty) {
+    named_values.back()[name] = alloc;
+    named_types.back()[name] = ty;
+}
+
+llvm::Value* CodeGenerator::lookup_var(const std::string& name, llvm::Type*& ty) {
+    for (auto it = named_values.rbegin(); it != named_values.rend(); ++it) {
+        auto vit = it->find(name);
+        if (vit != it->end()) {
+            std::size_t idx = named_values.size() - 1 -
+                              std::distance(named_values.rbegin(), it);
+            ty = named_types[idx][name];
+            return vit->second;
+        }
+    }
+    return nullptr;
 }
 
 llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
@@ -34,10 +67,10 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         return builder->CreateGlobalString(s->value, "str");
     }
     else if (auto var = std::dynamic_pointer_cast<Variable>(expr)) {
-        auto it = named_values.find(var->name);
-        if (it != named_values.end()) {
-            llvm::Type* ty = named_types[var->name];
-            return builder->CreateLoad(ty, it->second, var->name);
+        llvm::Type* ty = nullptr;
+        llvm::Value* alloc = lookup_var(var->name, ty);
+        if (alloc) {
+            return builder->CreateLoad(ty, alloc, var->name);
         }
         std::cerr << "❌ Variable not found: " << var->name << std::endl;
         return nullptr;
@@ -92,7 +125,47 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (val->getType()->isDoubleTy()) return builder->CreateFNeg(val, "negtmp");
         return builder->CreateNeg(val, "negtmp");
     }
+    else if (auto cmp = std::dynamic_pointer_cast<CmpOp>(expr)) {
+        auto left = generate_expr(cmp->left);
+        auto right = generate_expr(cmp->right);
+        if (!left || !right) return nullptr;
+        if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
+            if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
+            if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
+            return generate_fcmp(cmp->op, left, right);
+        }
+        if (left->getType()->isIntegerTy(1) || right->getType()->isIntegerTy(1)) {
+            left = builder->CreateZExt(left, builder->getInt32Ty());
+            right = builder->CreateZExt(right, builder->getInt32Ty());
+            return generate_icmp(cmp->op, left, right);
+        }
+        return generate_icmp(cmp->op, left, right);
+    }
 
+    return nullptr;
+}
+
+llvm::Value* CodeGenerator::generate_icmp(const std::string& op,
+                                          llvm::Value* left, llvm::Value* right) {
+    if (op == "==") return builder->CreateICmpEQ(left, right, "cmptmp");
+    if (op == "!=") return builder->CreateICmpNE(left, right, "cmptmp");
+    if (op == "<")  return builder->CreateICmpSLT(left, right, "cmptmp");
+    if (op == ">")  return builder->CreateICmpSGT(left, right, "cmptmp");
+    if (op == "<=") return builder->CreateICmpSLE(left, right, "cmptmp");
+    if (op == ">=") return builder->CreateICmpSGE(left, right, "cmptmp");
+    std::cerr << "❌ Unknown icmp op: " << op << std::endl;
+    return nullptr;
+}
+
+llvm::Value* CodeGenerator::generate_fcmp(const std::string& op,
+                                          llvm::Value* left, llvm::Value* right) {
+    if (op == "==") return builder->CreateFCmpOEQ(left, right, "cmptmp");
+    if (op == "!=") return builder->CreateFCmpONE(left, right, "cmptmp");
+    if (op == "<")  return builder->CreateFCmpOLT(left, right, "cmptmp");
+    if (op == ">")  return builder->CreateFCmpOGT(left, right, "cmptmp");
+    if (op == "<=") return builder->CreateFCmpOLE(left, right, "cmptmp");
+    if (op == ">=") return builder->CreateFCmpOGE(left, right, "cmptmp");
+    std::cerr << "❌ Unknown fcmp op: " << op << std::endl;
     return nullptr;
 }
 
@@ -103,8 +176,7 @@ void CodeGenerator::generate_let(const Let& let) {
     llvm::Type* ty = val->getType();
     auto alloca = builder->CreateAlloca(ty, nullptr, let.name);
     builder->CreateStore(val, alloca);
-    named_values[let.name] = alloca;
-    named_types[let.name] = ty;
+    define_var(let.name, alloca, ty);
 }
 
 void CodeGenerator::generate_hot(const Hot& hot) {
@@ -147,6 +219,62 @@ void CodeGenerator::generate_print(const Print& print) {
     builder->CreateCall(printf_func, {format_str, arg});
 }
 
+void CodeGenerator::generate_block(const std::shared_ptr<Block>& block) {
+    if (!block) return;
+    push_scope();
+    for (const auto& stmt : block->body) {
+        generate_stmt(stmt);
+    }
+    pop_scope();
+}
+
+bool CodeGenerator::block_has_terminator(llvm::BasicBlock* bb) {
+    if (bb->empty()) return false;
+    return bb->back().isTerminator();
+}
+
+void CodeGenerator::generate_if(const If& if_stmt) {
+    auto cond = generate_expr(if_stmt.condition);
+    if (!cond) return;
+
+    auto current = builder->GetInsertBlock();
+    if (current->getTerminatorOrNull()) return;
+
+    llvm::Function* func = current->getParent();
+    auto then_block = llvm::BasicBlock::Create(*context, "then", func);
+    auto else_block = llvm::BasicBlock::Create(*context, "else", func);
+    auto merge_block = llvm::BasicBlock::Create(*context, "merge");
+
+    builder->CreateCondBr(cond, then_block, else_block);
+
+    builder->SetInsertPoint(then_block);
+    generate_block(if_stmt.then_block);
+    if (!block_has_terminator(builder->GetInsertBlock())) {
+        builder->CreateBr(merge_block);
+    }
+
+    builder->SetInsertPoint(else_block);
+    generate_block(if_stmt.else_block);
+    if (!block_has_terminator(builder->GetInsertBlock())) {
+        builder->CreateBr(merge_block);
+    }
+
+    func->insert(func->end(), merge_block);
+    builder->SetInsertPoint(merge_block);
+}
+
+void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
+    if (!stmt) return;
+    switch (stmt->kind) {
+        case Stmt::Kind::Let:   generate_let(stmt->let); break;
+        case Stmt::Kind::Hot:   generate_hot(stmt->hot); break;
+        case Stmt::Kind::Print: generate_print(stmt->print); break;
+        case Stmt::Kind::If:
+            if (stmt->if_stmt) generate_if(*stmt->if_stmt);
+            break;
+    }
+}
+
 void CodeGenerator::finalize() {
     builder->CreateRet(builder->getInt32(0));
 
@@ -156,15 +284,7 @@ void CodeGenerator::finalize() {
 }
 
 void CodeGenerator::generate_program(const Program& program) {
-    for (const auto& let : program.lets) {
-        generate_let(let);
-    }
-
-    for (const auto& hot : program.hots) {
-        generate_hot(hot);
-    }
-
-    for (const auto& print : program.prints) {
-        generate_print(print);
+    for (const auto& stmt : program.body) {
+        generate_stmt(stmt);
     }
 }

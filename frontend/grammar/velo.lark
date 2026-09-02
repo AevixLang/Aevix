@@ -5,16 +5,25 @@ stmt: let_stmt
     | hot_block
     | expr_stmt
     | print_stmt
+    | if_stmt
 
 let_stmt: "let" CNAME (":" type_name)? "=" expr ";"
-hot_block: "hot" "{" stmt* "}"
+hot_block: "hot" block
+block: "{" stmt* "}"
 expr_stmt: expr ";"
 print_stmt: "print" expr ";"
+if_stmt: "if" "(" comparision ")" block ("else" else_branch)?
+else_branch: if_stmt | block
 
 // Priority: unary > mul/div > add/sub
-expr: term (ADDOP term)*
+expr: comparision
+comparision: arith (CMPOP arith)*
+arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: NUMBER | FLOAT | BOOL | STRING | CNAME | MINUS factor
+
+CMPOP: "==" | "!=" | "<" | ">" | "<=" | ">="
+
 type_name: T_INT | T_FLOAT | T_BOOL | T_STRING
 T_INT: "int"
 T_FLOAT: "float"
