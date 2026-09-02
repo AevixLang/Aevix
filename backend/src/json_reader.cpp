@@ -68,6 +68,31 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
         cmp->right = parse_expr(j["right"]);
         return cmp;
     }
+    else if (type == "And") {
+        auto a = std::make_shared<And>();
+        a->left = parse_expr(j["left"]);
+        a->right = parse_expr(j["right"]);
+        return a;
+    }
+    else if (type == "Or") {
+        auto o = std::make_shared<Or>();
+        o->left = parse_expr(j["left"]);
+        o->right = parse_expr(j["right"]);
+        return o;
+    }
+    else if (type == "Not") {
+        auto n = std::make_shared<Not>();
+        n->value = parse_expr(j["value"]);
+        return n;
+    }
+    else if (type == "Call") {
+        auto c = std::make_shared<Call>();
+        c->callee = j["callee"];
+        for (const auto& arg : j["args"]) {
+            c->args.push_back(parse_expr(arg));
+        }
+        return c;
+    }
 
     return nullptr;
 }
@@ -120,6 +145,65 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
             if_stmt->else_block = parse_block(j["else_body"]);
         }
         stmt->if_stmt = if_stmt;
+    }
+    else if (type == "While") {
+        stmt->kind = Stmt::Kind::While;
+        auto w = std::make_shared<While>();
+        w->condition = parse_expr(j["condition"]);
+        w->body = parse_block(j["body"]);
+        stmt->while_stmt = w;
+    }
+    else if (type == "For") {
+        stmt->kind = Stmt::Kind::For;
+        auto f = std::make_shared<For>();
+        if (j.contains("init") && !j["init"].is_null()) {
+            f->init = parse_stmt(j["init"]);
+        }
+        if (j.contains("condition") && !j["condition"].is_null()) {
+            f->condition = parse_expr(j["condition"]);
+        }
+        if (j.contains("step") && !j["step"].is_null()) {
+            f->step = parse_stmt(j["step"]);
+        }
+        f->body = parse_block(j["body"]);
+        stmt->for_stmt = f;
+    }
+    else if (type == "Return") {
+        stmt->kind = Stmt::Kind::Return;
+        auto r = std::make_shared<Return>();
+        if (j.contains("value") && !j["value"].is_null()) {
+            r->value = parse_expr(j["value"]);
+        }
+        stmt->return_stmt = r;
+    }
+    else if (type == "Assign") {
+        stmt->kind = Stmt::Kind::Assign;
+        auto a = std::make_shared<Assign>();
+        a->name = j["name"];
+        a->value = parse_expr(j["value"]);
+        stmt->assign_stmt = a;
+    }
+    else if (type == "FuncDecl") {
+        stmt->kind = Stmt::Kind::FuncDecl;
+        auto fd = std::make_shared<FuncDecl>();
+        fd->name = j["name"];
+        for (const auto& p : j["params"]) {
+            Param param;
+            param.name = p["name"];
+            if (p.contains("var_type") && !p["var_type"].is_null()) {
+                param.var_type = p["var_type"];
+            }
+            fd->params.push_back(param);
+        }
+        if (j.contains("return_type") && !j["return_type"].is_null()) {
+            fd->return_type = j["return_type"];
+        }
+        fd->body = parse_block(j["body"]);
+        stmt->func_decl = fd;
+    }
+    else if (type == "Call") {
+        stmt->kind = Stmt::Kind::CallStmt;
+        stmt->call_stmt = std::dynamic_pointer_cast<Call>(parse_expr(j));
     }
     else {
         return nullptr;
