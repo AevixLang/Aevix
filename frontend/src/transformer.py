@@ -4,7 +4,7 @@ from .ast import (
     Number, Variable, Float, Bool, String, Add, Sub, Mul, Div, Neg
 )
 
-class VeloTransformer(Transformer):
+class AevixTransformer(Transformer):
     # Atoms (NUMBER / FLOAT / BOOL / STRING / unary minus)
     def factor(self, items):
         if len(items) == 2:

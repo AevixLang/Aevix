@@ -10,7 +10,7 @@
 
 CodeGenerator::CodeGenerator()
     : context(std::make_unique<llvm::LLVMContext>())
-    , module(std::make_unique<llvm::Module>("velo", *context))
+    , module(std::make_unique<llvm::Module>("aevix", *context))
     , builder(std::make_unique<llvm::IRBuilder<>>(*context))
 {
     auto func_type = llvm::FunctionType::get(builder->getInt32Ty(), {}, false);

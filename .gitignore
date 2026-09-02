@@ -22,7 +22,7 @@ CMakeCache.txt
 CMakeFiles/
 
 # Go
-tools/velo
+tools/aevix
 *.exe
 *.test
 

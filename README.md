@@ -1,10 +1,10 @@
-# Velo
+# Aevix
 
-**Velo** is a high-performance systems programming language designed to deliver C/C++-level speed with stronger safety guarantees.
+**Aevix** is a high-performance systems programming language designed to deliver C/C++-level speed with stronger safety guarantees.
 
 ## Philosophy
 
-Velo aims to push beyond existing languages by combining:
+Aevix aims to push beyond existing languages by combining:
 
 - **Maximum performance** — AOT compilation via LLVM, zero-cost abstractions
 - **Memory safety** — Without garbage collection or borrow checker complexity
@@ -21,22 +21,22 @@ Velo aims to push beyond existing languages by combining:
 ## Project Architecture
 
 ```text
-velo/
+aevix/
 ├── frontend/            # Python parser (Lark) -> typed JSON AST
-│   ├── grammar/velo.lark
+│   ├── grammar/aevix.lark
 │   └── src/             # parser.py, transformer.py, ast.py, main.py
 ├── backend/             # C++ code generator (LLVM)
 │   ├── include/         # json_reader.hpp, codegen.hpp
 │   └── src/             # json_reader.cpp, codegen.cpp, main.cpp
 ├── tools/               # Go CLI orchestrating the whole pipeline
-│   └── cmd/velo/main.go
-└── examples/            # Sample programs (.velo)
+│   └── cmd/aevix/main.go
+└── examples/            # Sample programs (.aev)
 ```
 
 ## Compiler Pipeline
 
 ```text
-main.velo ──► [frontend: Python + Lark] ──► ast.json
+main.aev ──► [frontend: Python + Lark] ──► ast.json
      ──► [backend: C++] ──► output.ll (LLVM IR)
      ──► [llc] ──► output.o
      ──► [clang] ──► program (executable)
@@ -51,7 +51,7 @@ main.velo ──► [frontend: Python + Lark] ──► ast.json
 - **LLVM** (installed via Homebrew: `brew install llvm`)
 - Go 1.21+
 
-> Note: the Go CLI in `tools/cmd/velo/main.go` hardcodes the LLVM path to
+> Note: the Go CLI in `tools/cmd/aevix/main.go` hardcodes the LLVM path to
 > `/opt/homebrew/opt/llvm/bin`. Adjust the `llvmBin` constant if your install
 > differs.
 
@@ -68,13 +68,13 @@ make setup
 make build
 
 # Compile + run an example
-make run                  # uses examples/test_full.velo by default
-make run FILE=examples/test.velo
+make run                  # uses examples/test_full.aev by default
+make run FILE=examples/test.aev
 ```
 
 ### Example
 
-```velo
+```aev
 let x = 10;
 let y = 20;
 let z = x + y;

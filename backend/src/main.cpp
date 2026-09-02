@@ -4,7 +4,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: velo-backend <ast.json>" << std::endl;
+        std::cerr << "Usage: aevix-backend <ast.json>" << std::endl;
         return 1;
     }
 

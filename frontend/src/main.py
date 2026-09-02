@@ -5,7 +5,7 @@ from .ast import to_dict
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python -m src.main <file.velo>")
+        print("Usage: python -m src.main <file.aev>")
         sys.exit(1)
 
     filename = sys.argv[1]

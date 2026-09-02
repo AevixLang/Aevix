@@ -11,7 +11,7 @@ import (
 const (
 	llvmBin   = "/opt/homebrew/opt/llvm/bin"
 	frontend  = "frontend"
-	backendExe = "backend/build/velo-backend"
+	backendExe = "backend/build/aevix-backend"
 )
 
 var rootDir string
@@ -25,7 +25,7 @@ func runCmd(name string, args ...string) error {
 }
 
 func buildProject(srcFile string) error {
-	// 1. Python: .velo -> ast.json
+	// 1. Python: .aev -> ast.json
 	python := filepath.Join(rootDir, "venv", "bin", "python")
 	if _, err := os.Stat(python); err != nil {
 		fmt.Println("❌ venv not found. Run `make setup` first.")
@@ -99,12 +99,12 @@ func (w *writeBuffer) Write(p []byte) (int, error) {
 }
 
 func main() {
-	buildFlag := flag.Bool("build", false, "Compile a .velo file into an executable")
+	buildFlag := flag.Bool("build", false, "Compile a .aev file into an executable")
 	runFlag := flag.Bool("run", false, "Build and run the program")
 	cleanFlag := flag.Bool("clean", false, "Remove generated artifacts")
 	rootFlag := flag.String("root", "", "Project root directory (defaults to current dir)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: velo [flags] <file.velo>")
+		fmt.Fprintln(os.Stderr, "Usage: aevix [flags] <file.aev>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()

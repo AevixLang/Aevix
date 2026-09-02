@@ -1,7 +1,7 @@
 .PHONY: setup build clean run test
 
 ROOT := $(shell pwd)
-FILE ?= examples/test_full.velo
+FILE ?= examples/test_full.aev
 
 setup:
 	@echo "🔄 Setting up Python venv..."
@@ -16,11 +16,11 @@ build:
 
 run:
 	@echo "🚀 Compiling and running $(FILE)..."
-	cd tools && go run ./cmd/velo -root "$(ROOT)" -run "$(FILE)"
+	cd tools && go run ./cmd/aevix -root "$(ROOT)" -run "$(FILE)"
 
 clean:
 	@echo "🧹 Cleaning..."
-	cd tools && go run ./cmd/velo -root "$(ROOT)" -clean
+	cd tools && go run ./cmd/aevix -root "$(ROOT)" -clean
 	@echo "✅ Clean complete!"
 
 test:
