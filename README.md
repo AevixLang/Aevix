@@ -56,35 +56,34 @@ main.aev ──► [frontend: Python + Lark] ──► ast.json
 ## Getting Started
 
 ### Prerequisites
-
 - Python 3.8+
 - C++ compiler with C++17 support
-- **LLVM** (installed via Homebrew: `brew install llvm`)
+- **LLVM** (Must be in your system PATH)
 - Go 1.21+
 
-> Note: the Go CLI in `tools/cmd/aevix/main.go` hardcodes the LLVM path to
-> `/opt/homebrew/opt/llvm/bin`. Adjust the `llvmBin` constant if your install
-> differs.
-
 ### Setup
+Instead of manual configuration, use the bootstrap script. It will set up the Python virtual environment, build the C++ backend, and compile the Go CLI.
 
 ```bash
-# Setup Python environment (venv + dependencies)
-make setup
-
-# Activate virtual environment
-./activate.sh
-
-# Build the C++ backend
-make build
-
-# Compile + run an example
-make run                  # uses examples/test_full.aev by default
-make run FILE=examples/test.aev
+python bootstrap.py
 ```
 
-### Example
+### Using the Compiler
+Once bootstrapped, you can use the `aevix` CLI to build and run your programs:
 
+```bash
+# Build a program
+./aevix build examples/test.aev
+
+# Build and run a program
+./aevix run examples/test.aev
+
+# Clean artifacts
+./aevix clean
+```
+*On Windows, use `aevix.exe` instead of `./aevix`.*
+
+### Example
 ```aev
 let x = 10;
 let y = 20;

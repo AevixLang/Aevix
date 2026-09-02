@@ -6,12 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
 const (
-	llvmBin   = "/opt/homebrew/opt/llvm/bin"
 	frontend  = "frontend"
-	backendExe = "backend/build/aevix-backend"
 )
 
 var rootDir string
@@ -26,11 +25,17 @@ func runCmd(name string, args ...string) error {
 
 func buildProject(srcFile string) error {
 	// 1. Python: .aev -> ast.json
-	python := filepath.Join(rootDir, "venv", "bin", "python")
-	if _, err := os.Stat(python); err != nil {
-		fmt.Println("❌ venv not found. Run `make setup` first.")
-		return err
+	var python string
+	if runtime.GOOS == "windows" {
+		python = filepath.Join(rootDir, "venv", "Scripts", "python.exe")
+	} else {
+		python = filepath.Join(rootDir, "venv", "bin", "python")
 	}
+
+	if _, err := os.Stat(python); err != nil {
+		return fmt.Errorf("venv not found. Please run `python bootstrap.py` first")
+	}
+
 	astPath := filepath.Join(rootDir, "frontend", "ast.json")
 	var absSrc string
 	if filepath.IsAbs(srcFile) {
@@ -38,39 +43,47 @@ func buildProject(srcFile string) error {
 	} else {
 		absSrc = filepath.Join(rootDir, srcFile)
 	}
+
 	cmd := exec.Command(python, "-m", "src.main", absSrc)
 	cmd.Dir = filepath.Join(rootDir, frontend)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return err
+		return fmt.Errorf("frontend parsing failed: %w", err)
 	}
 
 	// 2. Backend: ast.json -> LLVM IR (stdout)
+	backendExe := filepath.Join(rootDir, "backend", "build", "aevix-backend")
+	if runtime.GOOS == "windows" {
+		backendExe += ".exe"
+	}
+
 	irOut := filepath.Join(rootDir, "output.ll")
-	backend := filepath.Join(rootDir, backendExe)
-	cmd = exec.Command(backend, astPath)
+	cmd = exec.Command(backendExe, astPath)
 	var ir []byte
 	cmd.Dir = rootDir
 	cmd.Stdout = decodeOut(&ir)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return err
+		return fmt.Errorf("backend generation failed: %w", err)
 	}
 	if err := os.WriteFile(irOut, ir, 0o644); err != nil {
-		return err
+		return fmt.Errorf("failed to write IR: %w", err)
 	}
 
 	// 3. llc: IR -> object file
 	objOut := filepath.Join(rootDir, "output.o")
 	if err := runLLVMTool("llc", "-filetype=obj", irOut, "-o", objOut); err != nil {
-		return err
+		return fmt.Errorf("llc failed: %w", err)
 	}
 
 	// 4. clang: object -> executable
 	progOut := filepath.Join(rootDir, "program")
+	if runtime.GOOS == "windows" {
+		progOut += ".exe"
+	}
 	if err := runTool("clang", objOut, "-o", progOut); err != nil {
-		return err
+		return fmt.Errorf("clang failed: %w", err)
 	}
 
 	fmt.Println("✅ Build complete ->", progOut)
@@ -78,7 +91,20 @@ func buildProject(srcFile string) error {
 }
 
 func runLLVMTool(name string, args ...string) error {
-	return runTool(filepath.Join(llvmBin, name), args...)
+	// Try to find the tool in PATH first (most portable)
+	if _, err := exec.LookPath(name); err == nil {
+		return runTool(name, args...)
+	}
+
+	// Fallback to common LLVM paths for macOS Homebrew
+	if runtime.GOOS == "darwin" {
+		homebrewPath := filepath.Join("/opt/homebrew/opt/llvm/bin", name)
+		if _, err := os.Stat(homebrewPath); err == nil {
+			return runTool(homebrewPath, args...)
+		}
+	}
+
+	return fmt.Errorf("llvm tool %s not found in PATH", name)
 }
 
 func runTool(name string, args ...string) error {
@@ -122,6 +148,9 @@ func main() {
 		os.RemoveAll(filepath.Join(rootDir, "output.ll"))
 		os.RemoveAll(filepath.Join(rootDir, "output.o"))
 		os.RemoveAll(filepath.Join(rootDir, "program"))
+		if runtime.GOOS == "windows" {
+			os.RemoveAll(filepath.Join(rootDir, "program.exe"))
+		}
 		fmt.Println("🧹 Cleaned artifacts")
 		return
 	}
@@ -149,7 +178,12 @@ func main() {
 			fmt.Println("❌ Build failed:", err)
 			os.Exit(1)
 		}
-		runTool(filepath.Join(rootDir, "program"))
+
+		prog := filepath.Join(rootDir, "program")
+		if runtime.GOOS == "windows" {
+			prog += ".exe"
+		}
+		runTool(prog)
 		return
 	}
 
