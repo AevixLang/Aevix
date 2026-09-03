@@ -8,6 +8,7 @@ stmt: let_stmt
     | if_stmt
     | while_stmt
     | for_stmt
+    | for_in_stmt
     | return_stmt
     | assign_stmt
     | func_decl
@@ -24,6 +25,7 @@ if_stmt: "if" "(" expr ")" block ("else" else_branch)?
 else_branch: if_stmt | block
 while_stmt: "while" "(" expr ")" block
 for_stmt: "for" "(" for_init? ";" expr? ";" for_step? ")" block
+for_in_stmt: "for" CNAME "in" expr block
 for_init: for_let | for_assign | expr
 for_let: "let" CNAME (":" type_name)? "=" expr
 for_assign: expr "=" expr
@@ -54,7 +56,9 @@ OROP: "||"
 ANDOP: "&&"
 CMPOP: "==" | "!=" | "<" | ">" | "<=" | ">="
 
-type_name: T_INT | T_FLOAT | T_BOOL | T_STRING
+type_name: array_type | scalar_type
+array_type: scalar_type "[" NUMBER? "]"
+scalar_type: T_INT | T_FLOAT | T_BOOL | T_STRING
 T_INT: "int"
 T_FLOAT: "float"
 T_BOOL: "bool"

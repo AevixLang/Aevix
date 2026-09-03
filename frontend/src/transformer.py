@@ -1,19 +1,18 @@
 # ============================================================================
-# Aevix frontend — Lark parse-tree -> AST transformer
+# Aevix Frontend: Lark Parse-Tree to AST Transformer
 #
-# Each method below mirrors one grammar rule and returns the matching AST node
-# (see ast.py). Section dividers group atoms, unary/binary operators, types,
-# statements, functions and program-level rules.
+# This module implements the AevixTransformer, which walks the Lark parse tree
+# and converts it into the structured AST defined in ast.py.
 # ============================================================================
 from lark import Transformer, Token
 from .ast import (
-    Program, Let, Hot, Print, If, While, For, Return, Assign, FuncDecl, Param, Call,
+    Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
     CmpOp, And, Or, Not
 )
 
-
 def _expr_from_token(tok):
+    """Converts a raw Lark token into the corresponding AST Expression node."""
     if tok.type == "NUMBER":
         return Number(value=int(tok))
     elif tok.type == "FLOAT":
@@ -24,15 +23,20 @@ def _expr_from_token(tok):
         return String(value=str(tok)[1:-1])
     return Variable(value=str(tok))
 
-
 class AevixTransformer(Transformer):
-    # ---- Atoms ----
+    """
+    Transformer that maps Lark grammar rules to Aevix AST nodes.
+    Each method corresponds to a rule name in aevix.lark.
+    """
+
+    # ---- Atoms & Primaries ----
     def atom(self, items):
         if len(items) == 1 and isinstance(items[0], Token):
             return _expr_from_token(items[0])
         return items[0]  # "(" expr ")" grouping or array_lit
 
     def primary(self, items):
+        """Handles variable access, function calls, and array indexing."""
         result = Variable(value=str(items[0]))
         for suffix in items[1:]:
             if isinstance(suffix, list):  # call argument list
@@ -45,17 +49,14 @@ class AevixTransformer(Transformer):
         return items[0]
 
     def call_suffix(self, items):
-        if not items:
-            return []
-        return items[0]
+        return items[0] if items else []
 
     def index_suffix(self, items):
         return items[0]
 
     def array_lit(self, items):
-        if items:
-            return ArrayLit(elements=items[0])
-        return ArrayLit(elements=[])
+        elements = items[0] if items else []
+        return ArrayLit(elements=elements)
 
     def array_items(self, items):
         return list(items)
@@ -63,37 +64,26 @@ class AevixTransformer(Transformer):
     def arg_list(self, items):
         return list(items)
 
-    # ---- Unary (-, !) ----
+    # ---- Unary Operators ----
     def factor(self, items):
         if len(items) == 2:
-            op = str(items[0])
-            operand = items[1]
-            if op == "-":
-                return Neg(value=operand)
-            return Not(value=operand)
+            op, operand = str(items[0]), items[1]
+            return Neg(value=operand) if op == "-" else Not(value=operand)
         return items[0]
 
-    # ---- Binary operators by precedence: -*/ +- cmp and or ----
+    # ---- Binary Operators ----
     def term(self, items):
         result = items[0]
         for i in range(1, len(items), 2):
-            op = str(items[i])
-            right = items[i + 1]
-            if op == '*':
-                result = Mul(left=result, right=right)
-            elif op == '/':
-                result = Div(left=result, right=right)
+            op, right = str(items[i]), items[i + 1]
+            result = Mul(left=result, right=right) if op == '*' else Div(left=result, right=right)
         return result
 
     def arith(self, items):
         result = items[0]
         for i in range(1, len(items), 2):
-            op = str(items[i])
-            right = items[i + 1]
-            if op == '+':
-                result = Add(left=result, right=right)
-            elif op == '-':
-                result = Sub(left=result, right=right)
+            op, right = str(items[i]), items[i + 1]
+            result = Add(left=result, right=right) if op == '+' else Sub(left=result, right=right)
         return result
 
     def comparision(self, items):
@@ -120,7 +110,15 @@ class AevixTransformer(Transformer):
 
     # ---- Types ----
     def type_name(self, items):
+        return items[0]
+
+    def scalar_type(self, items):
         return str(items[0])
+
+    def array_type(self, items):
+        base = items[0]
+        size = str(items[1]) if len(items) > 1 else ""
+        return f"{base}[{size}]"
 
     # ---- Statements ----
     def stmt(self, items):
@@ -131,11 +129,9 @@ class AevixTransformer(Transformer):
 
     def let_stmt(self, items):
         name = str(items[0])
-        var_type = None
-        value = items[1]
+        var_type, value = None, items[1]
         if isinstance(value, str):
-            var_type = value
-            value = items[2]
+            var_type, value = value, items[2]
         return Let(name=name, value=value, var_type=var_type)
 
     def block(self, items):
@@ -148,33 +144,27 @@ class AevixTransformer(Transformer):
         return Print(value=items[0])
 
     def if_stmt(self, items):
-        condition = items[0]
-        then_body = items[1]
-        else_body = None
-        if len(items) > 2:
-            else_body = items[2]
+        condition, then_body = items[0], items[1]
+        else_body = items[2] if len(items) > 2 else None
         return If(condition=condition, then_body=then_body, else_body=else_body)
 
     def else_branch(self, items):
         branch = items[0]
-        if isinstance(branch, If):
-            return [branch]
-        return list(branch)
+        return [branch] if isinstance(branch, If) else list(branch)
 
     def while_stmt(self, items):
         return While(condition=items[0], body=items[1])
 
     def for_stmt(self, items):
         parts = list(items)
-        init, cond, step = None, None, None
-        if len(parts) >= 1:
-            init = parts[0]
-        if len(parts) >= 2:
-            cond = parts[1]
-        if len(parts) >= 3:
-            step = parts[2]
+        init = parts[0] if len(parts) >= 1 else None
+        cond = parts[1] if len(parts) >= 2 else None
+        step = parts[2] if len(parts) >= 3 else None
         body = parts[-1]
         return For(init=init, condition=cond, step=step, body=body)
+
+    def for_in_stmt(self, items):
+        return ForIn(var=str(items[0]), iterable=items[1], body=items[2])
 
     def for_init(self, items):
         return items[0]
@@ -184,31 +174,24 @@ class AevixTransformer(Transformer):
 
     def for_let(self, items):
         name = str(items[0])
-        var_type = None
-        value = items[1]
+        var_type, value = None, items[1]
         if isinstance(value, str):
-            var_type = value
-            value = items[2]
+            var_type, value = value, items[2]
         return Let(name=name, value=value, var_type=var_type)
 
     def for_assign(self, items):
         return Assign(name=items[0], value=items[1])
 
     def return_stmt(self, items):
-        if items:
-            return Return(value=items[0])
-        return Return()
+        return Return(value=items[0]) if items else Return()
 
     def assign_stmt(self, items):
         return Assign(name=items[0], value=items[1])
 
     # ---- Functions ----
     def func_decl(self, items):
-        name = str(items[0])
-        params = items[1]
-        return_type = None
-        body = []
-        # items: [name, params, optional_type, block]
+        name, params = str(items[0]), items[1]
+        return_type, body = None, []
         idx = 2
         if idx < len(items) and isinstance(items[idx], str):
             return_type = items[idx]
@@ -221,9 +204,7 @@ class AevixTransformer(Transformer):
 
     def param(self, items):
         name = str(items[0])
-        var_type = None
-        if len(items) > 1:
-            var_type = items[1]
+        var_type = items[1] if len(items) > 1 else None
         return Param(name=name, var_type=var_type)
 
     # ---- Program ----

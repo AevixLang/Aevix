@@ -110,6 +110,28 @@ def test_func_decl_void():
     assert fd["params"][0]["var_type"] == "string"
 
 
+def test_typed_fixed_array_let():
+    ast = parse_dict("let x: int[3] = [1, 2, 3];\n")
+    let = ast["body"][0]
+    assert let["type"] == "Let"
+    assert let["var_type"] == "int[3]"
+
+
+def test_typed_open_array_let():
+    ast = parse_dict("let y: float[] = [1.5, 2.5];\n")
+    let = ast["body"][0]
+    assert let["type"] == "Let"
+    assert let["var_type"] == "float[]"
+
+
+def test_typed_array_func_signature():
+    ast = parse_dict("func f(a: int[2]) : int[3] { return [0, 0, 0]; }\n")
+    fd = ast["body"][0]
+    assert fd["type"] == "FuncDecl"
+    assert fd["params"][0]["var_type"] == "int[2]"
+    assert fd["return_type"] == "int[3]"
+
+
 def test_func_call():
     ast = parse_dict("print add(4, 5);\n")
     call = ast["body"][0]["value"]

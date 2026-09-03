@@ -1,15 +1,18 @@
 # ============================================================================
-# Aevix frontend — AST node definitions
+# Aevix Frontend: AST Node Definitions
 #
-# One dataclass per language construct, plus `to_dict` which produces the JSON
-# schema that json_reader (backend) consumes. Use the `type` string equality
-# guard when such a node already carried a field named "type".
+# Defines the structure of the Abstract Syntax Tree (AST). Each language
+# construct is represented by a dataclass. The `to_dict` utility converts
+# the AST into a JSON schema consumed by the backend's json_reader.
 # ============================================================================
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Union, Optional
 
-
 def to_dict(obj):
+    """
+    Recursively converts AST dataclasses and lists into dictionaries
+    for JSON serialization.
+    """
     if hasattr(obj, "__dataclass_fields__"):
         d = {"type": obj.type}
         for k, v in obj.__dict__.items():
@@ -18,16 +21,16 @@ def to_dict(obj):
         return d
     elif isinstance(obj, list):
         return [to_dict(item) for item in obj]
-    else:
-        return obj
+    return obj
 
-
+# ----------------------------------------------------------------------------
 # Expressions
+# ----------------------------------------------------------------------------
+
 @dataclass
 class Number:
     value: int
     type: str = "Number"
-
 
 @dataclass
 class Variable:
@@ -66,13 +69,11 @@ class Add:
     right: object
     type: str = "Add"
 
-
 @dataclass
 class Sub:
     left: object
     right: object
     type: str = "Sub"
-
 
 @dataclass
 class Mul:
@@ -80,19 +81,16 @@ class Mul:
     right: object
     type: str = "Mul"
 
-
 @dataclass
 class Div:
     left: object
     right: object
     type: str = "Div"
 
-
 @dataclass
 class Neg:
     value: object
     type: str = "Neg"
-
 
 @dataclass
 class CmpOp:
@@ -101,13 +99,11 @@ class CmpOp:
     right: object
     type: str = "CmpOp"
 
-
 @dataclass
 class And:
     left: object
     right: object
     type: str = "And"
-
 
 @dataclass
 class Or:
@@ -115,12 +111,10 @@ class Or:
     right: object
     type: str = "Or"
 
-
 @dataclass
 class Not:
     value: object
     type: str = "Not"
-
 
 @dataclass
 class Call:
@@ -128,8 +122,10 @@ class Call:
     args: list
     type: str = "Call"
 
-
+# ----------------------------------------------------------------------------
 # Statements
+# ----------------------------------------------------------------------------
+
 @dataclass
 class Let:
     name: str
@@ -137,18 +133,15 @@ class Let:
     var_type: Optional[str] = None
     type: str = "Let"
 
-
 @dataclass
 class Hot:
     body: list
     type: str = "Hot"
 
-
 @dataclass
 class Print:
     value: object
     type: str = "Print"
-
 
 @dataclass
 class If:
@@ -157,13 +150,11 @@ class If:
     else_body: Optional[list] = None
     type: str = "If"
 
-
 @dataclass
 class While:
     condition: object
     body: list
     type: str = "While"
-
 
 @dataclass
 class For:
@@ -173,12 +164,17 @@ class For:
     step: Optional[object] = None
     type: str = "For"
 
+@dataclass
+class ForIn:
+    var: str
+    iterable: object
+    body: list
+    type: str = "ForIn"
 
 @dataclass
 class Return:
     value: Optional[object] = None
     type: str = "Return"
-
 
 @dataclass
 class Assign:
@@ -186,13 +182,11 @@ class Assign:
     value: object
     type: str = "Assign"
 
-
 @dataclass
 class Param:
     name: str
     var_type: Optional[str] = None
     type: str = "Param"
-
 
 @dataclass
 class FuncDecl:
@@ -201,7 +195,6 @@ class FuncDecl:
     body: list
     return_type: Optional[str] = None
     type: str = "FuncDecl"
-
 
 @dataclass
 class Program:
