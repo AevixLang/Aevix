@@ -33,6 +33,11 @@ CodeGenerator::CodeGenerator()
     named_types.emplace_back();
 }
 
+// Hard-fail on a semantic error: throw so no broken IR is ever emitted.
+void CodeGenerator::error(const std::string& msg) {
+    throw std::runtime_error(msg);
+}
+
 void CodeGenerator::push_scope() {
     named_values.emplace_back();
     named_types.emplace_back();
@@ -96,14 +101,12 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (alloc) {
             return builder->CreateLoad(ty, alloc, var->name);
         }
-        std::cerr << "❌ Variable not found: " << var->name << std::endl;
-        return nullptr;
+        error("Variable not found: " + var->name);
     }
     else if (auto call = std::dynamic_pointer_cast<Call>(expr)) {
         auto it = functions.find(call->callee);
         if (it == functions.end()) {
-            std::cerr << "❌ Unknown function: " << call->callee << std::endl;
-            return nullptr;
+            error("Unknown function: " + call->callee);
         }
         std::vector<llvm::Value*> args;
         for (auto& a : call->args) {
@@ -261,8 +264,7 @@ llvm::Value* CodeGenerator::generate_icmp(const std::string& op,
     if (op == ">")  return builder->CreateICmpSGT(left, right, "cmptmp");
     if (op == "<=") return builder->CreateICmpSLE(left, right, "cmptmp");
     if (op == ">=") return builder->CreateICmpSGE(left, right, "cmptmp");
-    std::cerr << "❌ Unknown icmp op: " << op << std::endl;
-    return nullptr;
+    error("Unknown icmp operator: " + op);
 }
 
 // Ordered floating-point comparison helper (shared by ==, !=, <, >, <=, >=)
@@ -274,8 +276,7 @@ llvm::Value* CodeGenerator::generate_fcmp(const std::string& op,
     if (op == ">")  return builder->CreateFCmpOGT(left, right, "cmptmp");
     if (op == "<=") return builder->CreateFCmpOLE(left, right, "cmptmp");
     if (op == ">=") return builder->CreateFCmpOGE(left, right, "cmptmp");
-    std::cerr << "❌ Unknown fcmp op: " << op << std::endl;
-    return nullptr;
+    error("Unknown fcmp operator: " + op);
 }
 
 // ============================================================================
@@ -296,8 +297,7 @@ void CodeGenerator::generate_assign(const Assign& a) {
     llvm::Type* ty = nullptr;
     llvm::Value* alloc = lookup_var(a.name, ty);
     if (!alloc) {
-        std::cerr << "❌ Cannot assign to unknown variable: " << a.name << std::endl;
-        return;
+        error("Cannot assign to unknown variable: " + a.name);
     }
     llvm::Value* val = generate_expr(a.value);
     if (!val) return;

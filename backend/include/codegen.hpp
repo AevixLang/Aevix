@@ -5,6 +5,8 @@
 #include <llvm/IR/Module.h>
 #include <map>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 class CodeGenerator {
@@ -24,6 +26,7 @@ private:
     void define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty);
     llvm::Value* lookup_var(const std::string& name, llvm::Type*& ty);
     llvm::Type* llvm_type_for(const std::string& tn);
+    [[noreturn]] void error(const std::string& msg);
 
 public:
     CodeGenerator();

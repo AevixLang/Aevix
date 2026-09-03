@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.parser import parse
+from src.parser import parse, format_parse_error
 
 
 def to_dict(obj):
@@ -191,3 +191,32 @@ def test_bool_literal():
     assert ast["body"][0]["value"]["type"] == "Bool"
     assert ast["body"][0]["value"]["value"] is True
     assert ast["body"][1]["value"]["value"] is False
+
+
+def _parse_error_text(code):
+    try:
+        parse(code)
+    except Exception as e:
+        return format_parse_error(code, e)
+    return None
+
+
+def test_format_parse_error_shows_position():
+    code = "let x = 5;\nlet y = ;\n"
+    msg = _parse_error_text(code)
+    assert msg is not None
+    assert "line 2" in msg
+    assert "column" in msg
+    assert "^" in msg
+
+
+def test_format_parse_error_unexpected_char():
+    code = "let z = @;\n"
+    msg = _parse_error_text(code)
+    assert msg is not None
+    assert "character" in msg
+
+
+def test_format_parse_error_non_lark():
+    msg = format_parse_error("abc", RuntimeError("boom"))
+    assert msg == "boom"
