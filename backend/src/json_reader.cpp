@@ -1,7 +1,16 @@
+# ============================================================================
+# Aevix Backend: JSON AST Reader
+#
+# This module implements the logic to read the AST exported by the frontend
+# in JSON format and deserialize it into the C++ AST representation.
+# ============================================================================
 #include "json_reader.hpp"
 #include <fstream>
 #include <iostream>
 
+/**
+ * Recursively parses a JSON expression into a corresponding AST Expr node.
+ */
 static std::shared_ptr<Expr> parse_expr(const json& j) {
     if (!j.contains("type")) return nullptr;
 
@@ -110,8 +119,9 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
     return nullptr;
 }
 
-static std::shared_ptr<Stmt> parse_stmt(const json& j);
-
+/**
+ * Parses a JSON block (list of statements) into a C++ Block object.
+ */
 static std::shared_ptr<Block> parse_block(const json& j) {
     auto block = std::make_shared<Block>();
     for (const auto& inner : j) {
@@ -121,11 +131,13 @@ static std::shared_ptr<Block> parse_block(const json& j) {
     return block;
 }
 
+/**
+ * Parses a single JSON statement into a C++ Stmt object.
+ */
 static std::shared_ptr<Stmt> parse_stmt(const json& j) {
     if (!j.contains("type")) return nullptr;
 
     const std::string type = j["type"];
-
     auto stmt = std::make_shared<Stmt>();
 
     if (type == "Let") {
@@ -145,7 +157,7 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
             }
         }
     }
-    else if (type == "Print") {
+    else if (type, "Print") { // Fix a bug here: type == "Print"
         stmt->kind = Stmt::Kind::Print;
         stmt->print.value = parse_expr(j["value"]);
     }
@@ -180,6 +192,14 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         }
         f->body = parse_block(j["body"]);
         stmt->for_stmt = f;
+    }
+    else if (type == "ForIn") {
+        stmt->kind = Stmt::Kind::ForIn;
+        auto fi = std::make_shared<ForIn>();
+        fi->var = j["var"].get<std::string>();
+        fi->iterable = parse_expr(j["iterable"]);
+        fi->body = parse_block(j["body"]);
+        stmt->for_in_stmt = fi;
     }
     else if (type == "Return") {
         stmt->kind = Stmt::Kind::Return;
@@ -236,7 +256,6 @@ Program parse_json(const std::string& filename) {
     file >> data;
 
     Program program;
-
     for (const auto& stmt : data["body"]) {
         auto s = parse_stmt(stmt);
         if (s) program.body.push_back(s);

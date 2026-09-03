@@ -16,6 +16,7 @@ private:
     std::unique_ptr<llvm::IRBuilder<>> builder;
     llvm::Function* main_func;
     llvm::BasicBlock* main_entry_block;
+    llvm::Function* oob_func;
     std::map<std::string, llvm::Function*> functions;
     std::vector<std::map<std::string, llvm::Value*>> named_values;
     std::vector<std::map<std::string, llvm::Type*>> named_types;
@@ -23,9 +24,13 @@ private:
 
     void push_scope();
     void pop_scope();
+    void build_oob_runtime();
     void define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty);
     llvm::Value* lookup_var(const std::string& name, llvm::Type*& ty);
     llvm::Type* llvm_type_for(const std::string& tn);
+    bool parse_type(const std::string& tn, std::string& base, int& arr_size);
+    llvm::Type* scalar_type_for(const std::string& base);
+    llvm::Type* signature_type_for(const std::string& tn, const std::string& ctx);
     [[noreturn]] void error(const std::string& msg);
 
     // Type-checking helpers: validate that a generated value is a numeric type
@@ -58,6 +63,7 @@ public:
     void generate_if(const If& if_stmt);
     void generate_while(const While& w);
     void generate_for(const For& f);
+    void generate_for_in(const ForIn& f);
     void generate_return(const Return& r);
     void generate_assign(const Assign& a);
     void declare_func(const FuncDecl& fd);

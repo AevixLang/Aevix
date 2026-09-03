@@ -132,6 +132,12 @@ struct For {
     std::shared_ptr<Block> body;
 };
 
+struct ForIn {
+    std::string var;
+    std::shared_ptr<Expr> iterable;
+    std::shared_ptr<Block> body;
+};
+
 struct Return {
     std::shared_ptr<Expr> value;
 };
@@ -149,7 +155,7 @@ struct FuncDecl {
 };
 
 struct Stmt {
-    enum class Kind { Let, Hot, Print, If, While, For, Return, Assign, FuncDecl, CallStmt };
+    enum class Kind { Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt };
     Kind kind;
     Let let;
     Hot hot;
@@ -157,6 +163,7 @@ struct Stmt {
     std::shared_ptr<If> if_stmt;
     std::shared_ptr<While> while_stmt;
     std::shared_ptr<For> for_stmt;
+    std::shared_ptr<ForIn> for_in_stmt;
     std::shared_ptr<Return> return_stmt;
     std::shared_ptr<Assign> assign_stmt;
     std::shared_ptr<FuncDecl> func_decl;
