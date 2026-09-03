@@ -76,6 +76,140 @@ llvm::Type* CodeGenerator::llvm_type_for(const std::string& tn) {
     return nullptr;
 }
 
+// A numeric value is either an int32 or a double; everything else (bool,
+// string pointer) is not numeric and cannot take part in arithmetic.
+bool CodeGenerator::is_numeric(llvm::Type* ty) {
+    return ty->isIntegerTy(32) || ty->isDoubleTy();
+}
+
+void CodeGenerator::require_numeric(llvm::Value* v, const std::string& ctx) {
+    if (!is_numeric(v->getType())) {
+        error("Operator " + ctx + " requires numeric operands");
+    }
+}
+
+void CodeGenerator::require_bool(llvm::Value* v, const std::string& ctx) {
+    require_bool_type(v->getType(), ctx);
+}
+
+void CodeGenerator::require_bool_type(llvm::Type* ty, const std::string& ctx) {
+    if (!ty->isIntegerTy(1)) {
+        error(ctx + " requires a bool condition");
+    }
+}
+
+// Friendly Aevix type name used in error messages.
+std::string CodeGenerator::llvm_type_name(llvm::Type* ty) {
+    if (ty->isIntegerTy(32)) return "int";
+    if (ty->isDoubleTy()) return "float";
+    if (ty->isIntegerTy(1)) return "bool";
+    if (ty->isPointerTy()) return "string";
+    if (ty->isArrayTy()) return "array";
+    return "unknown";
+}
+
+// ============================================================================
+// Arrays
+// ============================================================================
+
+// Determine the Aevix element type of an expression. Used to infer the element
+// type of an array literal from its first element (scalars -> int/float/bool/
+// string, nested arrays -> recursive array type, array variables -> their type).
+llvm::Type* CodeGenerator::element_type_of(const std::shared_ptr<Expr>& e) {
+    if (auto n = std::dynamic_pointer_cast<Number>(e)) {
+        return builder->getInt32Ty();
+    } else if (auto f = std::dynamic_pointer_cast<Float>(e)) {
+        return builder->getDoubleTy();
+    } else if (auto b = std::dynamic_pointer_cast<Bool>(e)) {
+        return builder->getInt1Ty();
+    } else if (auto s = std::dynamic_pointer_cast<String>(e)) {
+        return llvm::PointerType::getUnqual(*context);
+    } else if (auto al = std::dynamic_pointer_cast<ArrayLit>(e)) {
+        return build_array_type(*al);
+    } else if (auto var = std::dynamic_pointer_cast<Variable>(e)) {
+        llvm::Type* t = nullptr;
+        llvm::Value* alloc = lookup_var(var->name, t);
+        if (!alloc) error("Variable not found: " + var->name);
+        if (!t->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+        return t;
+    }
+    error("Array elements must be literals of a single type");
+}
+
+// Build the LLVM array type for an array literal: [N x ElemTy], where ElemTy is
+// inferred from the (uniform) literal elements.
+llvm::Type* CodeGenerator::build_array_type(const ArrayLit& al) {
+    if (al.elements.empty()) {
+        error("Cannot infer the element type of an empty array ([])");
+    }
+    llvm::Type* elem = element_type_of(al.elements[0]);
+    for (std::size_t i = 1; i < al.elements.size(); ++i) {
+        llvm::Type* other = element_type_of(al.elements[i]);
+        if (other != elem) {
+            error("Array elements must share a single type (got " +
+                  llvm_type_name(elem) + " and " + llvm_type_name(other) + ")");
+        }
+    }
+    return llvm::ArrayType::get(elem, al.elements.size());
+}
+
+// Build a constant for an array literal for use in an alloca initial store.
+llvm::Constant* CodeGenerator::build_array_constant(const ArrayLit& al) {
+    llvm::Type* arr_ty = build_array_type(al);
+    std::vector<llvm::Constant*> cels;
+    cels.reserve(al.elements.size());
+    for (const auto& e : al.elements) {
+        if (auto n = std::dynamic_pointer_cast<Number>(e)) {
+            cels.push_back(builder->getInt32(n->value));
+        } else if (auto f = std::dynamic_pointer_cast<Float>(e)) {
+            cels.push_back(llvm::ConstantFP::get(builder->getDoubleTy(), f->value));
+        } else if (auto b = std::dynamic_pointer_cast<Bool>(e)) {
+            cels.push_back(builder->getInt1(b->value ? 1 : 0));
+        } else if (auto s = std::dynamic_pointer_cast<String>(e)) {
+            cels.push_back(builder->CreateGlobalString(s->value, "str"));
+        } else if (auto inner = std::dynamic_pointer_cast<ArrayLit>(e)) {
+            cels.push_back(build_array_constant(*inner));
+        } else {
+            error("Array elements must be literals of a single type");
+        }
+    }
+    return llvm::ConstantArray::get(
+        llvm::cast<llvm::ArrayType>(arr_ty), cels);
+}
+
+// Resolve an (possibly nested) index expression to a pointer to its leaf
+// element. Walks the base variable's alloca, applying one in-bounds GEP per
+// index dimension from the outermost (nearest the base) inward.
+llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty) {
+    std::vector<const Index*> chain;
+    const Expr* cur = &top;
+    while (auto ix = dynamic_cast<const Index*>(cur)) {
+        chain.push_back(ix);
+        cur = ix->object.get();
+    }
+    auto var = dynamic_cast<const Variable*>(cur);
+    if (!var) error("Invalid array access target");
+
+    llvm::Type* arr_ty = nullptr;
+    llvm::Value* alloc = lookup_var(var->name, arr_ty);
+    if (!alloc) error("Variable not found: " + var->name);
+    if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+
+    llvm::Value* ptr = alloc;
+    llvm::Type* cur_arr = arr_ty;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        if (!cur_arr->isArrayTy()) error("Indexing a non-array value");
+        llvm::Value* idx = generate_expr((*it)->index);
+        if (!idx) error("Invalid array index expression");
+        if (!idx->getType()->isIntegerTy(32)) error("Array index must be an integer");
+        ptr = builder->CreateInBoundsGEP(
+            cur_arr, ptr, {builder->getInt32(0), idx}, "idx");
+        cur_arr = cur_arr->getArrayElementType();
+    }
+    elem_ty = cur_arr;
+    return ptr;
+}
+
 // ============================================================================
 // Expressions: literals, arithmetic, comparisons, logical ops, function calls
 // ============================================================================
@@ -103,27 +237,51 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         }
         error("Variable not found: " + var->name);
     }
+    else if (auto al = std::dynamic_pointer_cast<ArrayLit>(expr)) {
+        return build_array_constant(*al);
+    }
+    else if (auto ix = std::dynamic_pointer_cast<Index>(expr)) {
+        llvm::Type* elem_ty = nullptr;
+        llvm::Value* ptr = gen_index_ptr(*ix, elem_ty);
+        return builder->CreateLoad(elem_ty, ptr, "idxtmp");
+    }
     else if (auto call = std::dynamic_pointer_cast<Call>(expr)) {
         auto it = functions.find(call->callee);
         if (it == functions.end()) {
             error("Unknown function: " + call->callee);
         }
+        llvm::Function* func = it->second;
         std::vector<llvm::Value*> args;
-        for (auto& a : call->args) {
-            auto v = generate_expr(a);
+        for (std::size_t i = 0; i < call->args.size(); ++i) {
+            auto v = generate_expr(call->args[i]);
             if (!v) return nullptr;
+            if (i < func->arg_size()) {
+                llvm::Type* param_ty = func->getArg(i)->getType();
+                if (param_ty != v->getType()) {
+                    if (param_ty->isDoubleTy() && v->getType()->isIntegerTy(32)) {
+                        v = builder->CreateSIToFP(v, builder->getDoubleTy(), "cast");
+                    } else {
+                        error("Argument " + std::to_string(i + 1) +
+                              " of '" + call->callee + "' expects " +
+                              llvm_type_name(param_ty) + ", got " +
+                              llvm_type_name(v->getType()));
+                    }
+                }
+            }
             args.push_back(v);
         }
-        if (it->second->getReturnType()->isVoidTy()) {
-            builder->CreateCall(it->second, args);
+        if (func->getReturnType()->isVoidTy()) {
+            builder->CreateCall(func, args);
             return nullptr;
         }
-        return builder->CreateCall(it->second, args, "calltmp");
+        return builder->CreateCall(func, args, "calltmp");
     }
     else if (auto add = std::dynamic_pointer_cast<Add>(expr)) {
         auto left = generate_expr(add->left);
         auto right = generate_expr(add->right);
         if (!left || !right) return nullptr;
+        require_numeric(left, "+");
+        require_numeric(right, "+");
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -135,6 +293,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         auto left = generate_expr(sub->left);
         auto right = generate_expr(sub->right);
         if (!left || !right) return nullptr;
+        require_numeric(left, "-");
+        require_numeric(right, "-");
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -146,6 +306,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         auto left = generate_expr(mul->left);
         auto right = generate_expr(mul->right);
         if (!left || !right) return nullptr;
+        require_numeric(left, "*");
+        require_numeric(right, "*");
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -157,6 +319,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         auto left = generate_expr(div->left);
         auto right = generate_expr(div->right);
         if (!left || !right) return nullptr;
+        require_numeric(left, "/");
+        require_numeric(right, "/");
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -167,6 +331,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     else if (auto neg = std::dynamic_pointer_cast<Neg>(expr)) {
         auto val = generate_expr(neg->value);
         if (!val) return nullptr;
+        require_numeric(val, "unary -");
         if (val->getType()->isDoubleTy()) return builder->CreateFNeg(val, "negtmp");
         return builder->CreateNeg(val, "negtmp");
     }
@@ -174,6 +339,11 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         auto left = generate_expr(cmp->left);
         auto right = generate_expr(cmp->right);
         if (!left || !right) return nullptr;
+        bool both_numeric = is_numeric(left->getType()) && is_numeric(right->getType());
+        bool both_bool = left->getType()->isIntegerTy(1) && right->getType()->isIntegerTy(1);
+        if (!both_numeric && !both_bool) {
+            error("Comparison operands must be both numeric or both bool");
+        }
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -189,6 +359,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     else if (auto not_ = std::dynamic_pointer_cast<Not>(expr)) {
         auto val = generate_expr(not_->value);
         if (!val) return nullptr;
+        require_bool(val, "!");
         return builder->CreateXor(val, builder->getInt1(true), "nottmp");
     }
     else if (auto and_ = std::dynamic_pointer_cast<And>(expr)) {
@@ -206,17 +377,19 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
 llvm::Value* CodeGenerator::generate_logical_and(const And& and_) {
     auto lhs = generate_expr(and_.left);
     if (!lhs) return nullptr;
+    require_bool(lhs, "&&");
 
     auto current = builder->GetInsertBlock();
     llvm::Function* func = current->getParent();
     auto rhs_block = llvm::BasicBlock::Create(*context, "and.rhs", func);
-    auto merge_block = llvm::BasicBlock::Create(*context, "and.merge", func);
+    auto merge_block = llvm::BasicBlock::Create(*context, "and.merge");
 
     builder->CreateCondBr(lhs, rhs_block, merge_block);
 
     builder->SetInsertPoint(rhs_block);
     auto rhs = generate_expr(and_.right);
     if (!rhs) return nullptr;
+    require_bool(rhs, "&&");
     if (!block_has_terminator(builder->GetInsertBlock())) {
         builder->CreateBr(merge_block);
     }
@@ -232,17 +405,19 @@ llvm::Value* CodeGenerator::generate_logical_and(const And& and_) {
 llvm::Value* CodeGenerator::generate_logical_or(const Or& or_) {
     auto lhs = generate_expr(or_.left);
     if (!lhs) return nullptr;
+    require_bool(lhs, "||");
 
     auto current = builder->GetInsertBlock();
     llvm::Function* func = current->getParent();
     auto rhs_block = llvm::BasicBlock::Create(*context, "or.rhs", func);
-    auto merge_block = llvm::BasicBlock::Create(*context, "or.merge", func);
+    auto merge_block = llvm::BasicBlock::Create(*context, "or.merge");
 
     builder->CreateCondBr(lhs, merge_block, rhs_block);
 
     builder->SetInsertPoint(rhs_block);
     auto rhs = generate_expr(or_.right);
     if (!rhs) return nullptr;
+    require_bool(rhs, "||");
     if (!block_has_terminator(builder->GetInsertBlock())) {
         builder->CreateBr(merge_block);
     }
@@ -288,19 +463,73 @@ void CodeGenerator::generate_let(const Let& let) {
     if (!val) return;
 
     llvm::Type* ty = val->getType();
+
+    // If an explicit type was declared, it must be compatible with the value's
+    // type: widening (int -> float) is allowed and applied implicitly; any
+    // narrowing or category mismatch is a compile error.
+    if (!let.var_type.empty()) {
+        llvm::Type* declared = llvm_type_for(let.var_type);
+        if (!declared) error("Unknown type: " + let.var_type);
+
+        if (declared->isDoubleTy() && val->getType()->isIntegerTy(32)) {
+            val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
+            ty = declared;
+        } else if (declared != val->getType()) {
+            error("Type mismatch for '" + let.name +
+                  "': cannot assign " + llvm_type_name(val->getType()) +
+                  " to " + let.var_type);
+        }
+    }
+
     auto alloca = builder->CreateAlloca(ty, nullptr, let.name);
     builder->CreateStore(val, alloca);
     define_var(let.name, alloca, ty);
 }
 
 void CodeGenerator::generate_assign(const Assign& a) {
+    // Indexed lvalue: a[i] = v (possibly nested), written through a GEP pointer.
+    if (auto ix = std::dynamic_pointer_cast<Index>(a.name)) {
+        llvm::Type* elem_ty = nullptr;
+        llvm::Value* ptr = gen_index_ptr(*ix, elem_ty);
+        llvm::Value* val = generate_expr(a.value);
+        if (!val) return;
+        if (elem_ty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
+            val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
+        } else if (elem_ty->isArrayTy()) {
+            error("Cannot assign an array to a single array element");
+        } else if (elem_ty != val->getType()) {
+            error("Type mismatch for indexed assignment: cannot assign " +
+                  llvm_type_name(val->getType()) + " to " +
+                  llvm_type_name(elem_ty));
+        }
+        builder->CreateStore(val, ptr);
+        return;
+    }
+
+    auto var = std::dynamic_pointer_cast<Variable>(a.name);
+    if (!var) {
+        error("Invalid assignment target");
+    }
+
     llvm::Type* ty = nullptr;
-    llvm::Value* alloc = lookup_var(a.name, ty);
+    llvm::Value* alloc = lookup_var(var->name, ty);
     if (!alloc) {
-        error("Cannot assign to unknown variable: " + a.name);
+        error("Cannot assign to unknown variable: " + var->name);
     }
     llvm::Value* val = generate_expr(a.value);
     if (!val) return;
+
+    // Check type compatibility: widening int->float is applied automatically;
+    // narrowing (float->int) and category mismatches are errors.
+    llvm::Type* val_ty = val->getType();
+    if (ty->isDoubleTy() && val_ty->isIntegerTy(32)) {
+        val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
+    } else if (ty != val_ty) {
+        error("Type mismatch for '" + var->name +
+              "': cannot assign " + llvm_type_name(val_ty) +
+              " to " + llvm_type_name(ty));
+    }
+
     builder->CreateStore(val, alloc);
 }
 
@@ -331,7 +560,7 @@ void CodeGenerator::generate_print(const Print& print) {
         format_str = builder->CreateGlobalString("%s\n", "format");
     }
     else {
-        return;
+        error("Cannot print a value of type " + llvm_type_name(val->getType()));
     }
 
     auto printf_type = llvm::FunctionType::get(
@@ -356,6 +585,7 @@ void CodeGenerator::generate_block(const std::shared_ptr<Block>& block) {
 void CodeGenerator::generate_if(const If& if_stmt) {
     auto cond = generate_expr(if_stmt.condition);
     if (!cond) return;
+    require_bool(cond, "if");
 
     auto current = builder->GetInsertBlock();
     if (current->getTerminatorOrNull()) return;
@@ -395,6 +625,7 @@ void CodeGenerator::generate_while(const While& w) {
     builder->SetInsertPoint(cond_block);
     auto cond = generate_expr(w.condition);
     if (!cond) return;
+    require_bool(cond, "while");
     builder->CreateCondBr(cond, body_block, merge_block);
 
     builder->SetInsertPoint(body_block);
@@ -426,6 +657,7 @@ void CodeGenerator::generate_for(const For& f) {
     if (f.condition) {
         auto cond = generate_expr(f.condition);
         if (!cond) return;
+        require_bool(cond, "for condition");
         builder->CreateCondBr(cond, body_block, merge_block);
     } else {
         builder->CreateBr(body_block);

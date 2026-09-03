@@ -27,6 +27,15 @@ struct String : public Expr {
     std::string value;
 };
 
+struct ArrayLit : public Expr {
+    std::vector<std::shared_ptr<Expr>> elements;
+};
+
+struct Index : public Expr {
+    std::shared_ptr<Expr> object;
+    std::shared_ptr<Expr> index;
+};
+
 struct Variable : public Expr {
     std::string name;
 };
@@ -128,7 +137,7 @@ struct Return {
 };
 
 struct Assign {
-    std::string name;
+    std::shared_ptr<Expr> name;   // Variable or Index (lvalue)
     std::shared_ptr<Expr> value;
 };
 

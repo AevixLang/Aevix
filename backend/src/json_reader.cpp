@@ -32,6 +32,19 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
         var->name = j["value"];
         return var;
     }
+    else if (type == "ArrayLit") {
+        auto al = std::make_shared<ArrayLit>();
+        for (const auto& e : j["elements"]) {
+            al->elements.push_back(parse_expr(e));
+        }
+        return al;
+    }
+    else if (type == "Index") {
+        auto ix = std::make_shared<Index>();
+        ix->object = parse_expr(j["object"]);
+        ix->index = parse_expr(j["index"]);
+        return ix;
+    }
     else if (type == "Add") {
         auto add = std::make_shared<Add>();
         add->left = parse_expr(j["left"]);
@@ -179,7 +192,7 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
     else if (type == "Assign") {
         stmt->kind = Stmt::Kind::Assign;
         auto a = std::make_shared<Assign>();
-        a->name = j["name"];
+        a->name = parse_expr(j["name"]);
         a->value = parse_expr(j["value"]);
         stmt->assign_stmt = a;
     }

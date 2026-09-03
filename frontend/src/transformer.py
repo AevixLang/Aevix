@@ -8,7 +8,8 @@
 from lark import Transformer, Token
 from .ast import (
     Program, Let, Hot, Print, If, While, For, Return, Assign, FuncDecl, Param, Call,
-    Number, Variable, Float, Bool, String, Add, Sub, Mul, Div, Neg, CmpOp, And, Or, Not
+    Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
+    CmpOp, And, Or, Not
 )
 
 
@@ -29,17 +30,35 @@ class AevixTransformer(Transformer):
     def atom(self, items):
         if len(items) == 1 and isinstance(items[0], Token):
             return _expr_from_token(items[0])
-        if len(items) == 1:
-            return items[0]  # "(" expr ")" grouping
-        # CNAME call_suffix -> items = [CNAME, call_result]
-        if len(items) == 2:
-            return Call(callee=str(items[0]), args=items[1])
-        return None
+        return items[0]  # "(" expr ")" grouping or array_lit
+
+    def primary(self, items):
+        result = Variable(value=str(items[0]))
+        for suffix in items[1:]:
+            if isinstance(suffix, list):  # call argument list
+                result = Call(callee=result.value, args=suffix)
+            else:  # index suffix -> raw index expression
+                result = Index(object=result, index=suffix)
+        return result
+
+    def suffix(self, items):
+        return items[0]
 
     def call_suffix(self, items):
         if not items:
             return []
         return items[0]
+
+    def index_suffix(self, items):
+        return items[0]
+
+    def array_lit(self, items):
+        if items:
+            return ArrayLit(elements=items[0])
+        return ArrayLit(elements=[])
+
+    def array_items(self, items):
+        return list(items)
 
     def arg_list(self, items):
         return list(items)
@@ -173,7 +192,7 @@ class AevixTransformer(Transformer):
         return Let(name=name, value=value, var_type=var_type)
 
     def for_assign(self, items):
-        return Assign(name=str(items[0]), value=items[1])
+        return Assign(name=items[0], value=items[1])
 
     def return_stmt(self, items):
         if items:
@@ -181,7 +200,7 @@ class AevixTransformer(Transformer):
         return Return()
 
     def assign_stmt(self, items):
-        return Assign(name=str(items[0]), value=items[1])
+        return Assign(name=items[0], value=items[1])
 
     # ---- Functions ----
     def func_decl(self, items):

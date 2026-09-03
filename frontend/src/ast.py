@@ -50,6 +50,17 @@ class String:
     type: str = "String"
 
 @dataclass
+class ArrayLit:
+    elements: list
+    type: str = "ArrayLit"
+
+@dataclass
+class Index:
+    object: object
+    index: object
+    type: str = "Index"
+
+@dataclass
 class Add:
     left: object
     right: object
@@ -171,7 +182,7 @@ class Return:
 
 @dataclass
 class Assign:
-    name: str
+    name: object
     value: object
     type: str = "Assign"
 

@@ -126,7 +126,7 @@ def test_while_stmt():
     assert w["condition"]["op"] == "<"
     assign = w["body"][0]
     assert assign["type"] == "Assign"
-    assert assign["name"] == "i"
+    assert assign["name"] == {"type": "Variable", "value": "i"}
 
 
 def test_for_stmt():
@@ -220,3 +220,51 @@ def test_format_parse_error_unexpected_char():
 def test_format_parse_error_non_lark():
     msg = format_parse_error("abc", RuntimeError("boom"))
     assert msg == "boom"
+
+
+def test_line_and_block_comments_ignored():
+    code = ("// line comment\n"
+            "let a: int = 1; /* block */ let b: int = 2; // trailing\n"
+            "/*\n  multi-line\n*/\n"
+            "let c: int = a + b;\n")
+    ast = parse_dict(code)
+    assert len(ast["body"]) == 3
+    assert ast["body"][2]["name"] == "c"
+
+
+def test_array_literal_ast():
+    ast = parse_dict("let a = [1, 2, 3];\n")
+    value = ast["body"][0]["value"]
+    assert value["type"] == "ArrayLit"
+    assert [e["value"] for e in value["elements"]] == [1, 2, 3]
+
+
+def test_array_index_read_ast():
+    ast = parse_dict("print a[1];\n")
+    value = ast["body"][0]["value"]
+    assert value["type"] == "Index"
+    assert value["object"] == {"type": "Variable", "value": "a"}
+    assert value["index"] == {"type": "Number", "value": 1}
+
+
+def test_array_nested_index_ast():
+    ast = parse_dict("print m[1][0];\n")
+    value = ast["body"][0]["value"]
+    assert value["type"] == "Index"
+    assert value["object"]["type"] == "Index"
+    assert value["object"]["index"]["value"] == 1
+    assert value["index"]["value"] == 0
+
+
+def test_array_indexed_assign_ast():
+    ast = parse_dict("a[0] = 10;\n")
+    assign = ast["body"][0]
+    assert assign["type"] == "Assign"
+    assert assign["name"]["type"] == "Index"
+    assert assign["name"]["index"] == {"type": "Number", "value": 0}
+    assert assign["value"] == {"type": "Number", "value": 10}
+
+
+def test_array_empty_literal_ast():
+    ast = parse_dict("let a = [];\n")
+    assert ast["body"][0]["value"] == {"type": "ArrayLit", "elements": []}

@@ -28,6 +28,21 @@ private:
     llvm::Type* llvm_type_for(const std::string& tn);
     [[noreturn]] void error(const std::string& msg);
 
+    // Type-checking helpers: validate that a generated value is a numeric type
+    // (int/float) or a bool before an operation that requires it.
+    bool is_numeric(llvm::Type* ty);
+    void require_numeric(llvm::Value* v, const std::string& ctx);
+    void require_bool(llvm::Value* v, const std::string& ctx);
+    void require_bool_type(llvm::Type* ty, const std::string& ctx);
+    std::string llvm_type_name(llvm::Type* ty);
+
+    // Array helpers: element type inference, literal -> constant, and lvalue
+    // resolution through (possibly nested) index expressions.
+    llvm::Type* element_type_of(const std::shared_ptr<Expr>& e);
+    llvm::Type* build_array_type(const ArrayLit& al);
+    llvm::Constant* build_array_constant(const ArrayLit& al);
+    llvm::Value* gen_index_ptr(const Index& ix, llvm::Type*& elem_ty);
+
 public:
     CodeGenerator();
 

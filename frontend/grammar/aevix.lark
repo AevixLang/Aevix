@@ -26,10 +26,10 @@ while_stmt: "while" "(" expr ")" block
 for_stmt: "for" "(" for_init? ";" expr? ";" for_step? ")" block
 for_init: for_let | for_assign | expr
 for_let: "let" CNAME (":" type_name)? "=" expr
-for_assign: CNAME "=" expr
+for_assign: expr "=" expr
 for_step: for_assign | expr
 return_stmt: "return" expr? ";"
-assign_stmt: CNAME "=" expr ";"
+assign_stmt: expr "=" expr ";"
 
 block: "{" stmt* "}"
 
@@ -41,9 +41,14 @@ comparision: arith (CMPOP arith)*
 arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: MINUS factor | BANG factor | atom
-atom: NUMBER | FLOAT | BOOL | STRING | CNAME call_suffix? | "(" expr ")"
+atom: NUMBER | FLOAT | BOOL | STRING | array_lit | primary | "(" expr ")"
+primary: CNAME suffix*
+suffix: call_suffix | index_suffix
 call_suffix: "(" arg_list? ")"
 arg_list: expr ("," expr)*
+index_suffix: "[" expr "]"
+array_lit: "[" array_items? "]"
+array_items: expr ("," expr)*
 
 OROP: "||"
 ANDOP: "&&"
@@ -70,3 +75,5 @@ FLOAT: /[0-9]+\.[0-9]+/
 %ignore "\n"
 %ignore "\r"
 %ignore "\t"
+%ignore /\/\/.*/              // line comment
+%ignore /\/\*[\s\S]*?\*\//    // block comment
