@@ -139,3 +139,62 @@ def test_read_into_string_operations():
     )
     assert ec == 0, err
     assert out == ["[hi]"]
+
+
+# --- stdin input() ---
+
+def test_input_reads_line():
+    ec, out, err = run_and_capture(
+        'hot { print input(); }\n', stdin="hello"
+    )
+    assert ec == 0, err
+    assert out == ["hello"]
+
+
+def test_input_strips_leading_newline_keeps_payload():
+    ec, out, err = run_and_capture(
+        'hot { print input(); print len(input()); }\n', stdin="abc\ndef\n"
+    )
+    assert ec == 0, err
+    assert out == ["abc", "3"]
+
+
+def test_input_second_call_reads_next_line():
+    ec, out, err = run_and_capture(
+        'hot { print input() + ":" + input(); }\n', stdin="a\nb"
+    )
+    assert ec == 0, err
+    assert out == ["a:b"]
+
+
+def test_input_eof_empty():
+    ec, out, err = run_and_capture(
+        'hot { print len(input()); print input(); }\n'
+    )
+    assert ec == 0, err
+    assert out == ["0", ""]
+
+
+def test_input_empty_line_is_empty_string():
+    ec, out, err = run_and_capture(
+        'hot { print len(input()); }\n', stdin="\n"
+    )
+    assert ec == 0, err
+    assert out == ["0"]
+
+
+def test_input_in_string_operations():
+    ec, out, err = run_and_capture(
+        'hot { print "[" + input() + "]"; }\n', stdin="name"
+    )
+    assert ec == 0, err
+    assert out == ["[name]"]
+
+
+def test_input_write_read_roundtrip():
+    ec, out, err = run_and_capture(
+        'hot { let s = input(); write("out.txt", s); print read("out.txt"); }\n',
+        stdin="payload",
+    )
+    assert ec == 0, err
+    assert out == ["payload"]
