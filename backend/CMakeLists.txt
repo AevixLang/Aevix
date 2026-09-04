@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(AevixBackend)
+project(AevixBackend C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -73,6 +73,15 @@ add_executable(aevix-backend
     src/json_reader.cpp
     src/codegen.cpp
 )
+
+# Arena runtime object, linked into every final Aevix binary (tests + Go CLI).
+set(RUNTIME_OBJ ${CMAKE_BINARY_DIR}/runtime.o)
+add_custom_command(
+    OUTPUT ${RUNTIME_OBJ}
+    COMMAND ${CMAKE_C_COMPILER} -c ${CMAKE_CURRENT_SOURCE_DIR}/src/aevix_runtime.c -o ${RUNTIME_OBJ}
+    DEPENDS src/aevix_runtime.c
+)
+add_custom_target(aevix-runtime ALL DEPENDS ${RUNTIME_OBJ})
 
 llvm_map_components_to_libnames(llvm_libs core executionengine orcjit native)
 target_link_libraries(aevix-backend ${llvm_libs})

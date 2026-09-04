@@ -76,12 +76,13 @@ func buildProject(srcFile string) error {
 		return fmt.Errorf("llc failed: %w", err)
 	}
 
-	// 4. clang: object -> executable
+	// 4. clang: objects -> executable (llc object + arena runtime)
 	progOut := filepath.Join(rootDir, "program")
 	if runtime.GOOS == "windows" {
 		progOut += ".exe"
 	}
-	if err := runTool("clang", objOut, "-o", progOut); err != nil {
+	runtimeObj := filepath.Join(rootDir, "backend", "build", "runtime.o")
+	if err := runTool("clang", objOut, runtimeObj, "-o", progOut); err != nil {
 		return fmt.Errorf("clang failed: %w", err)
 	}
 

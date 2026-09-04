@@ -115,6 +115,13 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 🚧 Alpha — Under active development. Not yet production-ready. Frontend and backend pipeline currently working end-to-end.
 
+### Known limitations
+- `new` takes only a constant size (`new int[3]`); runtime-sized allocations come next.
+- Structs cannot contain open-array (`int[]`) fields.
+- Slices of structs cannot be printed.
+- `func` declarations may not be nested inside other functions.
+- The arena grows on demand (chunked virtual memory) up to what the OS will map; it is never freed individually, and epoch blocks roll the allocation point back.
+
 ## Acknowledgments
 
 - LLVM for the powerful backend infrastructure

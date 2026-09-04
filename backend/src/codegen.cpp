@@ -70,85 +70,27 @@ void CodeGenerator::build_oob_runtime() {
 }
 
 /**
- * Builds the arena (bump allocator) runtime: a global buffer plus an offset.
- * __aevix_alloc(bytes) hands out memory in O(1) by bumping the offset forward;
- * memory is never freed individually. Epochs save/restore the offset, which
- * logically rolls back every allocation made between the two calls.
+ * Declares the arena (bump allocator) runtime, defined in aevix_runtime.c.
+ * __aevix_alloc(bytes) hands out memory in O(1) by bumping a chunked virtual
+ * mapping forward; memory is never freed individually. Epochs save/restore the
+ * bump state, which logically rolls back every allocation made in between.
  */
 void CodeGenerator::build_arena_runtime() {
     auto i32 = builder->getInt32Ty();
-    auto i64 = builder->getInt64Ty();
     auto void_ty = llvm::Type::getVoidTy(*context);
     auto ptr_ty = llvm::PointerType::getUnqual(*context);
-    const uint64_t ARENA_BYTES = 64ull * 1024ull * 1024ull; // 64 MiB
-
-    auto arena_ty = llvm::ArrayType::get(builder->getInt8Ty(), ARENA_BYTES);
-    auto arena_global = new llvm::GlobalVariable(
-        *module, arena_ty, false, llvm::GlobalValue::InternalLinkage,
-        llvm::ConstantAggregateZero::get(arena_ty), "__aevix_arena");
-    auto off_global = new llvm::GlobalVariable(
-        *module, i32, false, llvm::GlobalValue::InternalLinkage,
-        builder->getInt32(0), "__aevix_off");
 
     // __aevix_alloc(i32 bytes) -> ptr  (returns 16-byte aligned memory)
     auto alloc_ft = llvm::FunctionType::get(ptr_ty, {i32}, false);
     alloc_func = llvm::Function::Create(alloc_ft, llvm::Function::ExternalLinkage, "__aevix_alloc", module.get());
-    {
-        auto body = llvm::BasicBlock::Create(*context, "entry", alloc_func);
-        llvm::IRBuilder<> tmp(*context);
-        tmp.SetInsertPoint(body);
-        llvm::Value* bytes = alloc_func->arg_begin();
 
-        auto off = tmp.CreateLoad(i32, off_global, "off");
-        auto base = tmp.CreateGEP(llvm::Type::getInt8Ty(*context), arena_global, {off}, "ptr");
-        auto raw = tmp.CreateAdd(off, bytes, "raw");
-        auto padded = tmp.CreateAdd(raw, tmp.getInt32(15), "padded");
-        auto aligned = tmp.CreateAnd(padded, tmp.getInt32(-16), "aligned");
-        auto inb = tmp.CreateICmpULE(aligned, tmp.getInt32(ARENA_BYTES), "inb");
-
-        auto ok = llvm::BasicBlock::Create(*context, "ok", alloc_func);
-        auto fail = llvm::BasicBlock::Create(*context, "fail", alloc_func);
-        tmp.CreateCondBr(inb, ok, fail);
-
-        tmp.SetInsertPoint(fail);
-        auto fmt = tmp.CreateGlobalString("arena out of memory\n", "arena_fmt");
-        llvm::FunctionType* printf_ft = llvm::FunctionType::get(i32, {ptr_ty}, true);
-        module->getOrInsertFunction("printf", printf_ft);
-        auto printf_fn = module->getFunction("printf");
-        tmp.CreateCall(printf_fn, {fmt});
-        llvm::FunctionType* exit_ft = llvm::FunctionType::get(void_ty, {i32}, false);
-        module->getOrInsertFunction("exit", exit_ft);
-        auto exit_fn = module->getFunction("exit");
-        exit_fn->addFnAttr(llvm::Attribute::NoReturn);
-        tmp.CreateCall(exit_fn, {tmp.getInt32(1)});
-        tmp.CreateUnreachable();
-
-        tmp.SetInsertPoint(ok);
-        tmp.CreateStore(aligned, off_global);
-        tmp.CreateRet(base);
-    }
-
-    // __aevix_epoch_begin() -> i32   (returns the current arena offset)
+    // __aevix_epoch_begin() -> i32  (returns a frame token)
     auto begin_ft = llvm::FunctionType::get(i32, {}, false);
     epoch_begin_func = llvm::Function::Create(begin_ft, llvm::Function::ExternalLinkage, "__aevix_epoch_begin", module.get());
-    {
-        auto body = llvm::BasicBlock::Create(*context, "entry", epoch_begin_func);
-        llvm::IRBuilder<> tmp(*context);
-        tmp.SetInsertPoint(body);
-        auto off = tmp.CreateLoad(i32, off_global, "off");
-        tmp.CreateRet(off);
-    }
 
-    // __aevix_epoch_end(i32 saved)    (rolls the offset back)
+    // __aevix_epoch_end(i32 frame)  (restores the saved chunk and offset)
     auto end_ft = llvm::FunctionType::get(void_ty, {i32}, false);
     epoch_end_func = llvm::Function::Create(end_ft, llvm::Function::ExternalLinkage, "__aevix_epoch_end", module.get());
-    {
-        auto body = llvm::BasicBlock::Create(*context, "entry", epoch_end_func);
-        llvm::IRBuilder<> tmp(*context);
-        tmp.SetInsertPoint(body);
-        tmp.CreateStore(epoch_end_func->arg_begin(), off_global);
-        tmp.CreateRetVoid();
-    }
 }
 
 /**
@@ -760,14 +702,12 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (i < func->arg_size()) {
                 llvm::Type* param_ty = func->getArg(i)->getType();
 
-                // Open array param: a slice { base*, i32 }. Closed arrays decay
-                // into one automatically; anything already a slice passes through.
+                // Open array param: a slice { base*, i32 }. Closed arrays are
+                // copied into the arena (the slice owns its data); anything
+                // already a slice passes through unchanged.
                 if (is_slice_ty(param_ty)) {
                     if (v->getType()->isArrayTy()) {
-                        auto at = llvm::cast<llvm::ArrayType>(v->getType());
-                        auto tmp = builder->CreateAlloca(at, nullptr, "tmp");
-                        builder->CreateStore(v, tmp);
-                        v = make_slice(tmp, at->getElementType(), builder->getInt32((int)at->getNumElements()));
+                        v = copy_array_to_slice(v, llvm::cast<llvm::StructType>(param_ty));
                     } else if (v->getType() != param_ty) {
                         error("Cannot pass " + llvm_type_name(v->getType()) + " to open array parameter of '" + call->callee + "'");
                     }
@@ -968,15 +908,13 @@ void CodeGenerator::generate_let(const Let& let) {
             // Open array let: let arr: int[] = <array literal | slice value>
             llvm::StructType* st = slice_type_for(base);
             if (val->getType()->isArrayTy()) {
-                // let arr: int[] = [1, 2, 3]  → stack copy decayed into a slice
+                // let arr: int[] = [1, 2, 3] → copied into the arena so the slice owns its data
                 auto at = llvm::cast<llvm::ArrayType>(val->getType());
                 llvm::Type* elem_ty = slice_elem_type(st);
                 if (at->getElementType() != elem_ty) {
                     error("Element type mismatch for '" + let.name + "': expected " + llvm_type_name(elem_ty));
                 }
-                auto tmp = builder->CreateAlloca(at, nullptr, let.name + ".data");
-                builder->CreateStore(val, tmp);
-                val = make_slice(tmp, elem_ty, builder->getInt32((int)at->getNumElements()));
+                val = copy_array_to_slice(val, st);
             } else if (!is_slice_ty(val->getType())) {
                 error("Type mismatch for '" + let.name + "': expected an array for open array type");
             }
