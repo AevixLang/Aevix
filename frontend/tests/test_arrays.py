@@ -41,8 +41,10 @@ def compile_only(code):
         os.unlink(src)
 
 
-def run_and_capture(code):
-    """Compile and run, returning (exit_code, stdout_lines, error_text)."""
+def run_and_capture(code, args=(), files=None):
+    """Compile and run, returning (exit_code, stdout_lines, error_text).
+    `args` are forwarded to the compiled program; `files` (name -> content)
+    are written into the run directory before execution."""
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".aev", delete=False, dir=FRONTEND_DIR
     ) as f:
@@ -77,7 +79,11 @@ def run_and_capture(code):
                             capture_output=True, text=True)
         if cl.returncode != 0:
             return cl.returncode, [], cl.stderr
-        run = subprocess.run([exe], capture_output=True, text=True)
+        for name, content in (files or {}).items():
+            with open(os.path.join(workdir, name), "w") as fh:
+                fh.write(content)
+        run = subprocess.run([exe, *args], capture_output=True, text=True,
+                             cwd=workdir)
         return run.returncode, run.stdout.splitlines(), run.stderr
     finally:
         os.unlink(src)
