@@ -26,4 +26,4 @@ clean:
 
 test:
 	@echo "🧪 Running tests..."
-	cd frontend && pytest tests/
+	./aevix -root "$(ROOT)" test

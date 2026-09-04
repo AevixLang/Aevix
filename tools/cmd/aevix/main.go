@@ -163,7 +163,7 @@ func main() {
 		}
 	case "run":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "Usage: aevix run <file.aev>")
+			fmt.Fprintln(os.Stderr, "Usage: aevix run <file.aev> [args...]")
 			os.Exit(1)
 		}
 		if err := buildProject(cmdArgs[0]); err != nil {
@@ -174,7 +174,28 @@ func main() {
 		if runtime.GOOS == "windows" {
 			prog += ".exe"
 		}
-		runTool(prog)
+		if err := runTool(prog, cmdArgs[1:]...); err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				os.Exit(ee.ExitCode())
+			}
+			fmt.Println("❌ Run failed:", err)
+			os.Exit(1)
+		}
+	case "test":
+		python := filepath.Join(rootDir, "venv", "bin", "python")
+		if runtime.GOOS == "windows" {
+			python = filepath.Join(rootDir, "venv", "Scripts", "python.exe")
+		}
+		if _, err := os.Stat(python); err != nil {
+			fmt.Fprintln(os.Stderr, "venv not found. Please run `python bootstrap.py` first")
+			os.Exit(1)
+		}
+		args := []string{"-m", "pytest", filepath.Join("frontend", "tests"), "-q"}
+		args = append(args, cmdArgs...)
+		if err := runTool(python, args...); err != nil {
+			fmt.Println("❌ Tests failed:", err)
+			os.Exit(1)
+		}
 	case "clean":
 		os.RemoveAll(filepath.Join(rootDir, "output.ll"))
 		os.RemoveAll(filepath.Join(rootDir, "output.o"))
@@ -195,6 +216,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  build <file.aev>    Compile a .aev file into an executable")
-	fmt.Fprintln(os.Stderr, "  run <file.aev>      Build and run the program")
+	fmt.Fprintln(os.Stderr, "  run <file.aev> [args...]  Build, then run with the given program arguments")
+	fmt.Fprintln(os.Stderr, "  test [pytest args]  Run the full backend integration test suite")
 	fmt.Fprintln(os.Stderr, "  clean               Remove generated artifacts")
 }
