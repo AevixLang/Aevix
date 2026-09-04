@@ -82,7 +82,7 @@ class AevixTransformer(Transformer):
         return items[0]
 
     def new_expr(self, items):
-        return New(arr_type=items[0])
+        return New(base=str(items[0]), size=items[1])
 
     def arg_list(self, items):
         return list(items)

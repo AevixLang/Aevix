@@ -91,6 +91,10 @@ void CodeGenerator::build_arena_runtime() {
     // __aevix_epoch_end(i32 frame)  (restores the saved chunk and offset)
     auto end_ft = llvm::FunctionType::get(void_ty, {i32}, false);
     epoch_end_func = llvm::Function::Create(end_ft, llvm::Function::ExternalLinkage, "__aevix_epoch_end", module.get());
+
+    // __aevix_str_eq(ptr a, i32 alen, ptr b, i32 blen) -> i1  (content compare)
+    auto str_eq_ft = llvm::FunctionType::get(builder->getInt1Ty(), {ptr_ty, i32, ptr_ty, i32}, false);
+    str_eq_func = llvm::Function::Create(str_eq_ft, llvm::Function::ExternalLinkage, "__aevix_str_eq", module.get());
 }
 
 /**
@@ -184,6 +188,40 @@ llvm::Value* CodeGenerator::make_slice(llvm::Value* ptr, llvm::Type* elem, llvm:
     return slice;
 }
 
+llvm::Value* CodeGenerator::make_string_slice(llvm::Value* ptr, llvm::Value* len) {
+    llvm::StructType* st = slice_type_for("string");
+    auto slice = builder->CreateInsertValue(llvm::UndefValue::get(st), ptr, 0, "str");
+    slice = builder->CreateInsertValue(slice, len, 1, "str.len");
+    return slice;
+}
+
+bool CodeGenerator::is_string_slice(llvm::Type* ty) {
+    if (!ty || !ty->isStructTy()) return false;
+    auto it = slice_bases.find(llvm::cast<llvm::StructType>(ty));
+    return it != slice_bases.end() && it->second == "string";
+}
+
+llvm::Value* CodeGenerator::gen_string_concat(llvm::Value* left, llvm::Value* right) {
+    auto lp = builder->CreateExtractValue(left, 0, "cat.lp");
+    auto llen = builder->CreateExtractValue(left, 1, "cat.llen");
+    auto rp = builder->CreateExtractValue(right, 0, "cat.rp");
+    auto rlen = builder->CreateExtractValue(right, 1, "cat.rlen");
+
+    auto total32 = builder->CreateAdd(llen, rlen, "cat.total");
+    auto bytes32 = builder->CreateTrunc(builder->CreateZExt(total32, builder->getInt64Ty()), builder->getInt32Ty(), "cat.bytes");
+    auto dst = builder->CreateCall(alloc_func, {bytes32}, "cat.ptr");
+
+    llvm::Function* memcpy_fn = llvm::Intrinsic::getOrInsertDeclaration(
+        module.get(), llvm::Intrinsic::memcpy, llvm::Type::getVoidTy(*context),
+        {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context),
+         builder->getInt64Ty(), builder->getInt1Ty()});
+    builder->CreateCall(memcpy_fn, {dst, lp, builder->CreateZExt(llen, builder->getInt64Ty(), "cat.l64"), builder->getInt1(false)});
+    auto dstr = builder->CreateInBoundsGEP(builder->getInt8Ty(), dst, llen, "cat.mid");
+    builder->CreateCall(memcpy_fn, {dstr, rp, builder->CreateZExt(rlen, builder->getInt64Ty(), "cat.r64"), builder->getInt1(false)});
+
+    return make_string_slice(dst, total32);
+}
+
 void CodeGenerator::define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty) {
     named_values.back()[name] = alloc;
     named_types.back()[name] = ty;
@@ -222,7 +260,7 @@ llvm::Type* CodeGenerator::scalar_type_for(const std::string& base) {
     if (base == "int") return builder->getInt32Ty();
     if (base == "float") return builder->getDoubleTy();
     if (base == "bool") return builder->getInt1Ty();
-    if (base == "string") return llvm::PointerType::getUnqual(*context);
+    if (base == "string") return builder->getInt8Ty();
     return nullptr;
 }
 
@@ -240,6 +278,11 @@ llvm::Type* CodeGenerator::signature_type_for(const std::string& tn, const std::
     if (struct_types.find(base) != struct_types.end()) {
         if (arr_size > 0) return llvm::ArrayType::get(struct_types[base], arr_size);
         return struct_types[base];
+    }
+    if (base == "string") {
+        // A string is a slice of i8; string arrays are not supported yet.
+        if (arr_size > 0) error("Arrays of strings are not supported yet");
+        return slice_type_for("string");
     }
     llvm::Type* b = scalar_type_for(base);
     if (arr_size >= 0) {
@@ -304,6 +347,11 @@ llvm::Type* CodeGenerator::llvm_type_from_name(const std::string& tn) {
     if (arr_size == 0) {
         // open array (int[]) maps to a slice struct { base*, i32 }
         return slice_type_for(base);
+    }
+    if (base == "string") {
+        // A string is a slice of i8; string arrays are not supported yet.
+        if (arr_size > 0) error("Arrays of strings are not supported yet");
+        return slice_type_for("string");
     }
     if (arr_size > 0) {
         llvm::Type* sc = scalar_type_for(base);
@@ -373,7 +421,16 @@ llvm::Value* CodeGenerator::gen_member_ptr_inner(const MemberAccess& ma, llvm::T
 }
 
 bool CodeGenerator::is_numeric(llvm::Type* ty) {
-    return ty->isIntegerTy(32) || ty->isDoubleTy();
+    return ty->isIntegerTy(8) || ty->isIntegerTy(32) || ty->isDoubleTy();
+}
+
+void CodeGenerator::promote_binop_operands(llvm::Value*& left, llvm::Value*& right) {
+    if (left->getType()->isIntegerTy(8)) left = builder->CreateZExt(left, builder->getInt32Ty(), "char.up");
+    if (right->getType()->isIntegerTy(8)) right = builder->CreateZExt(right, builder->getInt32Ty(), "char.up");
+    if (left->getType()->isIntegerTy(32) && right->getType()->isDoubleTy())
+        left = builder->CreateSIToFP(left, builder->getDoubleTy(), "tofloat");
+    else if (right->getType()->isIntegerTy(32) && left->getType()->isDoubleTy())
+        right = builder->CreateSIToFP(right, builder->getDoubleTy(), "tofloat");
 }
 
 void CodeGenerator::require_numeric(llvm::Value* v, const std::string& ctx) {
@@ -393,9 +450,11 @@ void CodeGenerator::require_bool_type(llvm::Type* ty, const std::string& ctx) {
 }
 
 std::string CodeGenerator::llvm_type_name(llvm::Type* ty) {
+    if (ty->isIntegerTy(8)) return "string char";
     if (ty->isIntegerTy(32)) return "int";
     if (ty->isDoubleTy()) return "float";
     if (ty->isIntegerTy(1)) return "bool";
+    if (is_string_slice(ty)) return "string";
     if (ty->isPointerTy()) return "string";
     if (ty->isArrayTy()) return "array";
     if (ty->isStructTy()) return ty->getStructName().str();
@@ -410,7 +469,7 @@ llvm::Type* CodeGenerator::element_type_of(const std::shared_ptr<Expr>& e) {
     if (auto n = std::dynamic_pointer_cast<Number>(e)) return builder->getInt32Ty();
     if (auto f = std::dynamic_pointer_cast<Float>(e)) return builder->getDoubleTy();
     if (auto b = std::dynamic_pointer_cast<Bool>(e)) return builder->getInt1Ty();
-    if (auto s = std::dynamic_pointer_cast<String>(e)) return llvm::PointerType::getUnqual(*context);
+    if (auto s = std::dynamic_pointer_cast<String>(e)) error("Arrays of strings are not supported yet");
     if (auto al = std::dynamic_pointer_cast<ArrayLit>(e)) return build_array_type(*al);
     if (auto sl = std::dynamic_pointer_cast<StructLiteral>(e)) {
         auto it = struct_types.find(sl->name);
@@ -524,21 +583,32 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
 }
 
 // Allocates elem[sz] in the arena (zeroed) and returns a slice handle.
+// Supports a constant size (new int[16]) or a runtime expression (new int[n]).
 llvm::Value* CodeGenerator::gen_new(const New& n) {
-    std::string base;
-    int sz = -1;
-    parse_type(n.arr_type, base, sz);
-    if (sz <= 0) error("new requires an explicit array size, e.g. new int[16]");
-    llvm::Type* elem = scalar_type_for(base);
+    if (n.base == "string") error("Arrays of strings are not supported yet");
+    llvm::Type* elem = scalar_type_for(n.base);
     if (!elem) {
-        auto it = struct_types.find(base);
-        if (it == struct_types.end()) error("Unknown type in new: " + base);
+        auto it = struct_types.find(n.base);
+        if (it == struct_types.end()) error("Unknown type in new: " + n.base);
         elem = it->second;
     }
 
+    llvm::Value* size = generate_expr(n.size);
+    if (!size) error("new requires an explicit array size, e.g. new int[16]");
+    if (size->getType()->isDoubleTy() || size->getType()->isIntegerTy(1)) {
+        error("Array size for new must be an integer");
+    }
+    if (size->getType()->isIntegerTy(64)) {
+        size = builder->CreateTrunc(size, builder->getInt32Ty(), "size32");
+    }
+    if (auto c = llvm::dyn_cast<llvm::ConstantInt>(size)) {
+        if (c->getSExtValue() <= 0) error("new requires an explicit positive array size, e.g. new int[16]");
+    }
+
     uint64_t elem_bytes = module->getDataLayout().getTypeAllocSize(elem);
-    llvm::Value* bytes64 = llvm::ConstantInt::get(builder->getInt64Ty(), elem_bytes * (uint64_t)sz);
-    llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes");
+    llvm::Value* sz64 = builder->CreateSExt(size, builder->getInt64Ty(), "sz64");
+    llvm::Value* bytes64 = builder->CreateMul(sz64, builder->getInt64(elem_bytes), "bytes");
+    llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes32");
     llvm::Value* ptr = builder->CreateCall(alloc_func, {bytes32}, "new.ptr");
 
     llvm::Function* memset_fn = llvm::Intrinsic::getOrInsertDeclaration(
@@ -547,7 +617,7 @@ llvm::Value* CodeGenerator::gen_new(const New& n) {
          builder->getInt64Ty(), builder->getInt1Ty()});
     builder->CreateCall(memset_fn, {ptr, builder->getInt8(0), bytes64, builder->getInt1(false)});
 
-    return make_slice(ptr, elem, builder->getInt32(sz));
+    return make_slice(ptr, elem, size);
 }
 
 // Copies a stack array value into fresh arena memory, returning a slice.
@@ -637,7 +707,10 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     if (auto num = std::dynamic_pointer_cast<Number>(expr)) return builder->getInt32(num->value);
     if (auto fl = std::dynamic_pointer_cast<Float>(expr)) return llvm::ConstantFP::get(builder->getDoubleTy(), fl->value);
     if (auto b = std::dynamic_pointer_cast<Bool>(expr)) return builder->getInt1(b->value ? 1 : 0);
-    if (auto s = std::dynamic_pointer_cast<String>(expr)) return builder->CreateGlobalString(s->value, "str");
+    if (auto s = std::dynamic_pointer_cast<String>(expr)) {
+        auto g = builder->CreateGlobalString(s->value, "str");
+        return make_string_slice(g, builder->getInt32((int)s->value.size()));
+    }
     if (auto var = std::dynamic_pointer_cast<Variable>(expr)) {
         llvm::Type* ty = nullptr;
         llvm::Value* alloc = lookup_var(var->name, ty);
@@ -735,8 +808,15 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         auto left = generate_expr(add->left);
         auto right = generate_expr(add->right);
         if (!left || !right) return nullptr;
+        if (is_string_slice(left->getType()) || is_string_slice(right->getType())) {
+            if (!is_string_slice(left->getType()) || !is_string_slice(right->getType())) {
+                error("Operator + on a string requires both operands to be strings");
+            }
+            return gen_string_concat(left, right);
+        }
         require_numeric(left, "+");
         require_numeric(right, "+");
+        promote_binop_operands(left, right);
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -750,6 +830,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (!left || !right) return nullptr;
         require_numeric(left, "-");
         require_numeric(right, "-");
+        promote_binop_operands(left, right);
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -763,6 +844,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (!left || !right) return nullptr;
         require_numeric(left, "*");
         require_numeric(right, "*");
+        promote_binop_operands(left, right);
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -776,6 +858,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (!left || !right) return nullptr;
         require_numeric(left, "/");
         require_numeric(right, "/");
+        promote_binop_operands(left, right);
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
             if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
             if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
@@ -794,12 +877,24 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         auto left = generate_expr(cmp->left);
         auto right = generate_expr(cmp->right);
         if (!left || !right) return nullptr;
+        if (is_string_slice(left->getType()) || is_string_slice(right->getType())) {
+            if (!is_string_slice(left->getType()) || !is_string_slice(right->getType())) {
+                error("Comparison operands must be both strings");
+            }
+            if (cmp->op != "==" && cmp->op != "!=") error("Strings support only == and != comparison");
+            auto lp = builder->CreateExtractValue(left, 0, "cmp.lp");
+            auto llen = builder->CreateExtractValue(left, 1, "cmp.llen");
+            auto rp = builder->CreateExtractValue(right, 0, "cmp.rp");
+            auto rlen = builder->CreateExtractValue(right, 1, "cmp.rlen");
+            auto eq = builder->CreateCall(str_eq_func, {lp, llen, rp, rlen}, "cmpeq");
+            if (cmp->op == "==") return eq;
+            return builder->CreateXor(eq, builder->getInt1(true), "cmpne");
+        }
         bool both_numeric = is_numeric(left->getType()) && is_numeric(right->getType());
         bool both_bool = left->getType()->isIntegerTy(1) && right->getType()->isIntegerTy(1);
         if (!both_numeric && !both_bool) error("Comparison operands must be both numeric or both bool");
         if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
-            if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
-            if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
+            promote_binop_operands(left, right);
             return generate_fcmp(cmp->op, left, right);
         }
         if (left->getType()->isIntegerTy(1) || right->getType()->isIntegerTy(1)) {
@@ -1044,7 +1139,11 @@ void CodeGenerator::generate_print(const Print& print) {
     llvm::Value* format_str = nullptr;
     llvm::Value* arg = val;
 
-    if (val->getType()->isIntegerTy(32)) format_str = builder->CreateGlobalString("%d\n", "format");
+    if (val->getType()->isIntegerTy(8)) {
+        format_str = builder->CreateGlobalString("%c\n", "format");
+        arg = builder->CreateZExt(val, builder->getInt32Ty());
+    }
+    else if (val->getType()->isIntegerTy(32)) format_str = builder->CreateGlobalString("%d\n", "format");
     else if (val->getType()->isDoubleTy()) format_str = builder->CreateGlobalString("%f\n", "format");
     else if (val->getType()->isIntegerTy(1)) {
         format_str = builder->CreateGlobalString("%d\n", "format");
@@ -1106,6 +1205,15 @@ void CodeGenerator::generate_print(const Print& print) {
         return;
     }
     else if (is_slice_ty(val->getType())) {
+        if (is_string_slice(val->getType())) {
+            auto sp = builder->CreateExtractValue(val, 0, "sp.ptr");
+            auto slen = builder->CreateExtractValue(val, 1, "sp.len");
+            auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+            auto printf_func = module->getOrInsertFunction("printf", printf_type);
+            auto fmt = builder->CreateGlobalString("%.*s\n", "format");
+            builder->CreateCall(printf_func, {fmt, slen, sp});
+            return;
+        }
         emit_slice_print(val);
         return;
     }
@@ -1131,6 +1239,13 @@ void CodeGenerator::generate_print(const Print& print) {
             else if (ev->getType()->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
             else if (ev->getType()->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
             else if (ev->getType()->isPointerTy()) fmt = builder->CreateGlobalString("%s", "fmt");
+            else if (is_string_slice(ev->getType())) {
+                auto fp = builder->CreateExtractValue(ev, 0, "pfld.p");
+                auto fl = builder->CreateExtractValue(ev, 1, "pfld.l");
+                auto ff = builder->CreateGlobalString("%.*s", "fmt");
+                builder->CreateCall(printf_func, {ff, fl, fp});
+                continue;
+            }
             else error("Cannot print struct field of type " + llvm_type_name(ev->getType()) + " (nested structs not yet supported in print)");
             builder->CreateCall(printf_func, {fmt, a});
         }

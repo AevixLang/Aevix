@@ -136,7 +136,8 @@ class StructLiteral:
 
 @dataclass
 class New:
-    arr_type: str
+    base: str
+    size: object
     type: str = "New"
 
 # ----------------------------------------------------------------------------

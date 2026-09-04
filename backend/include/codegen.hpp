@@ -71,8 +71,15 @@ private:
     llvm::Value* gen_new(const New& n);
     void generate_epoch(const Epoch& ep);
 
+    // Strings are slices of i8: { i8*, i32 }. build the value or test a type.
+    llvm::Value* make_string_slice(llvm::Value* ptr, llvm::Value* len);
+    bool is_string_slice(llvm::Type* ty);
+    llvm::Value* gen_string_concat(llvm::Value* left, llvm::Value* right);
+    llvm::Function* str_eq_func;
+
     // Type-checking helpers: validate that a generated value is a numeric type
     // (int/float) or a bool before an operation that requires it.
+    void promote_binop_operands(llvm::Value*& left, llvm::Value*& right);
     bool is_numeric(llvm::Type* ty);
     void require_numeric(llvm::Value* v, const std::string& ctx);
     void require_bool(llvm::Value* v, const std::string& ctx);

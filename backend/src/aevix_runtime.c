@@ -103,3 +103,13 @@ void __aevix_epoch_end(int32_t saved) {
     cur_off = f.off;
     cur_cap = f.cap;
 }
+
+/* Content equality for string slices: returns 1 if both slices hold the same
+ * bytes, 0 otherwise. Lengths are compared first, so mismatched sizes short-cut. */
+int32_t __aevix_str_eq(const uint8_t* a, int32_t alen, const uint8_t* b, int32_t blen) {
+    if (alen != blen) return 0;
+    for (int32_t i = 0; i < alen; ++i) {
+        if (a[i] != b[i]) return 0;
+    }
+    return 1;
+}

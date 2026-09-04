@@ -100,7 +100,8 @@ struct StructLiteral : public Expr {
 };
 
 struct New : public Expr {
-    std::string arr_type;   // "int[16]" etc.
+    std::string base;
+    std::shared_ptr<Expr> size;   // Number for new int[3]; any int expr for new int[n]
 };
 
 // Statements

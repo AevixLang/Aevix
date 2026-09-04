@@ -52,7 +52,7 @@ arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: MINUS factor | BANG factor | atom
 atom: NUMBER | FLOAT | BOOL | STRING | array_lit | struct_lit | primary | "(" expr ")" | new_expr
-new_expr: "new" type_name
+new_expr: "new" (scalar_type | CNAME) "[" expr "]"
 primary: CNAME suffix*
 suffix: call_suffix | index_suffix | dot_suffix
 call_suffix: "(" arg_list? ")"

@@ -131,7 +131,8 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
     }
     else if (type == "New") {
         auto n = std::make_shared<New>();
-        n->arr_type = j["arr_type"];
+        n->base = j["base"];
+        n->size = parse_expr(j["size"]);
         return n;
     }
 
