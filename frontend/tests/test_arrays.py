@@ -586,6 +586,99 @@ def test_string_field_index_char():
     assert out == ["b"]
 
 
+def test_slice_field_from_array_literal():
+    ec, out, err = run_and_capture(
+        "struct Bag { items: int[] }\n"
+        "let b = Bag { [10, 20, 30] };\n"
+        "print len(b.items);\n"
+        "print b.items[0] + b.items[1] + b.items[2];\n"
+        "b.items[1] = 99;\n"
+        "print b.items[1];\n"
+        "print b;\n"
+    )
+    assert ec == 0, err
+    assert out == ["3", "60", "99", "{[10, 99, 30]}"]
+
+
+def test_slice_field_from_inferred_let():
+    ec, out, err = run_and_capture(
+        "struct Bag { items: int[], tag: string }\n"
+        "let arr = [4, 5, 6];\n"
+        "let b = Bag { arr, \"box\" };\n"
+        "print len(b.items);\n"
+        "print b.items[2];\n"
+        "print b.tag;\n"
+    )
+    assert ec == 0, err
+    assert out == ["3", "6", "box"]
+
+
+def test_slice_field_assign_from_array_literal():
+    ec, out, err = run_and_capture(
+        "struct Bag { items: int[] }\n"
+        "let b = Bag { new int[1] };\n"
+        "b.items = [7, 8, 9];\n"
+        "print len(b.items);\n"
+        "print b.items[0] + b.items[1] + b.items[2];\n"
+    )
+    assert ec == 0, err
+    assert out == ["3", "24"]
+
+
+def test_slice_var_reassign_from_array_literal():
+    ec, out, err = run_and_capture(
+        "let a: int[] = [1, 2, 3];\n"
+        "a = [9, 9];\n"
+        "print len(a);\n"
+        "print a[0] + a[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["2", "18"]
+
+
+def test_slice_field_from_struct_return():
+    ec, out, err = run_and_capture(
+        "struct Bag { items: int[] }\n"
+        "func make() : Bag {\n"
+        "    return Bag { [1, 2, 3] };\n"
+        "}\n"
+        "let b = make();\n"
+        "print b.items[0] + b.items[2];\n"
+    )
+    assert ec == 0, err
+    assert out == ["4"]
+
+
+def test_array_of_structs_with_slice_field_literals():
+    ec, out, err = run_and_capture(
+        "struct Bag { items: int[] }\n"
+        "let bs = [Bag { [1, 2] }, Bag { [3, 4, 5] }];\n"
+        "print bs[0].items[1];\n"
+        "print bs[1].items[2];\n"
+    )
+    assert ec == 0, err
+    assert out == ["2", "5"]
+
+
+def test_slice_field_type_mismatch_rejected():
+    ec, err = compile_only(
+        "struct Bag { items: int[] }\n"
+        "let b = Bag { [1.5, 2.5] };\n"
+    )
+    assert ec != 0, "array of wrong element type should be rejected"
+    assert "Type mismatch" in err
+
+
+def test_slice_field_assign_type_mismatch_rejected():
+    ec, err = compile_only(
+        "struct Bag { items: int[] }\n"
+        "let b = Bag { new int[1] };\n"
+        "b.items = \"nope\";\n"
+    )
+    assert ec != 0, "non-array value must not be coercible to a slice field"
+    assert "Type mismatch" in err
+
+
 # --- epochs ---
 
 def test_epoch_rollback_reuses_memory():
