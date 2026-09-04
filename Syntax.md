@@ -26,7 +26,7 @@ Aevix is a statically typed language. Types can be declared explicitly or inferr
 | `int` | 32-bit signed integer | `i32` |
 | `float` | Double-precision float | `double` |
 | `bool` | Boolean (`true` / `false`) | `i1` |
-| `string` | UTF-8 String | `i8*` |
+| `string` | UTF-8 string slice (`{ i8*, i32 }`) | `{ i8*, i32 }` |
 
 ---
 
@@ -118,9 +118,118 @@ func power(base: float, exp: float) : float {
 
 ---
 
-## 6. Special Constructs
+## 6. Arrays and Slices
 
-### The `hot` Region
+Fixed-size arrays copy by value; open arrays (`int[]`) are slices `{ data*, len }` allocated in the arena.
+
+```aev
+let a: int[3] = [1, 2, 3];       // fixed array, copied by value
+print a[1];                      // 2
+
+let b: int[] = [4, 5, 6];        // open array (slice) — copied into the arena
+print len(b);                    // 3
+b[0] = 9;                        // mutation is visible through the slice
+```
+
+`for-in` iterates any array or slice:
+```aev
+let nums: int[] = [10, 20, 30];
+for x in nums { print x; }
+```
+
+### `new` — arena allocation
+```aev
+let n = 5;
+let buf = new int[n];            // runtime-sized, zeroed
+buf[0] = 42;
+let pts = new Point[2];          // array of structs, zeroed
+```
+
+Out-of-range array access aborts the program with a bounds error at runtime.
+
+---
+
+## 7. Strings
+
+Strings are slices of `i8`, so they are values: comparable, concatenable, indexable.
+
+```aev
+let s: string = "hello";
+print s;                 // hello  (no quotes)
+print len(s);            // 5
+print s[0];              // h  (a char; usable as int: s[0] + 1)
+let t = s + " world";    // concatenation (allocated in the arena)
+if (s == "hello") { ... }
+if (s != "hello") { ... }
+```
+
+Strings work as function parameters/returns and struct fields. Arrays of strings are not supported yet.
+
+---
+
+## 8. Structs
+
+```aev
+struct Point { x: int, y: int }
+struct Bag { items: int[], tag: string }
+
+let p = Point { 1, 2 };             // positional literal
+print p.x + p.y;                    // 3
+
+let b = Bag { new int[3], "box" };  // open-array fields allowed
+b.items[1] = 55;
+print b;                            // {[0, 55, 0], box}
+```
+
+Struct fields are accessed with `.`; member access chains and arrays of structs work. Struct literals are positional (named fields are not supported yet).
+
+---
+
+## 9. Epochs (arena rollback)
+
+`epoch { ... }` saves the arena position on entry and restores it on exit, logically freeing everything allocated inside. Variables defined before the epoch survive; slices cannot escape an epoch.
+
+```aev
+let keep = new int[2];
+epoch {
+    let tmp = new int[1000];   // discarded when the epoch exits
+}
+print len(keep);               // still 2
+```
+
+---
+
+## 10. Standard I/O and Builtins
+
+Output is handled by the `print` statement (supports int, float, bool, strings, arrays/slices, structs):
+```aev
+print "System status: OK";
+print 404;
+```
+
+Built-in functions:
+
+| Builtin | Signature | Description |
+| :--- | :--- | :--- |
+| `len(x)` | `len(array or string) -> int` | Length of an array, slice or string |
+| `argc()` | `argc() -> int` | Number of CLI arguments (after the program name) |
+| `arg(i)` | `arg(i) -> string` | The i-th CLI argument; `""` if out of range |
+| `read(fn)` | `read(fn: string) -> string` | Whole file as a string; `""` if unreadable |
+| `write(fn, s)` | `write(fn: string, s: string) -> bool` | Write `s` to `fn`, truncating; `true` on success |
+| `exit(n)` | `exit(n: int)` | Terminate the program with status `n` |
+
+```aev
+hot {
+    print argc();
+    if (arg(0) == "fail") { exit(7); }
+    let data = read("input.txt");
+    write("out.txt", "len: " + data);
+}
+```
+
+---
+
+## 11. The `hot` Region
 The `hot` block designates a critical section for maximum hardware optimization. The compiler will attempt to pin all variables in this block to L1 cache or registers.
 
 ```aev
@@ -130,13 +239,4 @@ hot {
         process(i);
     }
 }
-```
-
----
-
-## 7. Standard I/O
-Basic output is handled by the `print` statement.
-```aev
-print "System status: OK";
-print 404;
 ```
