@@ -148,7 +148,7 @@ def test_while_stmt():
     assert w["condition"]["op"] == "<"
     assign = w["body"][0]
     assert assign["type"] == "Assign"
-    assert assign["name"] == {"type": "Variable", "value": "i"}
+    assert assign["name"] == {"type": "Variable", "value": "i", "line": 1, "col": 18}
 
 
 def test_for_stmt():
@@ -265,8 +265,8 @@ def test_array_index_read_ast():
     ast = parse_dict("print a[1];\n")
     value = ast["body"][0]["value"]
     assert value["type"] == "Index"
-    assert value["object"] == {"type": "Variable", "value": "a"}
-    assert value["index"] == {"type": "Number", "value": 1}
+    assert value["object"] == {"type": "Variable", "value": "a", "line": 1, "col": 7}
+    assert value["index"] == {"type": "Number", "value": 1, "line": 1, "col": 9}
 
 
 def test_array_nested_index_ast():
@@ -283,8 +283,8 @@ def test_array_indexed_assign_ast():
     assign = ast["body"][0]
     assert assign["type"] == "Assign"
     assert assign["name"]["type"] == "Index"
-    assert assign["name"]["index"] == {"type": "Number", "value": 0}
-    assert assign["value"] == {"type": "Number", "value": 10}
+    assert assign["name"]["index"] == {"type": "Number", "value": 0, "line": 1, "col": 3}
+    assert assign["value"] == {"type": "Number", "value": 10, "line": 1, "col": 8}
 
 
 def test_array_empty_literal_ast():
