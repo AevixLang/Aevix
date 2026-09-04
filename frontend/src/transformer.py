@@ -8,7 +8,7 @@ from lark import Transformer, Token
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
-    CmpOp, And, Or, Not
+    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField
 )
 
 def _expr_from_token(tok):
@@ -33,10 +33,10 @@ class AevixTransformer(Transformer):
     def atom(self, items):
         if len(items) == 1 and isinstance(items[0], Token):
             return _expr_from_token(items[0])
-        return items[0]  # "(" expr ")" grouping or array_lit
+        return items[0]  # "(" expr ")" grouping or array_lit or struct_lit
 
     def primary(self, items):
-        """Handles variable access, function calls, and array indexing."""
+        """Handles variable access, function calls, array indexing, and member access."""
         result = Variable(value=str(items[0]))
         for suffix in items[1:]:
             if isinstance(suffix, list):  # call argument list
@@ -45,6 +45,8 @@ class AevixTransformer(Transformer):
                 else:
                     callee_name = result.value
                 result = Call(callee=callee_name, args=suffix)
+            elif isinstance(suffix, str):  # dot access -> member name
+                result = MemberAccess(object=result, member=suffix)
             else:  # index suffix -> raw index expression
                 result = Index(object=result, index=suffix)
         return result
@@ -58,12 +60,25 @@ class AevixTransformer(Transformer):
     def index_suffix(self, items):
         return items[0]
 
+    def dot_suffix(self, items):
+        return str(items[0])
+
     def array_lit(self, items):
         elements = items[0] if items else []
         return ArrayLit(elements=elements)
 
     def array_items(self, items):
         return list(items)
+
+    def struct_lit(self, items):
+        name, args = str(items[0]), items[1] if len(items) > 1 else []
+        return StructLiteral(name=name, args=args)
+
+    def struct_lit_items(self, items):
+        return list(items)
+
+    def struct_lit_item(self, items):
+        return items[0]
 
     def arg_list(self, items):
         return list(items)
@@ -210,6 +225,17 @@ class AevixTransformer(Transformer):
         name = str(items[0])
         var_type = items[1] if len(items) > 1 else None
         return Param(name=name, var_type=var_type)
+
+    # ---- Structs ----
+    def struct_decl(self, items):
+        name, fields = str(items[0]), items[1] if len(items) > 1 else []
+        return StructDecl(name=name, fields=fields)
+
+    def struct_fields(self, items):
+        return list(items)
+
+    def struct_field(self, items):
+        return StructField(name=str(items[0]), var_type=items[1])
 
     # ---- Program ----
     def start(self, items):

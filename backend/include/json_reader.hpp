@@ -89,6 +89,16 @@ struct Call : public Expr {
     std::vector<std::shared_ptr<Expr>> args;
 };
 
+struct MemberAccess : public Expr {
+    std::shared_ptr<Expr> object;
+    std::string member;
+};
+
+struct StructLiteral : public Expr {
+    std::string name;
+    std::vector<std::shared_ptr<Expr>> args;
+};
+
 // Statements
 struct Stmt;
 
@@ -155,8 +165,18 @@ struct FuncDecl {
     std::shared_ptr<Block> body;
 };
 
+struct StructField {
+    std::string name;
+    std::string var_type;
+};
+
+struct StructDecl {
+    std::string name;
+    std::vector<StructField> fields;
+};
+
 struct Stmt {
-    enum class Kind { Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt };
+    enum class Kind { Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl };
     Kind kind;
     Let let;
     Hot hot;
@@ -169,6 +189,7 @@ struct Stmt {
     std::shared_ptr<Assign> assign_stmt;
     std::shared_ptr<FuncDecl> func_decl;
     std::shared_ptr<Call> call_stmt;
+    std::shared_ptr<StructDecl> struct_decl;
 };
 
 struct Program {

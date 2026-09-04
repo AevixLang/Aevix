@@ -12,6 +12,11 @@ stmt: let_stmt
     | return_stmt
     | assign_stmt
     | func_decl
+    | struct_decl
+
+struct_decl: "struct" CNAME "{" struct_fields? "}"
+struct_fields: struct_field ("," struct_field)* ","?
+struct_field: CNAME ":" type_name
 
 func_decl: "func" CNAME "(" params ")" (":" type_name)? block
 params: (param ("," param)*)?
@@ -43,20 +48,24 @@ comparison: arith (CMPOP arith)*
 arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: MINUS factor | BANG factor | atom
-atom: NUMBER | FLOAT | BOOL | STRING | array_lit | primary | "(" expr ")"
+atom: NUMBER | FLOAT | BOOL | STRING | array_lit | struct_lit | primary | "(" expr ")"
 primary: CNAME suffix*
-suffix: call_suffix | index_suffix
+suffix: call_suffix | index_suffix | dot_suffix
 call_suffix: "(" arg_list? ")"
 arg_list: expr ("," expr)*
 index_suffix: "[" expr "]"
+dot_suffix: "." CNAME
 array_lit: "[" array_items? "]"
 array_items: expr ("," expr)*
+struct_lit: CNAME "{" struct_lit_items? "}"
+struct_lit_items: struct_lit_item ("," struct_lit_item)* ","?
+struct_lit_item: expr
 
 OROP: "||"
 ANDOP: "&&"
 CMPOP: "==" | "!=" | "<" | ">" | "<=" | ">="
 
-type_name: array_type | scalar_type
+type_name: array_type | scalar_type | CNAME
 array_type: scalar_type "[" NUMBER? "]"
 scalar_type: T_INT | T_FLOAT | T_BOOL | T_STRING
 T_INT: "int"
@@ -71,7 +80,7 @@ BANG: "!"
 
 BOOL.1: "true" | "false"
 STRING: /"[^"]*"/
-CNAME: /[a-zA-Z_][a-zA-Z0-9_]*/
+CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|true\b|false\b|int\b|float\b|bool\b|string\b)[a-zA-Z_][a-zA-Z0-9_]*/
 NUMBER: /[0-9]+/
 FLOAT: /[0-9]+\.[0-9]+/
 

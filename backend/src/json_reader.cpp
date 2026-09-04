@@ -115,6 +115,20 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
         }
         return c;
     }
+    else if (type == "MemberAccess") {
+        auto m = std::make_shared<MemberAccess>();
+        m->object = parse_expr(j["object"]);
+        m->member = j["member"];
+        return m;
+    }
+    else if (type == "StructLiteral") {
+        auto s = std::make_shared<StructLiteral>();
+        s->name = j["name"];
+        for (const auto& arg : j["args"]) {
+            s->args.push_back(parse_expr(arg));
+        }
+        return s;
+    }
 
     return nullptr;
 }
@@ -240,6 +254,20 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
     else if (type == "Call") {
         stmt->kind = Stmt::Kind::CallStmt;
         stmt->call_stmt = std::dynamic_pointer_cast<Call>(parse_expr(j));
+    }
+    else if (type == "StructDecl") {
+        stmt->kind = Stmt::Kind::StructDecl;
+        auto sd = std::make_shared<StructDecl>();
+        sd->name = j["name"];
+        for (const auto& f : j["fields"]) {
+            StructField field;
+            field.name = f["name"];
+            if (f.contains("var_type") && !f["var_type"].is_null()) {
+                field.var_type = f["var_type"];
+            }
+            sd->fields.push_back(field);
+        }
+        stmt->struct_decl = sd;
     }
     else {
         return nullptr;

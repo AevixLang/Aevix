@@ -26,6 +26,11 @@ private:
     std::map<std::string, llvm::Type*> open_array_elem_types;
     std::vector<std::size_t> scope_open_arrays_count;
 
+    // Struct handling
+    std::map<std::string, const StructDecl*> struct_decls;
+    std::map<std::string, llvm::StructType*> struct_types;
+    std::map<std::string, std::map<std::string, int>> struct_field_indices;
+
     void push_scope();
     void pop_scope();
     void build_oob_runtime();
@@ -49,6 +54,17 @@ private:
     bool is_open_array(const std::string& name);
     llvm::Type* open_array_elem_type(const std::string& name);
     llvm::Value* lookup_open_array_len(const std::string& name);
+
+    // Struct helpers
+    bool is_struct(const std::string& tn);
+    llvm::StructType* struct_type_for(const std::string& tn);
+    int struct_field_index(const std::string& st, const std::string& field);
+    llvm::Type* struct_field_type(const std::string& st, const std::string& field);
+    void register_struct(const StructDecl& sd);
+    llvm::Type* llvm_type_from_name(const std::string& tn);
+    llvm::Value* gen_member_ptr(const MemberAccess& ma);
+    llvm::Value* gen_member_ptr_inner(const MemberAccess& ma, llvm::Type*& field_ty);
+    llvm::Value* build_struct_literal(const StructLiteral& sl);
 
     // Array helpers: element type inference, literal -> constant, and lvalue
     // resolution through (possibly nested) index expressions.

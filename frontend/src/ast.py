@@ -122,6 +122,18 @@ class Call:
     args: list
     type: str = "Call"
 
+@dataclass
+class MemberAccess:
+    object: object
+    member: str
+    type: str = "MemberAccess"
+
+@dataclass
+class StructLiteral:
+    name: str
+    args: list
+    type: str = "StructLiteral"
+
 # ----------------------------------------------------------------------------
 # Statements
 # ----------------------------------------------------------------------------
@@ -195,6 +207,18 @@ class FuncDecl:
     body: list
     return_type: Optional[str] = None
     type: str = "FuncDecl"
+
+@dataclass
+class StructField:
+    name: str
+    var_type: Optional[str] = None
+    type: str = "StructField"
+
+@dataclass
+class StructDecl:
+    name: str
+    fields: list
+    type: str = "StructDecl"
 
 @dataclass
 class Program:

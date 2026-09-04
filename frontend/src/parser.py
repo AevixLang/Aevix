@@ -35,7 +35,7 @@ def parse(code: str):
     with open(get_grammar_path(), "r") as f:
         grammar = f.read()
 
-    parser = Lark(grammar, parser="lalr")
+    parser = Lark(grammar, parser="earley")
     tree = parser.parse(code)
     
     transformer = AevixTransformer()

@@ -143,7 +143,8 @@ bool CodeGenerator::parse_type(const std::string& tn, std::string& base, int& ar
         std::string sz = tn.substr(br + 1, close - br - 1);
         arr_size = sz.empty() ? 0 : std::stoi(sz);
     }
-    return base == "int" || base == "float" || base == "bool" || base == "string";
+    if (base == "int" || base == "float" || base == "bool" || base == "string") return true;
+    return struct_types.find(base) != struct_types.end();
 }
 
 llvm::Type* CodeGenerator::scalar_type_for(const std::string& base) {
@@ -155,16 +156,7 @@ llvm::Type* CodeGenerator::scalar_type_for(const std::string& base) {
 }
 
 llvm::Type* CodeGenerator::llvm_type_for(const std::string& tn) {
-    std::string base;
-    int arr_size = -1;
-    if (!parse_type(tn, base, arr_size)) return nullptr;
-    llvm::Type* b = scalar_type_for(base);
-    if (!b) return nullptr;
-    if (arr_size >= 0) {
-        if (arr_size == 0) return nullptr;
-        return llvm::ArrayType::get(b, arr_size);
-    }
-    return b;
+    return llvm_type_from_name(tn);
 }
 
 llvm::Type* CodeGenerator::signature_type_for(const std::string& tn, const std::string& ctx) {
@@ -173,6 +165,10 @@ llvm::Type* CodeGenerator::signature_type_for(const std::string& tn, const std::
     int arr_size = -1;
     if (!parse_type(tn, base, arr_size)) {
         error("Unknown type '" + tn + "' in " + ctx);
+    }
+    if (struct_types.find(base) != struct_types.end()) {
+        if (arr_size > 0) return llvm::ArrayType::get(struct_types[base], arr_size);
+        return struct_types[base];
     }
     llvm::Type* b = scalar_type_for(base);
     if (arr_size >= 0) {
@@ -183,6 +179,120 @@ llvm::Type* CodeGenerator::signature_type_for(const std::string& tn, const std::
         return llvm::ArrayType::get(b, arr_size);
     }
     return b;
+}
+
+bool CodeGenerator::is_struct(const std::string& tn) {
+    return struct_types.find(tn) != struct_types.end();
+}
+
+llvm::StructType* CodeGenerator::struct_type_for(const std::string& tn) {
+    auto it = struct_types.find(tn);
+    if (it != struct_types.end()) return it->second;
+    return nullptr;
+}
+
+int CodeGenerator::struct_field_index(const std::string& st, const std::string& field) {
+    auto it = struct_field_indices.find(st);
+    if (it == struct_field_indices.end()) return -1;
+    auto fit = it->second.find(field);
+    if (fit == it->second.end()) return -1;
+    return fit->second;
+}
+
+llvm::Type* CodeGenerator::struct_field_type(const std::string& st, const std::string& field) {
+    int idx = struct_field_index(st, field);
+    if (idx < 0) return nullptr;
+    return struct_type_for(st)->getElementType(idx);
+}
+
+void CodeGenerator::register_struct(const StructDecl& sd) {
+    if (struct_types.find(sd.name) != struct_types.end()) return;
+    struct_decls[sd.name] = &sd;
+    std::vector<llvm::Type*> field_types;
+    for (const auto& f : sd.fields) field_types.push_back(llvm_type_from_name(f.var_type));
+    auto st = llvm::StructType::create(*context, field_types, sd.name);
+    struct_types[sd.name] = st;
+    std::map<std::string, int> idx_map;
+    for (std::size_t i = 0; i < sd.fields.size(); ++i) {
+        idx_map[sd.fields[i].name] = (int)i;
+    }
+    struct_field_indices[sd.name] = idx_map;
+}
+
+// Helper to convert an Aevix type string (scalar/array/struct) to an LLVM type.
+llvm::Type* CodeGenerator::llvm_type_from_name(const std::string& tn) {
+    std::string base;
+    int arr_size = -1;
+    parse_type(tn, base, arr_size);
+    if (arr_size == 0) {
+        // open array in struct — not yet supported
+        return llvm::PointerType::getUnqual(*context);
+    }
+    if (arr_size > 0) {
+        llvm::Type* sc = scalar_type_for(base);
+        if (sc) return llvm::ArrayType::get(sc, arr_size);
+    }
+    llvm::Type* sc = scalar_type_for(base);
+    if (sc) return sc;
+    auto sit = struct_types.find(base);
+    if (sit != struct_types.end()) return sit->second;
+    return llvm::Type::getVoidTy(*context);
+}
+
+llvm::Value* CodeGenerator::build_struct_literal(const StructLiteral& sl) {
+    auto it = struct_types.find(sl.name);
+    if (it == struct_types.end()) error("Unknown struct: " + sl.name);
+    llvm::StructType* st = it->second;
+    auto alloc = builder->CreateAlloca(st, nullptr, sl.name + ".lit");
+    std::size_t n = st->getNumElements();
+    if (sl.args.size() != n) error("Struct '" + sl.name + "' expects " + std::to_string(n) + " fields, got " + std::to_string(sl.args.size()));
+    for (std::size_t i = 0; i < n; ++i) {
+        llvm::Value* v = generate_expr(sl.args[i]);
+        if (!v) return nullptr;
+        llvm::Type* fty = st->getElementType(i);
+        if (fty->isDoubleTy() && v->getType()->isIntegerTy(32)) {
+            v = builder->CreateSIToFP(v, builder->getDoubleTy(), "cast");
+        } else if (fty != v->getType()) {
+            error("Type mismatch for field " + std::to_string(i) + " of struct '" + sl.name + "'");
+        }
+        llvm::Value* fptr = builder->CreateInBoundsGEP(st, alloc, {builder->getInt32(0), builder->getInt32((int)i)}, "f");
+        builder->CreateStore(v, fptr);
+    }
+    return builder->CreateLoad(st, alloc, sl.name + ".val");
+}
+
+// Get pointer to a struct field (for read or write). Returns the field's type.
+llvm::Value* CodeGenerator::gen_member_ptr(const MemberAccess& ma) {
+    llvm::Type* fty = nullptr;
+    return gen_member_ptr_inner(ma, fty);
+}
+
+llvm::Value* CodeGenerator::gen_member_ptr_inner(const MemberAccess& ma, llvm::Type*& field_ty) {
+    llvm::Type* st_ty = nullptr;
+    llvm::Value* base = nullptr;
+
+    if (auto var = std::dynamic_pointer_cast<Variable>(ma.object)) {
+        base = lookup_var(var->name, st_ty);
+        if (!base) error("Variable not found: " + var->name);
+        if (!st_ty->isStructTy()) error("'." + ma.member + "' on a non-struct value");
+    } else if (auto inner = std::dynamic_pointer_cast<MemberAccess>(ma.object)) {
+        llvm::Type* inner_ty = nullptr;
+        base = gen_member_ptr_inner(*inner, inner_ty);
+        st_ty = inner_ty;
+        if (!st_ty->isStructTy()) error("'." + ma.member + "' on a non-struct value");
+    } else if (auto ix = std::dynamic_pointer_cast<Index>(ma.object)) {
+        llvm::Type* elem_ty = nullptr;
+        base = gen_index_ptr(*ix, elem_ty);
+        st_ty = elem_ty;
+        if (!st_ty->isStructTy()) error("'." + ma.member + "' on a non-struct value");
+    } else {
+        error("Invalid member access target");
+    }
+
+    int idx = struct_field_index(st_ty->getStructName().str(), ma.member);
+    if (idx < 0) error("Struct '" + st_ty->getStructName().str() + "' has no field '" + ma.member + "'");
+    field_ty = llvm::cast<llvm::StructType>(st_ty)->getElementType(idx);
+    return builder->CreateInBoundsGEP(st_ty, base, {builder->getInt32(0), builder->getInt32(idx)}, "field");
 }
 
 bool CodeGenerator::is_numeric(llvm::Type* ty) {
@@ -211,6 +321,7 @@ std::string CodeGenerator::llvm_type_name(llvm::Type* ty) {
     if (ty->isIntegerTy(1)) return "bool";
     if (ty->isPointerTy()) return "string";
     if (ty->isArrayTy()) return "array";
+    if (ty->isStructTy()) return ty->getStructName().str();
     return "unknown";
 }
 
@@ -224,6 +335,16 @@ llvm::Type* CodeGenerator::element_type_of(const std::shared_ptr<Expr>& e) {
     if (auto b = std::dynamic_pointer_cast<Bool>(e)) return builder->getInt1Ty();
     if (auto s = std::dynamic_pointer_cast<String>(e)) return llvm::PointerType::getUnqual(*context);
     if (auto al = std::dynamic_pointer_cast<ArrayLit>(e)) return build_array_type(*al);
+    if (auto sl = std::dynamic_pointer_cast<StructLiteral>(e)) {
+        auto it = struct_types.find(sl->name);
+        if (it == struct_types.end()) error("Unknown struct: " + sl->name);
+        return it->second;
+    }
+    if (auto ma = std::dynamic_pointer_cast<MemberAccess>(e)) {
+        llvm::Type* fty = nullptr;
+        gen_member_ptr_inner(*ma, fty);
+        return fty;
+    }
     if (auto var = std::dynamic_pointer_cast<Variable>(e)) {
         llvm::Type* t = nullptr;
         llvm::Value* alloc = lookup_var(var->name, t);
@@ -341,11 +462,35 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (alloc) return builder->CreateLoad(ty, alloc, var->name);
         error("Variable not found: " + var->name);
     }
-    if (auto al = std::dynamic_pointer_cast<ArrayLit>(expr)) return build_array_constant(*al);
+    if (auto al = std::dynamic_pointer_cast<ArrayLit>(expr)) {
+        llvm::Type* arr_ty = build_array_type(*al);
+        llvm::Value* tmp = builder->CreateAlloca(arr_ty, nullptr, "arr.tmp");
+        for (std::size_t i = 0; i < al->elements.size(); ++i) {
+            llvm::Value* ev = generate_expr(al->elements[i]);
+            if (!ev) return nullptr;
+            llvm::Type* et = llvm::cast<llvm::ArrayType>(arr_ty)->getElementType();
+            if (et->isDoubleTy() && ev->getType()->isIntegerTy(32)) {
+                ev = builder->CreateSIToFP(ev, builder->getDoubleTy(), "cast");
+            } else if (et != ev->getType()) {
+                error("Array element " + std::to_string(i) + " has type " + llvm_type_name(ev->getType()) + ", expected " + llvm_type_name(et));
+            }
+            llvm::Value* eptr = builder->CreateInBoundsGEP(arr_ty, tmp, {builder->getInt32(0), builder->getInt32((int)i)}, "arr.elem");
+            builder->CreateStore(ev, eptr);
+        }
+        return builder->CreateLoad(arr_ty, tmp, "arr.val");
+    }
     if (auto ix = std::dynamic_pointer_cast<Index>(expr)) {
         llvm::Type* elem_ty = nullptr;
         llvm::Value* ptr = gen_index_ptr(*ix, elem_ty);
         return builder->CreateLoad(elem_ty, ptr, "idxtmp");
+    }
+    if (auto ma = std::dynamic_pointer_cast<MemberAccess>(expr)) {
+        llvm::Type* fty = nullptr;
+        llvm::Value* ptr = gen_member_ptr_inner(*ma, fty);
+        return builder->CreateLoad(fty, ptr, "field");
+    }
+    if (auto sl = std::dynamic_pointer_cast<StructLiteral>(expr)) {
+        return build_struct_literal(*sl);
     }
     if (auto call = std::dynamic_pointer_cast<Call>(expr)) {
         // Handle len() builtin
@@ -619,7 +764,8 @@ void CodeGenerator::generate_let(const Let& let) {
             if (at->getElementType() != scalar) error("Type mismatch for '" + let.name + "': unexpected element type");
             if ((std::size_t)arr_size != at->getNumElements()) error("Array size mismatch");
         } else {
-            llvm::Type* declared = scalar_type_for(base);
+            llvm::Type* declared = llvm_type_from_name(base);
+            if (!declared) error("Unknown type: " + base);
             if (declared->isDoubleTy() && val->getType()->isIntegerTy(32)) {
                 val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
                 ty = declared;
@@ -646,6 +792,20 @@ void CodeGenerator::generate_assign(const Assign& a) {
             error("Cannot assign an array to a single array element");
         } else if (elem_ty != val->getType()) {
             error("Type mismatch for indexed assignment");
+        }
+        builder->CreateStore(val, ptr);
+        return;
+    }
+
+    if (auto ma = std::dynamic_pointer_cast<MemberAccess>(a.name)) {
+        llvm::Type* fty = nullptr;
+        llvm::Value* ptr = gen_member_ptr_inner(*ma, fty);
+        llvm::Value* val = generate_expr(a.value);
+        if (!val) return;
+        if (fty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
+            val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
+        } else if (fty != val->getType()) {
+            error("Type mismatch for field assignment");
         }
         builder->CreateStore(val, ptr);
         return;
@@ -710,9 +870,64 @@ void CodeGenerator::generate_print(const Print& print) {
             if (elem->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
             else if (elem->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
             else if (elem->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
+            else if (elem->isStructTy()) {
+                auto op = builder->CreateGlobalString("{", "open_br");
+                builder->CreateCall(printf_func, {op});
+                auto st = llvm::cast<llvm::StructType>(elem);
+                for (int k = 0; k < (int)st->getNumElements(); ++k) {
+                    auto fp = builder->CreateInBoundsGEP(st, eptr, {builder->getInt32(0), builder->getInt32(k)}, "pfld");
+                    auto fv = builder->CreateLoad(st->getElementType(k), fp, "pfld.v");
+                    if (k > 0) {
+                        auto comma = builder->CreateGlobalString(", ", "comma");
+                        builder->CreateCall(printf_func, {comma});
+                    }
+                    llvm::Value* ff = nullptr;
+                    llvm::Value* fa = fv;
+                    if (fv->getType()->isIntegerTy(32)) ff = builder->CreateGlobalString("%d", "fmt");
+                    else if (fv->getType()->isDoubleTy()) ff = builder->CreateGlobalString("%f", "fmt");
+                    else if (fv->getType()->isIntegerTy(1)) { ff = builder->CreateGlobalString("%d", "fmt"); fa = builder->CreateZExt(fv, builder->getInt32Ty()); }
+                    else if (fv->getType()->isPointerTy()) ff = builder->CreateGlobalString("%s", "fmt");
+                    else error("Cannot print struct field of type " + llvm_type_name(fv->getType()) + " (nested structs not yet supported in print)");
+                    builder->CreateCall(printf_func, {ff, fa});
+                }
+                auto cl = builder->CreateGlobalString("}", "close_br");
+                builder->CreateCall(printf_func, {cl});
+                goto skip_printf;
+            }
+            else error("Cannot print array element of type " + llvm_type_name(elem));
             builder->CreateCall(printf_func, {fmt, a});
+            skip_printf:;
         }
         auto close_br = builder->CreateGlobalString("]\n", "close_br");
+        builder->CreateCall(printf_func, {close_br});
+        return;
+    }
+    else if (val->getType()->isStructTy()) {
+        auto st = llvm::cast<llvm::StructType>(val->getType());
+        int n = (int)st->getNumElements();
+        auto tmp = builder->CreateAlloca(st, nullptr, "print.struct");
+        builder->CreateStore(val, tmp);
+        auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+        auto printf_func = module->getOrInsertFunction("printf", printf_type);
+        auto open_br = builder->CreateGlobalString("{", "open_br");
+        builder->CreateCall(printf_func, {open_br});
+        for (int i = 0; i < n; ++i) {
+            auto eptr = builder->CreateInBoundsGEP(st, tmp, {builder->getInt32(0), builder->getInt32(i)}, "print.field");
+            auto ev = builder->CreateLoad(st->getElementType(i), eptr, "print.val");
+            if (i > 0) {
+                auto comma = builder->CreateGlobalString(", ", "comma");
+                builder->CreateCall(printf_func, {comma});
+            }
+            llvm::Value* fmt = nullptr;
+            llvm::Value* a = ev;
+            if (ev->getType()->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
+            else if (ev->getType()->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
+            else if (ev->getType()->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
+            else if (ev->getType()->isPointerTy()) fmt = builder->CreateGlobalString("%s", "fmt");
+            else error("Cannot print struct field of type " + llvm_type_name(ev->getType()) + " (nested structs not yet supported in print)");
+            builder->CreateCall(printf_func, {fmt, a});
+        }
+        auto close_br = builder->CreateGlobalString("}\n", "close_br");
         builder->CreateCall(printf_func, {close_br});
         return;
     }
@@ -871,6 +1086,7 @@ void CodeGenerator::generate_return(const Return& r) {
             else if (ret_ty->isDoubleTy()) builder->CreateRet(llvm::ConstantFP::get(builder->getDoubleTy(), 0.0));
             else if (ret_ty->isIntegerTy(1)) builder->CreateRet(builder->getInt1(false));
             else if (ret_ty->isArrayTy()) builder->CreateRet(llvm::ConstantAggregateZero::get(ret_ty));
+            else if (ret_ty->isStructTy()) builder->CreateRet(llvm::ConstantAggregateZero::get(ret_ty));
             else builder->CreateRet(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ret_ty)));
         } else {
             builder->CreateRetVoid();
@@ -899,7 +1115,7 @@ void CodeGenerator::declare_func(const FuncDecl& fd) {
         parse_type(p.var_type, pbase, parr);
         if (parr == 0) {
             // Open array: split into ptr + len
-            llvm::Type* elem = scalar_type_for(pbase);
+            llvm::Type* elem = llvm_type_from_name(pbase);
             param_types.push_back(llvm::PointerType::getUnqual(*context));
             param_types.push_back(builder->getInt32Ty());
         } else {
@@ -936,7 +1152,7 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
             // Open array: arg is i32*, next arg is i32 len
             llvm::Argument& ptr_arg = *arg_it++;
             llvm::Argument& len_arg = *arg_it++;
-            llvm::Type* elem = scalar_type_for(pbase);
+            llvm::Type* elem = llvm_type_from_name(pbase);
             auto ptr_alloca = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, p.name);
             builder->CreateStore(&ptr_arg, ptr_alloca);
             auto len_alloca = builder->CreateAlloca(builder->getInt32Ty(), nullptr, p.name + ".len");
@@ -964,6 +1180,7 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
         else if (ret_ty->isDoubleTy()) builder->CreateRet(llvm::ConstantFP::get(builder->getDoubleTy(), 0.0));
         else if (ret_ty->isIntegerTy(1)) builder->CreateRet(builder->getInt1(false));
         else if (ret_ty->isArrayTy()) builder->CreateRet(llvm::ConstantAggregateZero::get(ret_ty));
+        else if (ret_ty->isStructTy()) builder->CreateRet(llvm::ConstantAggregateZero::get(ret_ty));
         else builder->CreateRet(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ret_ty)));
     }
 
@@ -985,6 +1202,7 @@ void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
         case Stmt::Kind::Assign:   if (stmt->assign_stmt) generate_assign(*stmt->assign_stmt); break;
         case Stmt::Kind::FuncDecl: generate_func_decl(*stmt->func_decl); break;
         case Stmt::Kind::CallStmt: if (stmt->call_stmt) generate_expr(stmt->call_stmt); break;
+        case Stmt::Kind::StructDecl: break; // already registered in pass 1
     }
 }
 
@@ -1003,6 +1221,10 @@ void CodeGenerator::finalize() {
 }
 
 void CodeGenerator::generate_program(const Program& program) {
+    // Pass 1: register struct types (needed before function signatures)
+    for (const auto& stmt : program.body) {
+        if (stmt->kind == Stmt::Kind::StructDecl && stmt->struct_decl) register_struct(*stmt->struct_decl);
+    }
     for (const auto& stmt : program.body) {
         if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) declare_func(*stmt->func_decl);
     }
@@ -1011,6 +1233,6 @@ void CodeGenerator::generate_program(const Program& program) {
     }
     builder->SetInsertPoint(main_entry_block);
     for (const auto& stmt : program.body) {
-        if (stmt->kind != Stmt::Kind::FuncDecl) generate_stmt(stmt);
+        if (stmt->kind != Stmt::Kind::FuncDecl && stmt->kind != Stmt::Kind::StructDecl) generate_stmt(stmt);
     }
 }
