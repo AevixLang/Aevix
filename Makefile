@@ -11,16 +11,17 @@ setup:
 
 build:
 	@echo "🔨 Building backend..."
-	cd backend/build && cmake -DLLVM_DIR="$$(brew --prefix llvm)/lib/cmake/llvm" .. && make
+	mkdir -p backend/build
+	cd backend/build && cmake .. -DCMAKE_BUILD_TYPE=Release && make
 	@echo "✅ Backend build complete!"
 
 run:
 	@echo "🚀 Compiling and running $(FILE)..."
-	cd tools && go run ./cmd/aevix -root "$(ROOT)" -run "$(FILE)"
+	./aevix -root "$(ROOT)" run "$(FILE)"
 
 clean:
 	@echo "🧹 Cleaning..."
-	cd tools && go run ./cmd/aevix -root "$(ROOT)" -clean
+	./aevix -root "$(ROOT)" clean
 	@echo "✅ Clean complete!"
 
 test:

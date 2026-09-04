@@ -40,7 +40,11 @@ class AevixTransformer(Transformer):
         result = Variable(value=str(items[0]))
         for suffix in items[1:]:
             if isinstance(suffix, list):  # call argument list
-                result = Call(callee=result.value, args=suffix)
+                if isinstance(result, Call):
+                    callee_name = result.callee
+                else:
+                    callee_name = result.value
+                result = Call(callee=callee_name, args=suffix)
             else:  # index suffix -> raw index expression
                 result = Index(object=result, index=suffix)
         return result
@@ -86,7 +90,7 @@ class AevixTransformer(Transformer):
             result = Add(left=result, right=right) if op == '+' else Sub(left=result, right=right)
         return result
 
-    def comparision(self, items):
+    def comparison(self, items):
         result = items[0]
         for i in range(1, len(items), 2):
             op = str(items[i])

@@ -554,7 +554,7 @@ void CodeGenerator::generate_assign(const Assign& a) {
 }
 
 void CodeGenerator::generate_hot(const Hot& hot) {
-    for (const auto& let : hot.body) generate_let(let);
+    for (const auto& stmt : hot.body) generate_stmt(stmt);
 }
 
 void CodeGenerator::generate_print(const Print& print) {

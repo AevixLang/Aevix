@@ -1,9 +1,9 @@
-# ============================================================================
-# Aevix Backend: JSON AST Reader
-#
-# This module implements the logic to read the AST exported by the frontend
-# in JSON format and deserialize it into the C++ AST representation.
-# ============================================================================
+// ============================================================================
+// Aevix Backend: JSON AST Reader
+//
+// This module implements the logic to read the AST exported by the frontend
+// in JSON format and deserialize it into the C++ AST representation.
+// ============================================================================
 #include "json_reader.hpp"
 #include <fstream>
 #include <iostream>
@@ -120,6 +120,11 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
 }
 
 /**
+ * Parses a single JSON statement into a C++ Stmt object.
+ */
+static std::shared_ptr<Stmt> parse_stmt(const json& j);
+
+/**
  * Parses a JSON block (list of statements) into a C++ Block object.
  */
 static std::shared_ptr<Block> parse_block(const json& j) {
@@ -152,12 +157,10 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         stmt->kind = Stmt::Kind::Hot;
         for (const auto& inner : j["body"]) {
             auto child = parse_stmt(inner);
-            if (child && child->kind == Stmt::Kind::Let) {
-                stmt->hot.body.push_back(child->let);
-            }
+            if (child) stmt->hot.body.push_back(child);
         }
     }
-    else if (type, "Print") { // Fix a bug here: type == "Print"
+    else if (type == "Print") {
         stmt->kind = Stmt::Kind::Print;
         stmt->print.value = parse_expr(j["value"]);
     }

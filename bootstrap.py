@@ -1,4 +1,3 @@
-import os
 import subprocess
 import sys
 import platform
@@ -11,9 +10,9 @@ def print_status(msg):
 def print_error(msg):
     print(f"❌ {msg}")
 
-def run(cmd, shell=False):
+def run(cmd, shell=False, cwd=None):
     try:
-        subprocess.run(cmd, check=True, shell=shell)
+        subprocess.run(cmd, check=True, shell=shell, cwd=cwd)
         return True
     except subprocess.CalledProcessError:
         return False
@@ -30,30 +29,43 @@ def setup_python():
     else:
         python_exe = venv_dir / "bin" / "python"
 
-    run([str(python_exe), "-m", "pip", "install", "lark"])
+    run([str(python_exe), "-m", "pip", "install", "-r", "frontend/requirements.txt"])
     print_status("Python environment ready.")
 
 def setup_backend():
     print_status("Building C++ backend...")
     build_dir = Path("backend/build")
+    cache_file = build_dir / "CMakeCache.txt"
+
+    # If cache exists, check if it was generated from a different source directory
+    if cache_file.exists():
+        try:
+            with open(cache_file) as f:
+                for line in f:
+                    if line.startswith("CMAKE_HOME_DIRECTORY:INTERNAL="):
+                        cached_dir = line.split("=", 1)[1].strip()
+                        current_dir = str(Path("backend").resolve())
+                        if cached_dir != current_dir:
+                            print_status("Stale CMake cache detected, cleaning build directory...")
+                            shutil.rmtree(build_dir)
+                        break
+        except Exception:
+            pass
+
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    # CMake configuration
-    # We use -DCMAKE_BUILD_TYPE=Release for speed
     cmake_cmd = ["cmake", "..", "-DCMAKE_BUILD_TYPE=Release"]
 
     # Run cmake inside the build directory
-    os.chdir(build_dir)
-    if not run(cmake_cmd):
+    if not run(cmake_cmd, cwd=str(build_dir)):
         print_error("CMake configuration failed. Make sure LLVM is installed.")
         sys.exit(1)
 
     # Build using cmake --build
-    if not run(["cmake", "--build", "."]):
+    if not run(["cmake", "--build", "."], cwd=str(build_dir)):
         print_error("Backend build failed.")
         sys.exit(1)
 
-    os.chdir("../../")
     print_status("C++ backend built successfully.")
 
 def setup_tools():
@@ -77,6 +89,16 @@ def main():
     if not shutil.which("clang") and not shutil.which("gcc"):
         print_error("No C++ compiler (clang/gcc) found.")
         sys.exit(1)
+    if not shutil.which("llc"):
+        # Check common Homebrew/system LLVM paths
+        llc_found = False
+        for prefix in ["/opt/homebrew/opt/llvm/bin", "/usr/local/opt/llvm/bin", "/usr/lib/llvm/bin"]:
+            if (Path(prefix) / "llc").exists():
+                llc_found = True
+                break
+        if not llc_found:
+            print_error("llc not found in PATH. Install LLVM and ensure llc is accessible.")
+            sys.exit(1)
 
     # 2. Setup phases
     setup_python()

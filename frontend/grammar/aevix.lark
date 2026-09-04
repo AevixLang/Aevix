@@ -38,8 +38,8 @@ block: "{" stmt* "}"
 // Precedence: or >> and >> comparison >> +- >> */ >> unary(-, !) >> atom
 expr: or_
 or_: and_ (OROP and_)*
-and_: comparision (ANDOP comparision)*
-comparision: arith (CMPOP arith)*
+and_: comparison (ANDOP comparison)*
+comparison: arith (CMPOP arith)*
 arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: MINUS factor | BANG factor | atom

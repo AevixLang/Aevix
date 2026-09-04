@@ -90,6 +90,8 @@ struct Call : public Expr {
 };
 
 // Statements
+struct Stmt;
+
 struct Let {
     std::string name;
     std::shared_ptr<Expr> value;
@@ -97,14 +99,13 @@ struct Let {
 };
 
 struct Hot {
-    std::vector<Let> body;
+    std::vector<std::shared_ptr<Stmt>> body;
 };
 
 struct Print {
     std::shared_ptr<Expr> value;
 };
 
-struct Stmt;
 struct Block {
     std::vector<std::shared_ptr<Stmt>> body;
 };
@@ -114,13 +115,13 @@ struct Param {
     std::string var_type;
 };
 
-struct If : public Expr {
+struct If {
     std::shared_ptr<Expr> condition;
     std::shared_ptr<Block> then_block;
     std::shared_ptr<Block> else_block;
 };
 
-struct While : public Expr {
+struct While {
     std::shared_ptr<Expr> condition;
     std::shared_ptr<Block> body;
 };

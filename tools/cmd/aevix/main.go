@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -125,17 +124,21 @@ func (w *writeBuffer) Write(p []byte) (int, error) {
 }
 
 func main() {
-	buildFlag := flag.Bool("build", false, "Compile a .aev file into an executable")
-	runFlag := flag.Bool("run", false, "Build and run the program")
-	cleanFlag := flag.Bool("clean", false, "Remove generated artifacts")
-	rootFlag := flag.String("root", "", "Project root directory (defaults to current dir)")
-	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: aevix [flags] <file.aev>")
-		flag.PrintDefaults()
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
 	}
-	flag.Parse()
 
-	rootDir = *rootFlag
+	// Handle -root flag before subcommand
+	args := os.Args[1:]
+	for i, arg := range args {
+		if arg == "-root" && i+1 < len(args) {
+			rootDir = args[i+1]
+			args = append(args[:i], args[i+2:]...)
+			break
+		}
+	}
+
 	if rootDir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -144,7 +147,34 @@ func main() {
 		rootDir = wd
 	}
 
-	if *cleanFlag {
+	cmd := args[0]
+	cmdArgs := args[1:]
+
+	switch cmd {
+	case "build":
+		if len(cmdArgs) < 1 {
+			fmt.Fprintln(os.Stderr, "Usage: aevix build <file.aev>")
+			os.Exit(1)
+		}
+		if err := buildProject(cmdArgs[0]); err != nil {
+			fmt.Println("❌ Build failed:", err)
+			os.Exit(1)
+		}
+	case "run":
+		if len(cmdArgs) < 1 {
+			fmt.Fprintln(os.Stderr, "Usage: aevix run <file.aev>")
+			os.Exit(1)
+		}
+		if err := buildProject(cmdArgs[0]); err != nil {
+			fmt.Println("❌ Build failed:", err)
+			os.Exit(1)
+		}
+		prog := filepath.Join(rootDir, "program")
+		if runtime.GOOS == "windows" {
+			prog += ".exe"
+		}
+		runTool(prog)
+	case "clean":
 		os.RemoveAll(filepath.Join(rootDir, "output.ll"))
 		os.RemoveAll(filepath.Join(rootDir, "output.o"))
 		os.RemoveAll(filepath.Join(rootDir, "program"))
@@ -152,41 +182,18 @@ func main() {
 			os.RemoveAll(filepath.Join(rootDir, "program.exe"))
 		}
 		fmt.Println("🧹 Cleaned artifacts")
-		return
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", cmd)
+		printUsage()
+		os.Exit(1)
 	}
+}
 
-	src := flag.Arg(0)
-
-	if *buildFlag {
-		if src == "" {
-			flag.Usage()
-			os.Exit(1)
-		}
-		if err := buildProject(src); err != nil {
-			fmt.Println("❌ Build failed:", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if *runFlag {
-		if src == "" {
-			flag.Usage()
-			os.Exit(1)
-		}
-		if err := buildProject(src); err != nil {
-			fmt.Println("❌ Build failed:", err)
-			os.Exit(1)
-		}
-
-		prog := filepath.Join(rootDir, "program")
-		if runtime.GOOS == "windows" {
-			prog += ".exe"
-		}
-		runTool(prog)
-		return
-	}
-
-	flag.Usage()
-	os.Exit(1)
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "Usage: aevix <command> [arguments]")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  build <file.aev>    Compile a .aev file into an executable")
+	fmt.Fprintln(os.Stderr, "  run <file.aev>      Build and run the program")
+	fmt.Fprintln(os.Stderr, "  clean               Remove generated artifacts")
 }
