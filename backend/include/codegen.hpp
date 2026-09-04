@@ -37,6 +37,15 @@ private:
     llvm::Function* epoch_begin_func;
     llvm::Function* epoch_end_func;
 
+    // I/O runtime helpers: program arguments, exit code, file read/write.
+    llvm::GlobalVariable* argc_global;
+    llvm::GlobalVariable* argv_global;
+    llvm::Function* strlen_func;
+    llvm::Function* exit_func;
+    llvm::Function* read_file_func;
+    llvm::Function* write_file_func;
+    void build_io_runtime();
+
     // Escape-checking for epochs: every open-array variable remembers the
     // epoch depth it was created at. Assigning a slice to a variable defined
     // at a smaller depth would survive the arena rollback and dangle.

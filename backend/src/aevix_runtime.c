@@ -113,3 +113,45 @@ int32_t __aevix_str_eq(const uint8_t* a, int32_t alen, const uint8_t* b, int32_t
     }
     return 1;
 }
+
+/* Reads an entire file into arena memory. On failure (missing file, read
+ * error) out_ptr/out_len are set to NULL/0, i.e. the caller sees "". */
+void __aevix_read_file(const uint8_t* path, uint8_t** out_ptr, int32_t* out_len) {
+    FILE* f = fopen((const char*)path, "rb");
+    if (f == NULL) {
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    long sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    fseek(f, 0, SEEK_SET);
+    uint8_t* buf = sz > 0 ? (uint8_t*)__aevix_alloc((int32_t)sz) : NULL;
+    size_t got = 0;
+    if (sz > 0) got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    *out_ptr = buf;
+    *out_len = (int32_t)got;
+}
+
+/* Writes a byte buffer to a file, truncating it first. Returns 1 on success,
+ * 0 if the file could not be opened or the write was short. */
+int32_t __aevix_write_file(const uint8_t* path, const uint8_t* data, int32_t len) {
+    FILE* f = fopen((const char*)path, "wb");
+    if (f == NULL) return 0;
+    size_t w = len > 0 ? fwrite(data, 1, (size_t)len, f) : 0;
+    int rc = fclose(f);
+    if (rc != 0) return 0;
+    return w == (size_t)len ? 1 : 0;
+}

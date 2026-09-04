@@ -26,13 +26,17 @@ CodeGenerator::CodeGenerator()
     , builder(std::make_unique<llvm::IRBuilder<>>(*context))
 {
     module->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
-    auto func_type = llvm::FunctionType::get(builder->getInt32Ty(), {}, false);
+    auto ptr_ty = llvm::PointerType::getUnqual(*context);
+    auto func_type = llvm::FunctionType::get(builder->getInt32Ty(), {builder->getInt32Ty(), ptr_ty->getPointerTo()}, false);
     main_func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, "main", module.get());
+    main_func->getArg(0)->setName("argc");
+    main_func->getArg(1)->setName("argv");
     main_entry_block = llvm::BasicBlock::Create(*context, "entry", main_func);
     builder->SetInsertPoint(main_entry_block);
 
     build_oob_runtime();
     build_arena_runtime();
+    build_io_runtime();
 
     named_values.emplace_back();
     named_types.emplace_back();
@@ -95,6 +99,43 @@ void CodeGenerator::build_arena_runtime() {
     // __aevix_str_eq(ptr a, i32 alen, ptr b, i32 blen) -> i1  (content compare)
     auto str_eq_ft = llvm::FunctionType::get(builder->getInt1Ty(), {ptr_ty, i32, ptr_ty, i32}, false);
     str_eq_func = llvm::Function::Create(str_eq_ft, llvm::Function::ExternalLinkage, "__aevix_str_eq", module.get());
+}
+
+/**
+ * Declares the I/O runtime: program arguments, exit code and file read/write,
+ * backed by libc. Read/write live in aevix_runtime.c; the rest are stdlib.
+ */
+void CodeGenerator::build_io_runtime() {
+    auto i32 = builder->getInt32Ty();
+    auto void_ty = llvm::Type::getVoidTy(*context);
+    auto ptr_ty = llvm::PointerType::getUnqual(*context);
+
+    // Args for the Aevix program: copies of argc/argv live in globals so any
+    // function (not just hot) can call argc() and arg(i).
+    argc_global = new llvm::GlobalVariable(*module, i32, false,
+        llvm::GlobalValue::InternalLinkage, builder->getInt32(0), "__aevix_argc");
+    argv_global = new llvm::GlobalVariable(*module, ptr_ty->getPointerTo(), false,
+        llvm::GlobalValue::InternalLinkage, llvm::ConstantPointerNull::get(ptr_ty->getPointerTo()), "__aevix_argv");
+
+    // strlen(ptr) -> i32
+    auto strlen_ft = llvm::FunctionType::get(i32, {ptr_ty}, false);
+    strlen_func = llvm::Function::Create(strlen_ft, llvm::Function::ExternalLinkage, "strlen", module.get());
+
+    // exit(i32) (noreturn) — reuse the declaration made by build_oob_runtime.
+    auto exit_ft = llvm::FunctionType::get(void_ty, {i32}, false);
+    module->getOrInsertFunction("exit", exit_ft);
+    exit_func = module->getFunction("exit");
+    exit_func->addFnAttr(llvm::Attribute::NoReturn);
+
+    // __aevix_read_file(ptr path, ptr* out_ptr, ptr* out_len)
+    // Fills out_ptr/out_len with arena-backed file contents; empty on failure.
+    auto pp_ty = llvm::PointerType::getUnqual(ptr_ty);
+    auto read_ft = llvm::FunctionType::get(void_ty, {ptr_ty, pp_ty, pp_ty}, false);
+    read_file_func = llvm::Function::Create(read_ft, llvm::Function::ExternalLinkage, "__aevix_read_file", module.get());
+
+    // __aevix_write_file(ptr path, ptr data, i32 len) -> i32 (1 = ok)
+    auto write_ft = llvm::FunctionType::get(i32, {ptr_ty, ptr_ty, i32}, false);
+    write_file_func = llvm::Function::Create(write_ft, llvm::Function::ExternalLinkage, "__aevix_write_file", module.get());
 }
 
 /**
@@ -782,6 +823,93 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
                 return builder->CreateExtractValue(av, 1, "len");
             }
             error("len() requires an array variable");
+        }
+
+        // argc() -> int (arguments after the program name)
+        if (call->callee == "argc" && call->args.empty()) {
+            auto n = builder->CreateLoad(builder->getInt32Ty(), argc_global, "argc");
+            return builder->CreateSub(n, builder->getInt32(1), "nargs");
+        }
+
+        // arg(i) -> string: i-th CLI argument (arena copy)
+        if (call->callee == "arg" && call->args.size() == 1) {
+            auto idx = generate_expr(call->args[0]);
+            if (!idx) return nullptr;
+            if (!idx->getType()->isIntegerTy(32)) error("arg() requires an integer index");
+            auto n = builder->CreateLoad(builder->getInt32Ty(), argc_global, "argc");
+            auto last = builder->CreateSub(n, builder->getInt32(1), "last");
+            auto neg = builder->CreateICmpSLT(idx, builder->getInt32(0));
+            auto too = builder->CreateICmpSGE(idx, last);
+            auto oob = builder->CreateOr(neg, too, "arg.oob");
+            auto fn = builder->GetInsertBlock()->getParent();
+            auto bad = llvm::BasicBlock::Create(*context, "arg.bad", fn);
+            auto ok = llvm::BasicBlock::Create(*context, "arg.ok", fn);
+            auto cont = llvm::BasicBlock::Create(*context, "arg.cont", fn);
+            builder->CreateCondBr(oob, bad, ok);
+            builder->SetInsertPoint(bad);
+            auto empt = make_string_slice(builder->CreateGlobalString("", "arg.empty"), builder->getInt32(0));
+            builder->CreateBr(cont);
+            builder->SetInsertPoint(ok);
+            auto argv_ptr = builder->CreateLoad(llvm::PointerType::getUnqual(*context)->getPointerTo(), argv_global, "arg.argv");
+            auto slot = builder->CreateInBoundsGEP(llvm::PointerType::getUnqual(*context), argv_ptr,
+                builder->CreateAdd(idx, builder->getInt32(1), "argv.idx"), "arg.slot");
+            auto cstr = builder->CreateLoad(llvm::PointerType::getUnqual(*context), slot, "arg.cstr");
+            auto clen = builder->CreateCall(strlen_func, {cstr}, "arg.clen");
+            auto b32 = builder->CreateTrunc(builder->CreateZExt(clen, builder->getInt64Ty()), builder->getInt32Ty(), "arg.b32");
+            auto buf = builder->CreateCall(alloc_func, {b32}, "arg.buf");
+            llvm::Function* memcpy_fn = llvm::Intrinsic::getOrInsertDeclaration(
+                module.get(), llvm::Intrinsic::memcpy, llvm::Type::getVoidTy(*context),
+                {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context),
+                 builder->getInt64Ty(), builder->getInt1Ty()});
+            builder->CreateCall(memcpy_fn, {buf, cstr, builder->CreateZExt(clen, builder->getInt64Ty(), "arg.cpy"), builder->getInt1(false)});
+            auto real = make_string_slice(buf, clen);
+            builder->CreateBr(cont);
+            builder->SetInsertPoint(cont);
+            llvm::Value* merged = builder->CreatePHI(slice_type_for("string"), 2, "arg.sel");
+            auto merphi = llvm::cast<llvm::PHINode>(merged);
+            merphi->addIncoming(empt, bad);
+            merphi->addIncoming(real, ok);
+            return merged;
+        }
+
+        // exit(n): terminate the program with a status code.
+        if (call->callee == "exit" && call->args.size() == 1) {
+            auto v = generate_expr(call->args[0]);
+            if (!v) return nullptr;
+            if (!v->getType()->isIntegerTy(32)) error("exit() requires an integer code");
+            builder->CreateCall(exit_func, {v});
+            builder->CreateUnreachable();
+            auto dead = llvm::BasicBlock::Create(*context, "exit.dead", builder->GetInsertBlock()->getParent());
+            builder->SetInsertPoint(dead);
+            return nullptr;
+        }
+
+        // read(fn) -> string: whole file as an arena-backed string.
+        if (call->callee == "read" && call->args.size() == 1) {
+            auto av = generate_expr(call->args[0]);
+            if (!av) return nullptr;
+            if (!is_string_slice(av->getType())) error("read() requires a string path");
+            auto path = builder->CreateExtractValue(av, 0, "read.path");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "read.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "read.l");
+            builder->CreateCall(read_file_func, {path, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "read.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "read.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // write(fn, s) -> bool: write a string to a file; true on success.
+        if (call->callee == "write" && call->args.size() == 2) {
+            auto pathv = generate_expr(call->args[0]);
+            auto datav = generate_expr(call->args[1]);
+            if (!pathv || !datav) return nullptr;
+            if (!is_string_slice(pathv->getType())) error("write() requires a string path");
+            if (!is_string_slice(datav->getType())) error("write() requires a string payload");
+            auto ok = builder->CreateCall(write_file_func,
+                {builder->CreateExtractValue(pathv, 0, "w.path"),
+                 builder->CreateExtractValue(datav, 0, "w.data"),
+                 builder->CreateExtractValue(datav, 1, "w.len")}, "w.ok");
+            return builder->CreateICmpNE(ok, builder->getInt32(0), "w.bool");
         }
 
         auto it = functions.find(call->callee);
@@ -1595,6 +1723,9 @@ void CodeGenerator::generate_program(const Program& program) {
         if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) generate_func_decl(*stmt->func_decl);
     }
     builder->SetInsertPoint(main_entry_block);
+    // Persist argc/argv for argc()/arg() anywhere in the program.
+    builder->CreateStore(main_func->getArg(0), argc_global);
+    builder->CreateStore(main_func->getArg(1), argv_global);
     for (const auto& stmt : program.body) {
         if (stmt->kind != Stmt::Kind::FuncDecl && stmt->kind != Stmt::Kind::StructDecl) generate_stmt(stmt);
     }
