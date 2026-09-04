@@ -8,7 +8,8 @@ from lark import Transformer, Token
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
-    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField
+    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField,
+    New, Epoch
 )
 
 def _expr_from_token(tok):
@@ -79,6 +80,9 @@ class AevixTransformer(Transformer):
 
     def struct_lit_item(self, items):
         return items[0]
+
+    def new_expr(self, items):
+        return New(arr_type=items[0])
 
     def arg_list(self, items):
         return list(items)
@@ -158,6 +162,9 @@ class AevixTransformer(Transformer):
 
     def hot_block(self, items):
         return Hot(body=items[0])
+
+    def epoch_stmt(self, items):
+        return Epoch(body=items[0])
 
     def print_stmt(self, items):
         return Print(value=items[0])

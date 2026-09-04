@@ -134,6 +134,11 @@ class StructLiteral:
     args: list
     type: str = "StructLiteral"
 
+@dataclass
+class New:
+    arr_type: str
+    type: str = "New"
+
 # ----------------------------------------------------------------------------
 # Statements
 # ----------------------------------------------------------------------------
@@ -149,6 +154,11 @@ class Let:
 class Hot:
     body: list
     type: str = "Hot"
+
+@dataclass
+class Epoch:
+    body: list
+    type: str = "Epoch"
 
 @dataclass
 class Print:

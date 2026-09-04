@@ -13,6 +13,9 @@ stmt: let_stmt
     | assign_stmt
     | func_decl
     | struct_decl
+    | epoch_stmt
+
+epoch_stmt: "epoch" block
 
 struct_decl: "struct" CNAME "{" struct_fields? "}"
 struct_fields: struct_field ("," struct_field)* ","?
@@ -48,7 +51,8 @@ comparison: arith (CMPOP arith)*
 arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: MINUS factor | BANG factor | atom
-atom: NUMBER | FLOAT | BOOL | STRING | array_lit | struct_lit | primary | "(" expr ")"
+atom: NUMBER | FLOAT | BOOL | STRING | array_lit | struct_lit | primary | "(" expr ")" | new_expr
+new_expr: "new" type_name
 primary: CNAME suffix*
 suffix: call_suffix | index_suffix | dot_suffix
 call_suffix: "(" arg_list? ")"
@@ -80,7 +84,7 @@ BANG: "!"
 
 BOOL.1: "true" | "false"
 STRING: /"[^"]*"/
-CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|true\b|false\b|int\b|float\b|bool\b|string\b)[a-zA-Z_][a-zA-Z0-9_]*/
+CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|true\b|false\b|int\b|float\b|bool\b|string\b|new\b|epoch\b)[a-zA-Z_][a-zA-Z0-9_]*/
 NUMBER: /[0-9]+/
 FLOAT: /[0-9]+\.[0-9]+/
 
