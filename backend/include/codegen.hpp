@@ -58,6 +58,10 @@ private:
     std::map<std::string, llvm::StructType*> struct_types;
     std::map<std::string, std::map<std::string, int>> struct_field_indices;
 
+    // Source position of the current expression/statement, used by error().
+    int current_line = 0;
+    int current_col = 0;
+
     void push_scope();
     void pop_scope();
     void register_open_array(const std::string& name, llvm::Type* elem_ty);

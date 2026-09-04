@@ -8,6 +8,8 @@ using json = nlohmann::json;
 
 struct Expr {
     virtual ~Expr() = default;
+    int line = 0;   // 1-based source line of the node, 0 if unknown
+    int col = 0;    // 1-based source column of the node, 0 if unknown
 };
 
 // Expressions
@@ -187,6 +189,8 @@ struct StructDecl {
 struct Stmt {
     enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl };
     Kind kind;
+    int line = 0;   // 1-based source line of the node, 0 if unknown
+    int col = 0;    // 1-based source column of the node, 0 if unknown
     Let let;
     Hot hot;
     Epoch epoch;

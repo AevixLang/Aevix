@@ -146,6 +146,10 @@ void CodeGenerator::build_io_runtime() {
  * Throws a runtime error to stop IR emission upon discovering a semantic fault.
  */
 void CodeGenerator::error(const std::string& msg) {
+    if (current_line > 0) {
+        throw std::runtime_error(msg + " at line " + std::to_string(current_line) +
+                                 ", column " + std::to_string(current_col));
+    }
     throw std::runtime_error(msg);
 }
 
@@ -768,6 +772,10 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) 
 
 llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     if (!expr) return nullptr;
+    if (expr->line > 0) {
+        current_line = expr->line;
+        current_col = expr->col;
+    }
 
     if (auto num = std::dynamic_pointer_cast<Number>(expr)) return builder->getInt32(num->value);
     if (auto fl = std::dynamic_pointer_cast<Float>(expr)) return llvm::ConstantFP::get(builder->getDoubleTy(), fl->value);
@@ -1694,6 +1702,10 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
 
 void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
     if (!stmt) return;
+    if (stmt->line > 0) {
+        current_line = stmt->line;
+        current_col = stmt->col;
+    }
     switch (stmt->kind) {
         case Stmt::Kind::Let:      generate_let(stmt->let); break;
         case Stmt::Kind::Hot:      generate_hot(stmt->hot); break;

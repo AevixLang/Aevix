@@ -8,10 +8,12 @@
 #include <fstream>
 #include <iostream>
 
+static std::shared_ptr<Expr> parse_expr(const json& j);
+
 /**
  * Recursively parses a JSON expression into a corresponding AST Expr node.
  */
-static std::shared_ptr<Expr> parse_expr(const json& j) {
+static std::shared_ptr<Expr> parse_expr_inner(const json& j) {
     if (!j.contains("type")) return nullptr;
 
     const std::string type = j["type"];
@@ -137,6 +139,15 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
     }
 
     return nullptr;
+}
+
+static std::shared_ptr<Expr> parse_expr(const json& j) {
+    auto node = parse_expr_inner(j);
+    if (node && j.contains("line") && j.contains("col")) {
+        node->line = j["line"];
+        node->col = j["col"];
+    }
+    return node;
 }
 
 /**
@@ -286,6 +297,10 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         return nullptr;
     }
 
+    if (j.contains("line") && j.contains("col")) {
+        stmt->line = j["line"];
+        stmt->col = j["col"];
+    }
     return stmt;
 }
 
