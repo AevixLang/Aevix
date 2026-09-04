@@ -103,12 +103,12 @@ hot {
 }
 ```
 
-Program arguments and file I/O work out of the box:
+Program arguments, stdin and file I/O work out of the box:
 
 ```aev
 hot {
-    let who = arg(0);
-    if (argc() == 0) { who = "world"; }
+    let who = input();                       // a line from stdin
+    if (len(who) == 0) { who = "world"; }    // "" at EOF
     let msg = "hello, " + who + "!";
     write("out.txt", msg);
     print read("out.txt");
@@ -138,6 +138,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - Struct literals are positional (`Point { 1, 2 }`), not named.
 - Slices of structs and arrays of structs inside print are not supported (int/float/bool/string print everywhere).
 - `read()` on a missing file returns `""`; `write()` reports failure as `false`.
+- `input()` returns `""` at end of input (EOF); lines are returned without the trailing newline.
 - `func` declarations may not be nested inside other functions.
 - The arena grows on demand (chunked virtual memory) up to what the OS will map; it is never freed individually, and epoch blocks roll the allocation point back.
 

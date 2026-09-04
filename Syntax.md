@@ -216,14 +216,16 @@ Built-in functions:
 | `arg(i)` | `arg(i) -> string` | The i-th CLI argument; `""` if out of range |
 | `read(fn)` | `read(fn: string) -> string` | Whole file as a string; `""` if unreadable |
 | `write(fn, s)` | `write(fn: string, s: string) -> bool` | Write `s` to `fn`, truncating; `true` on success |
+| `input()` | `input() -> string` | One line from stdin, without the trailing newline; `""` at EOF |
 | `exit(n)` | `exit(n: int)` | Terminate the program with status `n` |
 
 ```aev
 hot {
     print argc();
     if (arg(0) == "fail") { exit(7); }
-    let data = read("input.txt");
-    write("out.txt", "len: " + data);
+    let name = input();          // read a line from the terminal or a pipe
+    write("out.txt", "hello, " + name);
+    print read("out.txt");
 }
 ```
 
