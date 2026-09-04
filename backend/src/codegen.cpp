@@ -76,11 +76,41 @@ void CodeGenerator::error(const std::string& msg) {
 void CodeGenerator::push_scope() {
     named_values.emplace_back();
     named_types.emplace_back();
+    scope_open_arrays_count.push_back(open_arrays.size());
 }
 
 void CodeGenerator::pop_scope() {
     named_values.pop_back();
     named_types.pop_back();
+    if (!scope_open_arrays_count.empty()) {
+        auto target = scope_open_arrays_count.back();
+        scope_open_arrays_count.pop_back();
+        while (open_arrays.size() > target) {
+            auto it = open_arrays.end(); --it;
+            std::string name = *it;
+            open_arrays.erase(it);
+            named_values.back().erase(name + ".len");
+        }
+    }
+}
+
+bool CodeGenerator::is_open_array(const std::string& name) {
+    return open_arrays.find(name) != open_arrays.end();
+}
+
+llvm::Type* CodeGenerator::open_array_elem_type(const std::string& name) {
+    auto it = open_array_elem_types.find(name);
+    if (it != open_array_elem_types.end()) return it->second;
+    return builder->getInt32Ty();
+}
+
+llvm::Value* CodeGenerator::lookup_open_array_len(const std::string& name) {
+    std::string key = name + ".len";
+    for (auto it = named_values.rbegin(); it != named_values.rend(); ++it) {
+        auto vit = it->find(key);
+        if (vit != it->end()) return vit->second;
+    }
+    return nullptr;
 }
 
 void CodeGenerator::define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty) {
@@ -147,7 +177,8 @@ llvm::Type* CodeGenerator::signature_type_for(const std::string& tn, const std::
     llvm::Type* b = scalar_type_for(base);
     if (arr_size >= 0) {
         if (arr_size == 0) {
-            error("Array type '" + tn + "' in " + ctx + " needs a fixed size");
+            // Open array (int[]) in signature context
+            return llvm::PointerType::getUnqual(*context);
         }
         return llvm::ArrayType::get(b, arr_size);
     }
@@ -197,6 +228,7 @@ llvm::Type* CodeGenerator::element_type_of(const std::shared_ptr<Expr>& e) {
         llvm::Type* t = nullptr;
         llvm::Value* alloc = lookup_var(var->name, t);
         if (!alloc) error("Variable not found: " + var->name);
+        if (is_open_array(var->name)) return open_array_elem_type(var->name);
         if (!t->isArrayTy()) error("Variable '" + var->name + "' is not an array");
         return t;
     }
@@ -243,33 +275,52 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
     llvm::Type* arr_ty = nullptr;
     llvm::Value* alloc = lookup_var(var->name, arr_ty);
     if (!alloc) error("Variable not found: " + var->name);
-    if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
 
     llvm::Value* ptr = alloc;
     llvm::Type* cur_arr = arr_ty;
+    bool is_open = is_open_array(var->name);
+    llvm::Value* open_len = nullptr;
+    llvm::Type* open_elem = nullptr;
+    if (is_open) {
+        open_len = builder->CreateLoad(builder->getInt32Ty(),
+            lookup_open_array_len(var->name), var->name + ".len");
+        ptr = builder->CreateLoad(llvm::PointerType::getUnqual(*context), alloc, var->name + ".ptr");
+        open_elem = open_array_elem_type(var->name);
+    } else {
+        if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+    }
+
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-        if (!cur_arr->isArrayTy()) error("Indexing a non-array value");
         llvm::Value* idx = generate_expr((*it)->index);
         if (!idx) error("Invalid array index expression");
         if (!idx->getType()->isIntegerTy(32)) error("Array index must be an integer");
-        auto dim = (int)cur_arr->getArrayNumElements();
+        int dim = cur_arr->isPointerTy() ? -1 : (int)cur_arr->getArrayNumElements();
 
         llvm::Value* neg = builder->CreateICmpSLT(idx, builder->getInt32(0));
-        llvm::Value* huge = builder->CreateICmpSGE(idx, builder->getInt32(dim));
+        llvm::Value* huge;
+        if (dim >= 0) {
+            huge = builder->CreateICmpSGE(idx, builder->getInt32(dim));
+        } else {
+            huge = builder->CreateICmpSGE(idx, open_len);
+        }
         llvm::Value* oob = builder->CreateOr(neg, huge, "oob");
 
         auto ok = llvm::BasicBlock::Create(*context, "idxok", builder->GetInsertBlock()->getParent());
         auto fail = llvm::BasicBlock::Create(*context, "idxfail", builder->GetInsertBlock()->getParent());
         builder->CreateCondBr(oob, fail, ok);
         builder->SetInsertPoint(fail);
-        builder->CreateCall(oob_func, {idx, builder->getInt32(dim)});
+        builder->CreateCall(oob_func, {idx, dim >= 0 ? builder->getInt32(dim) : open_len});
         builder->CreateUnreachable();
 
         builder->SetInsertPoint(ok);
-        ptr = builder->CreateInBoundsGEP(cur_arr, ptr, {builder->getInt32(0), idx}, "idx");
-        cur_arr = cur_arr->getArrayElementType();
+        if (cur_arr->isPointerTy()) {
+            ptr = builder->CreateInBoundsGEP(open_elem, ptr, {idx}, "idx");
+        } else {
+            ptr = builder->CreateInBoundsGEP(cur_arr, ptr, {builder->getInt32(0), idx}, "idx");
+            cur_arr = cur_arr->getArrayElementType();
+        }
     }
-    elem_ty = cur_arr;
+    elem_ty = is_open ? open_elem : cur_arr;
     return ptr;
 }
 
@@ -297,6 +348,23 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         return builder->CreateLoad(elem_ty, ptr, "idxtmp");
     }
     if (auto call = std::dynamic_pointer_cast<Call>(expr)) {
+        // Handle len() builtin
+        if (call->callee == "len" && call->args.size() == 1) {
+            auto var = std::dynamic_pointer_cast<Variable>(call->args[0]);
+            if (var && is_open_array(var->name)) {
+                return builder->CreateLoad(builder->getInt32Ty(),
+                    lookup_open_array_len(var->name), var->name + ".len");
+            }
+            if (var) {
+                llvm::Type* t = nullptr;
+                llvm::Value* alloc = lookup_var(var->name, t);
+                if (alloc && t->isArrayTy()) {
+                    return builder->getInt32((int)t->getArrayNumElements());
+                }
+            }
+            error("len() requires an array variable");
+        }
+
         auto it = functions.find(call->callee);
         if (it == functions.end()) error("Unknown function: " + call->callee);
         llvm::Function* func = it->second;
@@ -304,8 +372,40 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         for (std::size_t i = 0; i < call->args.size(); ++i) {
             auto v = generate_expr(call->args[i]);
             if (!v) return nullptr;
+
             if (i < func->arg_size()) {
                 llvm::Type* param_ty = func->getArg(i)->getType();
+
+                // Open array param: expect i32*, pass ptr + len
+                if (param_ty->isPointerTy() && i + 1 < func->arg_size()
+                    && func->getArg(i + 1)->getType()->isIntegerTy(32)) {
+                    // Argument is a closed array: decay to ptr + len
+                    if (v->getType()->isArrayTy()) {
+                        auto at = llvm::cast<llvm::ArrayType>(v->getType());
+                        auto tmp = builder->CreateAlloca(at, nullptr, "tmp");
+                        builder->CreateStore(v, tmp);
+                        args.push_back(tmp);
+                        args.push_back(builder->getInt32((int)at->getNumElements()));
+                        i++; // skip the synthetic len arg
+                        continue;
+                    }
+                    // Argument is an open array variable: load ptr + len
+                    if (auto var = std::dynamic_pointer_cast<Variable>(call->args[i])) {
+                        if (is_open_array(var->name)) {
+                            llvm::Type* ty2 = nullptr;
+                            llvm::Value* alloc = lookup_var(var->name, ty2);
+                            auto ptr_val = builder->CreateLoad(llvm::PointerType::getUnqual(*context), alloc, var->name + ".ptr");
+                            auto len_val = builder->CreateLoad(builder->getInt32Ty(),
+                                lookup_open_array_len(var->name), var->name + ".len");
+                            args.push_back(ptr_val);
+                            args.push_back(len_val);
+                            i++; // skip the synthetic len arg
+                            continue;
+                        }
+                    }
+                    error("Cannot pass non-array value to open array parameter");
+                }
+
                 if (param_ty != v->getType()) {
                     if (param_ty->isDoubleTy() && v->getType()->isIntegerTy(32)) {
                         v = builder->CreateSIToFP(v, builder->getDoubleTy(), "cast");
@@ -495,12 +595,29 @@ void CodeGenerator::generate_let(const Let& let) {
         std::string base;
         int arr_size = -1;
         if (!parse_type(let.var_type, base, arr_size)) error("Unknown type: " + let.var_type);
-        if (arr_size >= 0) {
+        if (arr_size == 0) {
+            // Open array let: let arr: int[] = [1, 2, 3]
+            auto at = llvm::dyn_cast<llvm::ArrayType>(ty);
+            if (!at) error("Type mismatch for '" + let.name + "': expected array for open array type");
+            llvm::Type* elem = at->getElementType();
+            auto data_alloca = builder->CreateAlloca(at, nullptr, let.name + ".data");
+            builder->CreateStore(val, data_alloca);
+            auto ptr_alloca = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, let.name);
+            builder->CreateStore(data_alloca, ptr_alloca);
+            auto len_alloca = builder->CreateAlloca(builder->getInt32Ty(), nullptr, let.name + ".len");
+            builder->CreateStore(builder->getInt32((int)at->getNumElements()), len_alloca);
+            named_values.back()[let.name] = ptr_alloca;
+            named_types.back()[let.name] = llvm::PointerType::getUnqual(*context);
+            named_values.back()[let.name + ".len"] = len_alloca;
+            open_arrays.insert(let.name);
+            open_array_elem_types[let.name] = elem;
+            return;
+        } else if (arr_size > 0) {
             llvm::ArrayType* at = llvm::dyn_cast<llvm::ArrayType>(ty);
             if (!at) error("Type mismatch for '" + let.name + "': expected array of " + base);
             llvm::Type* scalar = scalar_type_for(base);
             if (at->getElementType() != scalar) error("Type mismatch for '" + let.name + "': unexpected element type");
-            if (arr_size > 0 && (std::size_t)arr_size != at->getNumElements()) error("Array size mismatch");
+            if ((std::size_t)arr_size != at->getNumElements()) error("Array size mismatch");
         } else {
             llvm::Type* declared = scalar_type_for(base);
             if (declared->isDoubleTy() && val->getType()->isIntegerTy(32)) {
@@ -512,9 +629,9 @@ void CodeGenerator::generate_let(const Let& let) {
         }
     }
 
-    auto alloca = builder->CreateAlloca(ty, nullptr, let.name);
-    builder->CreateStore(val, alloca);
-    define_var(let.name, alloca, ty);
+    auto alloc = builder->CreateAlloca(ty, nullptr, let.name);
+    builder->CreateStore(val, alloc);
+    define_var(let.name, alloc, ty);
 }
 
 void CodeGenerator::generate_assign(const Assign& a) {
@@ -571,6 +688,34 @@ void CodeGenerator::generate_print(const Print& print) {
         arg = builder->CreateZExt(val, builder->getInt32Ty());
     }
     else if (val->getType()->isPointerTy()) format_str = builder->CreateGlobalString("%s\n", "format");
+    else if (val->getType()->isArrayTy()) {
+        auto at = llvm::cast<llvm::ArrayType>(val->getType());
+        int n = (int)at->getNumElements();
+        llvm::Type* elem = at->getElementType();
+        auto tmp = builder->CreateAlloca(at, nullptr, "print.arr");
+        builder->CreateStore(val, tmp);
+        auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+        auto printf_func = module->getOrInsertFunction("printf", printf_type);
+        auto open_br = builder->CreateGlobalString("[", "open_br");
+        builder->CreateCall(printf_func, {open_br});
+        for (int i = 0; i < n; ++i) {
+            auto eptr = builder->CreateInBoundsGEP(at, tmp, {builder->getInt32(0), builder->getInt32(i)}, "print.elem");
+            auto ev = builder->CreateLoad(elem, eptr, "print.val");
+            if (i > 0) {
+                auto comma = builder->CreateGlobalString(", ", "comma");
+                builder->CreateCall(printf_func, {comma});
+            }
+            llvm::Value* fmt = nullptr;
+            llvm::Value* a = ev;
+            if (elem->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
+            else if (elem->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
+            else if (elem->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
+            builder->CreateCall(printf_func, {fmt, a});
+        }
+        auto close_br = builder->CreateGlobalString("]\n", "close_br");
+        builder->CreateCall(printf_func, {close_br});
+        return;
+    }
     else error("Cannot print a value of type " + llvm_type_name(val->getType()));
 
     auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
@@ -738,11 +883,30 @@ void CodeGenerator::generate_return(const Return& r) {
 // ============================================================================
 
 void CodeGenerator::declare_func(const FuncDecl& fd) {
+    std::string base;
+    int arr_size = -1;
+
+    // Check return type first — open arrays not allowed as return
+    if (!fd.return_type.empty()) {
+        parse_type(fd.return_type, base, arr_size);
+        if (arr_size == 0) error("Cannot use open array type as return type");
+    }
+
     std::vector<llvm::Type*> param_types;
     for (auto& p : fd.params) {
-        llvm::Type* t = signature_type_for(p.var_type, "parameter '" + p.name + "'");
-        if (!t) t = builder->getInt32Ty();
-        param_types.push_back(t);
+        std::string pbase;
+        int parr = -1;
+        parse_type(p.var_type, pbase, parr);
+        if (parr == 0) {
+            // Open array: split into ptr + len
+            llvm::Type* elem = scalar_type_for(pbase);
+            param_types.push_back(llvm::PointerType::getUnqual(*context));
+            param_types.push_back(builder->getInt32Ty());
+        } else {
+            llvm::Type* t = signature_type_for(p.var_type, "parameter '" + p.name + "'");
+            if (!t) t = builder->getInt32Ty();
+            param_types.push_back(t);
+        }
     }
     llvm::Type* ret_ty = signature_type_for(fd.return_type, "return type of '" + fd.name + "'");
     if (!ret_ty) ret_ty = builder->getVoidTy();
@@ -765,12 +929,31 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
 
     auto arg_it = func->arg_begin();
     for (auto& p : fd.params) {
-        llvm::Argument& arg = *arg_it++;
-        llvm::Type* pt = signature_type_for(p.var_type, "parameter '" + p.name + "'");
-        if (!pt) pt = builder->getInt32Ty();
-        auto alloca = builder->CreateAlloca(pt, nullptr, p.name);
-        builder->CreateStore(&arg, alloca);
-        define_var(p.name, alloca, pt);
+        std::string pbase;
+        int parr = -1;
+        parse_type(p.var_type, pbase, parr);
+        if (parr == 0) {
+            // Open array: arg is i32*, next arg is i32 len
+            llvm::Argument& ptr_arg = *arg_it++;
+            llvm::Argument& len_arg = *arg_it++;
+            llvm::Type* elem = scalar_type_for(pbase);
+            auto ptr_alloca = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, p.name);
+            builder->CreateStore(&ptr_arg, ptr_alloca);
+            auto len_alloca = builder->CreateAlloca(builder->getInt32Ty(), nullptr, p.name + ".len");
+            builder->CreateStore(&len_arg, len_alloca);
+            named_values.back()[p.name] = ptr_alloca;
+            named_types.back()[p.name] = llvm::PointerType::getUnqual(*context);
+            named_values.back()[p.name + ".len"] = len_alloca;
+            open_arrays.insert(p.name);
+            open_array_elem_types[p.name] = elem;
+        } else {
+            llvm::Argument& arg = *arg_it++;
+            llvm::Type* pt = signature_type_for(p.var_type, "parameter '" + p.name + "'");
+            if (!pt) pt = builder->getInt32Ty();
+            auto alloca = builder->CreateAlloca(pt, nullptr, p.name);
+            builder->CreateStore(&arg, alloca);
+            define_var(p.name, alloca, pt);
+        }
     }
 
     generate_block(fd.body);

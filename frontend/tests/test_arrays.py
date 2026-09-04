@@ -127,10 +127,10 @@ def test_index_non_array_rejected():
     assert "not an array" in err
 
 
-def test_print_whole_array_rejected():
-    code, err = compile_only("let a = [1, 2];\nprint a;\n")
-    assert code != 0
-    assert "array" in err
+def test_print_whole_array_outputs_bracket_format():
+    ec, out, err = run_and_capture("let a = [1, 2];\nprint a;\n")
+    assert ec == 0, err
+    assert out == ["[1, 2]"]
 
 
 # --- runtime value verification ---
@@ -261,24 +261,23 @@ def test_array_return_from_function():
     assert out == ["9"]
 
 
-def test_open_array_param_rejected():
+def test_open_array_param_accepted():
     ec, err = compile_only(
-        "func f(a: int[]): int {\n"
+        "func f(a: int[]) : int {\n"
         "    return a[0];\n"
         "}\n"
     )
-    assert ec != 0, "open array parameter should be rejected"
-    assert "fixed size" in err
+    assert ec == 0, "open array parameter should be accepted: " + err
 
 
 def test_open_array_return_rejected():
     ec, err = compile_only(
-        "func g(): int[] {\n"
+        "func g() : int[] {\n"
         "    return [1, 2];\n"
         "}\n"
     )
     assert ec != 0, "open array return should be rejected"
-    assert "fixed size" in err
+    assert "return type" in err.lower() or "open array" in err.lower()
 
 
 # --- runtime bounds checking ---

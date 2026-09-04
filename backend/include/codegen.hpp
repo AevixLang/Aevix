@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <set>
 
 class CodeGenerator {
 private:
@@ -21,6 +22,9 @@ private:
     std::vector<std::map<std::string, llvm::Value*>> named_values;
     std::vector<std::map<std::string, llvm::Type*>> named_types;
     std::vector<llvm::Type*> return_type_stack;
+    std::set<std::string> open_arrays;
+    std::map<std::string, llvm::Type*> open_array_elem_types;
+    std::vector<std::size_t> scope_open_arrays_count;
 
     void push_scope();
     void pop_scope();
@@ -40,6 +44,11 @@ private:
     void require_bool(llvm::Value* v, const std::string& ctx);
     void require_bool_type(llvm::Type* ty, const std::string& ctx);
     std::string llvm_type_name(llvm::Type* ty);
+
+    // Open array helpers
+    bool is_open_array(const std::string& name);
+    llvm::Type* open_array_elem_type(const std::string& name);
+    llvm::Value* lookup_open_array_len(const std::string& name);
 
     // Array helpers: element type inference, literal -> constant, and lvalue
     // resolution through (possibly nested) index expressions.
