@@ -235,6 +235,19 @@ def test_struct_literal_int_to_float_cast():
     assert out == ["{3.000000, 4.000000}"]
 
 
+def test_struct_array_param():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "func sum(pts: Point[2]): int {\n"
+        "    return pts[0].x + pts[1].y;\n"
+        "}\n"
+        "let a = [Point { 1, 2 }, Point { 3, 4 }];\n"
+        "print sum(a);\n"
+    )
+    assert ec == 0, err
+    assert out == ["5"]
+
+
 # --- for-in grammar (regression: struct_lit vs block ambiguity) ---
 
 def test_for_in_over_plain_variable_parses():
