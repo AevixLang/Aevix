@@ -136,6 +136,10 @@ void CodeGenerator::build_io_runtime() {
     // __aevix_write_file(ptr path, ptr data, i32 len) -> i32 (1 = ok)
     auto write_ft = llvm::FunctionType::get(i32, {ptr_ty, ptr_ty, i32}, false);
     write_file_func = llvm::Function::Create(write_ft, llvm::Function::ExternalLinkage, "__aevix_write_file", module.get());
+
+    // __aevix_read_line(ptr* out_ptr, ptr* out_len) — one line from stdin; "" on EOF.
+    auto line_ft = llvm::FunctionType::get(void_ty, {pp_ty, pp_ty}, false);
+    read_line_func = llvm::Function::Create(line_ft, llvm::Function::ExternalLinkage, "__aevix_read_line", module.get());
 }
 
 /**
@@ -910,6 +914,16 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
                  builder->CreateExtractValue(datav, 0, "w.data"),
                  builder->CreateExtractValue(datav, 1, "w.len")}, "w.ok");
             return builder->CreateICmpNE(ok, builder->getInt32(0), "w.bool");
+        }
+
+        // input() -> string: one line from stdin (no trailing newline); "" on EOF.
+        if (call->callee == "input" && call->args.empty()) {
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "in.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "in.l");
+            builder->CreateCall(read_line_func, {p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "in.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "in.rl");
+            return make_string_slice(rp, rl);
         }
 
         auto it = functions.find(call->callee);

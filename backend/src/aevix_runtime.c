@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -154,4 +155,24 @@ int32_t __aevix_write_file(const uint8_t* path, const uint8_t* data, int32_t len
     int rc = fclose(f);
     if (rc != 0) return 0;
     return w == (size_t)len ? 1 : 0;
+}
+
+/* Reads one line from stdin (without the trailing newline) into the arena.
+ * On EOF returns NULL/0, i.e. the caller sees "". */
+void __aevix_read_line(uint8_t** out_ptr, int32_t* out_len) {
+    char* line = NULL;
+    size_t cap = 0;
+    ssize_t n = getline(&line, &cap, stdin);
+    if (n < 0) {
+        free(line);
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    if (n > 0 && line[n - 1] == '\n') --n;
+    uint8_t* buf = n > 0 ? (uint8_t*)__aevix_alloc((int32_t)n) : NULL;
+    if (n > 0) memcpy(buf, line, (size_t)n);
+    free(line);
+    *out_ptr = buf;
+    *out_len = (int32_t)n;
 }

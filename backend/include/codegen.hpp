@@ -44,6 +44,7 @@ private:
     llvm::Function* exit_func;
     llvm::Function* read_file_func;
     llvm::Function* write_file_func;
+    llvm::Function* read_line_func;
     void build_io_runtime();
 
     // Escape-checking for epochs: every open-array variable remembers the
