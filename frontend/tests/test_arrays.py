@@ -540,6 +540,45 @@ def test_string_relational_compare_rejected():
     assert "only == and !=" in err
 
 
+def test_open_array_struct_field():
+    ec, out, err = run_and_capture(
+        "struct Bag { items: int[], tag: string }\n"
+        'let b = Bag { new int[3], "box" };\n'
+        "b.items[0] = 10; b.items[1] = 20; b.items[2] = 30;\n"
+        "print len(b.items);\n"
+        "print b.items[0] + b.items[1] + b.items[2];\n"
+        "print b.tag;\n"
+        "print b;\n"
+    )
+    assert ec == 0, err
+    assert out == ["3", "60", "box", "{[10, 20, 30], box}"]
+
+
+def test_open_array_struct_field_write_and_reassign():
+    ec, out, err = run_and_capture(
+        "struct Bag { items: int[] }\n"
+        "let b = Bag { new int[3] };\n"
+        "b.items[1] = 55;\n"
+        "print b.items[1];\n"
+        "b.items = new int[2];\n"
+        "b.items[0] = 7;\n"
+        "print len(b.items);\n"
+        "print b.items[0];\n"
+    )
+    assert ec == 0, err
+    assert out == ["55", "2", "7"]
+
+
+def test_string_field_index_char():
+    ec, out, err = run_and_capture(
+        'struct Tag { name: string }\n'
+        'let t = Tag { "abc" };\n'
+        "print t.name[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["b"]
+
+
 # --- epochs ---
 
 def test_epoch_rollback_reuses_memory():
