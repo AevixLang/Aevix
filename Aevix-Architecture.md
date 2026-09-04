@@ -50,8 +50,8 @@ Offers superior concurrency for testing and fast compilation of the toolchain, p
 ## 🔄 Development Cycle
 
 ### Standard Build Pipeline
-1. **Parsing**: `python frontend/main.py input.aev` $\rightarrow$ `ast.json`
-2. **Generation**: `./backend/aevix-backend ast.json` $\rightarrow$ `output.ll`
+1. **Parsing**: `python -m src.main input.aev` (from `frontend/`) $\rightarrow$ `ast.json`
+2. **Generation**: `./backend/build/aevix-backend ast.json` $\rightarrow$ `output.ll`
 3. **Assembly**: `llc output.ll -o output.o`
 4. **Linking**: `clang output.o -o program`
 

@@ -96,6 +96,15 @@ for (let i = 0; i < 10; i = i + 1) {
 }
 ```
 
+### Iteration (`for-in`)
+Iterate over array elements: `for var in array { body }`
+```aev
+let nums = [10, 20, 30];
+for x in nums {
+    print x;
+}
+```
+
 ---
 
 ## 5. Functions

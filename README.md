@@ -59,7 +59,7 @@ main.aev ──► [frontend: Python + Lark] ──► ast.json
 - Python 3.8+
 - C++ compiler with C++17 support
 - **LLVM** (Must be in your system PATH)
-- Go 1.21+
+- Go 1.25+
 
 ### Setup
 Instead of manual configuration, use the bootstrap script. It will set up the Python virtual environment, build the C++ backend, and compile the Go CLI.

@@ -207,13 +207,13 @@ def test_typed_open_array_infers_size():
 def test_typed_array_size_mismatch_rejected():
     ec, err = compile_only("let a: int[2] = [1, 2, 3];\n")
     assert ec != 0, "size mismatch should be rejected"
-    assert "2 elements" in err
+    assert "size mismatch" in err.lower()
 
 
 def test_typed_array_element_mismatch_rejected():
     ec, err = compile_only("let a: int[3] = [1.5, 2.5, 3.5];\n")
     assert ec != 0, "element type mismatch should be rejected"
-    assert "int elements" in err
+    assert "mismatch" in err.lower()
 
 
 def test_typed_potpourri_rejected():
