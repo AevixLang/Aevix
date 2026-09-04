@@ -68,6 +68,7 @@ private:
     llvm::Value* make_slice(llvm::Value* ptr, llvm::Type* elem, llvm::Value* len);
     llvm::Value* copy_array_to_slice(llvm::Value* arr_val, llvm::StructType* slice_ty);
     void emit_slice_print(llvm::Value* slice);
+    void emit_slice_print(llvm::Value* slice, bool trailing_newline);
     llvm::Value* gen_new(const New& n);
     void generate_epoch(const Epoch& ep);
 

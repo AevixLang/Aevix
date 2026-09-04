@@ -327,7 +327,6 @@ void CodeGenerator::register_struct(const StructDecl& sd) {
         std::string fb;
         int fsz = -1;
         parse_type(f.var_type, fb, fsz);
-        if (fsz == 0) error("Open array fields are not yet supported: '" + f.name + "' in struct '" + sd.name + "'");
         field_types.push_back(llvm_type_from_name(f.var_type));
     }
     auto st = llvm::StructType::create(*context, field_types, sd.name);
@@ -527,25 +526,42 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
         cur = ix->object.get();
     }
     auto var = dynamic_cast<const Variable*>(cur);
-    if (!var) error("Invalid array access target");
+    auto ma = dynamic_cast<const MemberAccess*>(cur);
 
     llvm::Type* arr_ty = nullptr;
-    llvm::Value* alloc = lookup_var(var->name, arr_ty);
-    if (!alloc) error("Variable not found: " + var->name);
-
-    llvm::Value* ptr = alloc;
-    llvm::Type* cur_arr = arr_ty;
-    bool is_open = is_open_array(var->name);
+    llvm::Value* ptr = nullptr;
+    llvm::Type* cur_arr = nullptr;
+    bool is_open = false;
     llvm::Value* open_len = nullptr;
     llvm::Type* open_elem = nullptr;
-    if (is_open) {
-        // The variable stores a slice { data*, len } — load the whole value.
-        auto slice = builder->CreateLoad(arr_ty, alloc, var->name);
-        ptr = builder->CreateExtractValue(slice, 0, var->name + ".ptr");
-        open_len = builder->CreateExtractValue(slice, 1, var->name + ".len");
-        open_elem = open_array_elem_type(var->name);
+
+    if (var) {
+        llvm::Value* alloc = lookup_var(var->name, arr_ty);
+        if (!alloc) error("Variable not found: " + var->name);
+        ptr = alloc;
+        cur_arr = arr_ty;
+        is_open = is_open_array(var->name);
+        if (is_open) {
+            // The variable stores a slice { data*, len } — load the whole value.
+            auto slice = builder->CreateLoad(arr_ty, alloc, var->name);
+            ptr = builder->CreateExtractValue(slice, 0, var->name + ".ptr");
+            open_len = builder->CreateExtractValue(slice, 1, var->name + ".len");
+            open_elem = open_array_elem_type(var->name);
+        } else {
+            if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+        }
+    } else if (ma) {
+        // Struct member access yielding a slice: b.items[0]
+        llvm::Type* fty = nullptr;
+        llvm::Value* fptr = gen_member_ptr_inner(*ma, fty);
+        if (!is_slice_ty(fty)) error("Field '" + ma->member + "' is not an open array");
+        auto slice = builder->CreateLoad(fty, fptr, ma->member + ".val");
+        is_open = true;
+        open_elem = slice_elem_type(llvm::cast<llvm::StructType>(fty));
+        open_len = builder->CreateExtractValue(slice, 1, ma->member + ".len");
+        ptr = builder->CreateExtractValue(slice, 0, ma->member + ".ptr");
     } else {
-        if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+        error("Invalid array access target");
     }
 
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
@@ -639,6 +655,10 @@ llvm::Value* CodeGenerator::copy_array_to_slice(llvm::Value* arr_val, llvm::Stru
 
 // Emits a runtime loop that prints an open array as [a, b, c].
 void CodeGenerator::emit_slice_print(llvm::Value* slice) {
+    emit_slice_print(slice, true);
+}
+
+void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) {
     llvm::Type* elem = slice_elem_type(llvm::cast<llvm::StructType>(slice->getType()));
     if (elem->isStructTy()) error("Cannot print an open array of structs yet");
 
@@ -693,7 +713,7 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice) {
 
     func->insert(func->end(), merge);
     builder->SetInsertPoint(merge);
-    auto close_br = builder->CreateGlobalString("]\n", "close_br");
+    auto close_br = builder->CreateGlobalString(trailing_newline ? "]\n" : "]", "close_br");
     builder->CreateCall(printf_func, {close_br});
 }
 
@@ -1244,6 +1264,10 @@ void CodeGenerator::generate_print(const Print& print) {
                 auto fl = builder->CreateExtractValue(ev, 1, "pfld.l");
                 auto ff = builder->CreateGlobalString("%.*s", "fmt");
                 builder->CreateCall(printf_func, {ff, fl, fp});
+                continue;
+            }
+            else if (is_slice_ty(ev->getType())) {
+                emit_slice_print(ev, false);
                 continue;
             }
             else error("Cannot print struct field of type " + llvm_type_name(ev->getType()) + " (nested structs not yet supported in print)");
