@@ -425,6 +425,9 @@ llvm::Value* CodeGenerator::build_struct_literal(const StructLiteral& sl) {
         llvm::Type* fty = st->getElementType(i);
         if (fty->isDoubleTy() && v->getType()->isIntegerTy(32)) {
             v = builder->CreateSIToFP(v, builder->getDoubleTy(), "cast");
+        } else if (is_slice_ty(fty)) {
+            v = coerce_to_slice(v, llvm::cast<llvm::StructType>(fty),
+                "Type mismatch for field " + std::to_string(i) + " of struct '" + sl.name + "'");
         } else if (fty != v->getType()) {
             error("Type mismatch for field " + std::to_string(i) + " of struct '" + sl.name + "'");
         }
@@ -700,6 +703,22 @@ llvm::Value* CodeGenerator::copy_array_to_slice(llvm::Value* arr_val, llvm::Stru
         builder->CreateStore(ev, ep);
     }
     return make_slice(arena_ptr, elem, builder->getInt32((int)at->getNumElements()));
+}
+
+// Brings a value into a slice form for a slice-typed destination (field, var,
+// argument). Slices pass through unchanged; stack fixed arrays are copied into
+// the arena so the slice owns its data instead of pointing into the caller's
+// stack frame. Anything else is a type error.
+llvm::Value* CodeGenerator::coerce_to_slice(llvm::Value* val, llvm::StructType* slice_ty, const std::string& ctx) {
+    if (val->getType() == slice_ty) return val;
+    if (val->getType()->isArrayTy()) {
+        auto at = llvm::cast<llvm::ArrayType>(val->getType());
+        if (at->getElementType() == slice_elem_type(slice_ty)) {
+            return copy_array_to_slice(val, slice_ty);
+        }
+    }
+    error(ctx);
+    return nullptr;
 }
 
 // Emits a runtime loop that prints an open array as [a, b, c].
@@ -1248,6 +1267,9 @@ void CodeGenerator::generate_assign(const Assign& a) {
         if (!val) return;
         if (fty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
             val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
+        } else if (is_slice_ty(fty)) {
+            val = coerce_to_slice(val, llvm::cast<llvm::StructType>(fty),
+                "Type mismatch for field assignment");
         } else if (fty != val->getType()) {
             error("Type mismatch for field assignment");
         }
@@ -1272,7 +1294,12 @@ void CodeGenerator::generate_assign(const Assign& a) {
             error("Cannot move an arena slice out of its epoch: assignment to '" + var->name + "'");
         }
         if (val_ty != ty) {
-            error("Type mismatch for '" + var->name + "': cannot assign " + llvm_type_name(val_ty) + " to " + llvm_type_name(ty));
+            if (val_ty->isArrayTy()) {
+                val = coerce_to_slice(val, llvm::cast<llvm::StructType>(ty),
+                    "Type mismatch for '" + var->name + "': cannot assign " + llvm_type_name(val_ty) + " to " + llvm_type_name(ty));
+            } else {
+                error("Type mismatch for '" + var->name + "': cannot assign " + llvm_type_name(val_ty) + " to " + llvm_type_name(ty));
+            }
         }
         builder->CreateStore(val, alloc);
         return;
