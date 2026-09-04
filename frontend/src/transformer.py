@@ -4,7 +4,7 @@
 # This module implements the AevixTransformer, which walks the Lark parse tree
 # and converts it into the structured AST defined in ast.py.
 # ============================================================================
-from lark import Transformer, Token
+from lark import Transformer, Token, v_args
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
@@ -24,6 +24,24 @@ def _expr_from_token(tok):
         return String(value=str(tok)[1:-1])
     return Variable(value=str(tok))
 
+def _with_pos(f, data, children, meta):
+    """v_args wrapper: stamps the resulting AST node with the source position of
+    its first child (token or nested node). Earley trees do not fill `meta`,
+    so we derive the position from the children instead."""
+    result = f(children)
+    if hasattr(result, "__dataclass_fields__") and not getattr(result, "col", None):
+        for c in children:
+            if isinstance(c, Token):
+                result.line = c.line
+                result.col = c.column
+                break
+            if hasattr(c, "__dataclass_fields__") and getattr(c, "col", None):
+                result.line = c.line
+                result.col = c.col
+                break
+    return result
+
+@v_args(wrapper=_with_pos)
 class AevixTransformer(Transformer):
     """
     Transformer that maps Lark grammar rules to Aevix AST nodes.
@@ -38,7 +56,12 @@ class AevixTransformer(Transformer):
 
     def primary(self, items):
         """Handles variable access, function calls, array indexing, and member access."""
-        result = Variable(value=str(items[0]))
+        first = items[0]
+        if isinstance(first, Token):
+            result = _expr_from_token(first)
+            result.line, result.col = first.line, first.column
+        else:
+            result = first
         for suffix in items[1:]:
             if isinstance(suffix, list):  # call argument list
                 if isinstance(result, Call):
