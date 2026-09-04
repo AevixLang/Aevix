@@ -23,8 +23,25 @@ private:
     std::vector<std::map<std::string, llvm::Type*>> named_types;
     std::vector<llvm::Type*> return_type_stack;
     std::set<std::string> open_arrays;
+    std::vector<std::string> open_array_order;
     std::map<std::string, llvm::Type*> open_array_elem_types;
     std::vector<std::size_t> scope_open_arrays_count;
+
+    // Slice { ptr, len }: the single representation of open arrays (int[]).
+    // Keyed by the base type string ("int", "float", "bool", struct name).
+    std::map<std::string, llvm::StructType*> slice_types;
+    std::map<llvm::StructType*, std::string> slice_bases;
+
+    // Arena runtime helpers
+    llvm::Function* alloc_func;
+    llvm::Function* epoch_begin_func;
+    llvm::Function* epoch_end_func;
+
+    // Escape-checking for epochs: every open-array variable remembers the
+    // epoch depth it was created at. Assigning a slice to a variable defined
+    // at a smaller depth would survive the arena rollback and dangle.
+    int epoch_depth = 0;
+    std::map<std::string, int> open_epochs;
 
     // Struct handling
     std::map<std::string, const StructDecl*> struct_decls;
@@ -33,7 +50,9 @@ private:
 
     void push_scope();
     void pop_scope();
+    void register_open_array(const std::string& name, llvm::Type* elem_ty);
     void build_oob_runtime();
+    void build_arena_runtime();
     void define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty);
     llvm::Value* lookup_var(const std::string& name, llvm::Type*& ty);
     llvm::Type* llvm_type_for(const std::string& tn);
@@ -41,6 +60,16 @@ private:
     llvm::Type* scalar_type_for(const std::string& base);
     llvm::Type* signature_type_for(const std::string& tn, const std::string& ctx);
     [[noreturn]] void error(const std::string& msg);
+
+    // Slice helpers
+    llvm::StructType* slice_type_for(const std::string& base);
+    llvm::Type* slice_elem_type(llvm::StructType* st);
+    bool is_slice_ty(llvm::Type* ty);
+    llvm::Value* make_slice(llvm::Value* ptr, llvm::Type* elem, llvm::Value* len);
+    llvm::Value* copy_array_to_slice(llvm::Value* arr_val, llvm::StructType* slice_ty);
+    void emit_slice_print(llvm::Value* slice);
+    llvm::Value* gen_new(const New& n);
+    void generate_epoch(const Epoch& ep);
 
     // Type-checking helpers: validate that a generated value is a numeric type
     // (int/float) or a bool before an operation that requires it.
@@ -53,7 +82,6 @@ private:
     // Open array helpers
     bool is_open_array(const std::string& name);
     llvm::Type* open_array_elem_type(const std::string& name);
-    llvm::Value* lookup_open_array_len(const std::string& name);
 
     // Struct helpers
     bool is_struct(const std::string& tn);

@@ -270,14 +270,166 @@ def test_open_array_param_accepted():
     assert ec == 0, "open array parameter should be accepted: " + err
 
 
-def test_open_array_return_rejected():
+def test_open_array_return_accepted():
     ec, err = compile_only(
         "func g() : int[] {\n"
-        "    return [1, 2];\n"
+        "    return new int[5];\n"
         "}\n"
     )
-    assert ec != 0, "open array return should be rejected"
-    assert "return type" in err.lower() or "open array" in err.lower()
+    assert ec == 0, "open array return should be accepted: " + err
+
+
+# --- new (arena allocation) ---
+
+def test_new_array_read_write():
+    ec, out, err = run_and_capture(
+        "let a: int[] = new int[3];\n"
+        "a[0] = 10; a[1] = 20; a[2] = 30;\n"
+        "print a[0] + a[1] + a[2];\n"
+        "print len(a);\n"
+    )
+    assert ec == 0, err
+    assert out == ["60", "3"]
+
+
+def test_new_array_zeroed():
+    ec, out, err = run_and_capture(
+        "let a = new int[4];\n"
+        "print a[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["0"]
+
+
+def test_new_float_array():
+    ec, out, err = run_and_capture(
+        "let f = new float[2];\n"
+        "f[1] = 2.5;\n"
+        "print f[0];\n"
+        "print f[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["0.000000", "2.500000"]
+
+
+def test_new_struct_array():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let pts = new Point[2];\n"
+        "pts[0].x = 3;\n"
+        "pts[0].y = 4;\n"
+        "pts[1].x = 5;\n"
+        "pts[1].y = 6;\n"
+        "print pts[0].x + pts[0].y;\n"
+        "print pts[1].y;\n"
+        "print len(pts);\n"
+    )
+    assert ec == 0, err
+    assert out == ["7", "6", "2"]
+
+
+def test_open_array_return_and_use():
+    ec, out, err = run_and_capture(
+        "func make(): int[] {\n"
+        "    let a = new int[3];\n"
+        "    a[0] = 5; a[1] = 6; a[2] = 7;\n"
+        "    return a;\n"
+        "}\n"
+        "let b = make();\n"
+        "print b[0] + b[1] + b[2];\n"
+        "print len(b);\n"
+    )
+    assert ec == 0, err
+    assert out == ["18", "3"]
+
+
+def test_open_array_return_literal():
+    ec, out, err = run_and_capture(
+        "func make(): int[] {\n"
+        "    return [3, 4, 5];\n"
+        "}\n"
+        "let c = make();\n"
+        "print c[2];\n"
+    )
+    assert ec == 0, err
+    assert out == ["5"]
+
+
+def test_print_open_array():
+    ec, out, err = run_and_capture(
+        "let a = new int[2];\n"
+        "a[0] = 1; a[1] = 2;\n"
+        "print a;\n"
+    )
+    assert ec == 0, err
+    assert out == ["[1, 2]"]
+
+
+def test_for_in_over_new_array():
+    ec, out, err = run_and_capture(
+        "let a = new int[3];\n"
+        "a[0] = 2; a[1] = 4; a[2] = 6;\n"
+        "let total = 0;\n"
+        "for x in a {\n"
+        "    total = total + x;\n"
+        "}\n"
+        "print total;\n"
+    )
+    assert ec == 0, err
+    assert out == ["12"]
+
+
+# --- epochs ---
+
+def test_epoch_rollback_reuses_memory():
+    ec, out, err = run_and_capture(
+        "epoch {\n"
+        "    let a = new int[1];\n"
+        "    a[0] = 99;\n"
+        "}\n"
+        "let b = new int[1];\n"
+        "print b[0];\n"
+    )
+    assert ec == 0, err
+    assert out == ["0"], "arena should have rolled back so b reuses the epoch's slot and is re-zeroed"
+
+
+def test_epoch_inner_allocations_survive_restore():
+    ec, out, err = run_and_capture(
+        "let keep = new int[2];\n"
+        "keep[0] = 7; keep[1] = 8;\n"
+        "epoch {\n"
+        "    let tmp = new int[2];\n"
+        "    tmp[0] = 1; tmp[1] = 2;\n"
+        "}\n"
+        "print keep[0] + keep[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["15"]
+
+
+def test_epoch_escape_assignment_rejected():
+    ec, err = compile_only(
+        "let outer: int[] = new int[2];\n"
+        "epoch {\n"
+        "    outer = new int[3];\n"
+        "}\n"
+    )
+    assert ec != 0, "assigning a slice out of an epoch should be rejected"
+    assert "epoch" in err.lower()
+
+
+def test_epoch_return_rejected():
+    ec, err = compile_only(
+        "func f() : int {\n"
+        "    epoch {\n"
+        "        return 1;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    assert ec != 0, "returning from inside an epoch should be rejected"
+    assert "epoch" in err.lower()
 
 
 # --- runtime bounds checking ---

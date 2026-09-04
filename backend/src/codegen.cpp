@@ -10,6 +10,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/TargetSelect.h"
 #include <iostream>
 #include <map>
@@ -24,12 +25,14 @@ CodeGenerator::CodeGenerator()
     , module(std::make_unique<llvm::Module>("aevix", *context))
     , builder(std::make_unique<llvm::IRBuilder<>>(*context))
 {
+    module->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
     auto func_type = llvm::FunctionType::get(builder->getInt32Ty(), {}, false);
     main_func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, "main", module.get());
     main_entry_block = llvm::BasicBlock::Create(*context, "entry", main_func);
     builder->SetInsertPoint(main_entry_block);
 
     build_oob_runtime();
+    build_arena_runtime();
 
     named_values.emplace_back();
     named_types.emplace_back();
@@ -67,6 +70,88 @@ void CodeGenerator::build_oob_runtime() {
 }
 
 /**
+ * Builds the arena (bump allocator) runtime: a global buffer plus an offset.
+ * __aevix_alloc(bytes) hands out memory in O(1) by bumping the offset forward;
+ * memory is never freed individually. Epochs save/restore the offset, which
+ * logically rolls back every allocation made between the two calls.
+ */
+void CodeGenerator::build_arena_runtime() {
+    auto i32 = builder->getInt32Ty();
+    auto i64 = builder->getInt64Ty();
+    auto void_ty = llvm::Type::getVoidTy(*context);
+    auto ptr_ty = llvm::PointerType::getUnqual(*context);
+    const uint64_t ARENA_BYTES = 64ull * 1024ull * 1024ull; // 64 MiB
+
+    auto arena_ty = llvm::ArrayType::get(builder->getInt8Ty(), ARENA_BYTES);
+    auto arena_global = new llvm::GlobalVariable(
+        *module, arena_ty, false, llvm::GlobalValue::InternalLinkage,
+        llvm::ConstantAggregateZero::get(arena_ty), "__aevix_arena");
+    auto off_global = new llvm::GlobalVariable(
+        *module, i32, false, llvm::GlobalValue::InternalLinkage,
+        builder->getInt32(0), "__aevix_off");
+
+    // __aevix_alloc(i32 bytes) -> ptr  (returns 16-byte aligned memory)
+    auto alloc_ft = llvm::FunctionType::get(ptr_ty, {i32}, false);
+    alloc_func = llvm::Function::Create(alloc_ft, llvm::Function::ExternalLinkage, "__aevix_alloc", module.get());
+    {
+        auto body = llvm::BasicBlock::Create(*context, "entry", alloc_func);
+        llvm::IRBuilder<> tmp(*context);
+        tmp.SetInsertPoint(body);
+        llvm::Value* bytes = alloc_func->arg_begin();
+
+        auto off = tmp.CreateLoad(i32, off_global, "off");
+        auto base = tmp.CreateGEP(llvm::Type::getInt8Ty(*context), arena_global, {off}, "ptr");
+        auto raw = tmp.CreateAdd(off, bytes, "raw");
+        auto padded = tmp.CreateAdd(raw, tmp.getInt32(15), "padded");
+        auto aligned = tmp.CreateAnd(padded, tmp.getInt32(-16), "aligned");
+        auto inb = tmp.CreateICmpULE(aligned, tmp.getInt32(ARENA_BYTES), "inb");
+
+        auto ok = llvm::BasicBlock::Create(*context, "ok", alloc_func);
+        auto fail = llvm::BasicBlock::Create(*context, "fail", alloc_func);
+        tmp.CreateCondBr(inb, ok, fail);
+
+        tmp.SetInsertPoint(fail);
+        auto fmt = tmp.CreateGlobalString("arena out of memory\n", "arena_fmt");
+        llvm::FunctionType* printf_ft = llvm::FunctionType::get(i32, {ptr_ty}, true);
+        module->getOrInsertFunction("printf", printf_ft);
+        auto printf_fn = module->getFunction("printf");
+        tmp.CreateCall(printf_fn, {fmt});
+        llvm::FunctionType* exit_ft = llvm::FunctionType::get(void_ty, {i32}, false);
+        module->getOrInsertFunction("exit", exit_ft);
+        auto exit_fn = module->getFunction("exit");
+        exit_fn->addFnAttr(llvm::Attribute::NoReturn);
+        tmp.CreateCall(exit_fn, {tmp.getInt32(1)});
+        tmp.CreateUnreachable();
+
+        tmp.SetInsertPoint(ok);
+        tmp.CreateStore(aligned, off_global);
+        tmp.CreateRet(base);
+    }
+
+    // __aevix_epoch_begin() -> i32   (returns the current arena offset)
+    auto begin_ft = llvm::FunctionType::get(i32, {}, false);
+    epoch_begin_func = llvm::Function::Create(begin_ft, llvm::Function::ExternalLinkage, "__aevix_epoch_begin", module.get());
+    {
+        auto body = llvm::BasicBlock::Create(*context, "entry", epoch_begin_func);
+        llvm::IRBuilder<> tmp(*context);
+        tmp.SetInsertPoint(body);
+        auto off = tmp.CreateLoad(i32, off_global, "off");
+        tmp.CreateRet(off);
+    }
+
+    // __aevix_epoch_end(i32 saved)    (rolls the offset back)
+    auto end_ft = llvm::FunctionType::get(void_ty, {i32}, false);
+    epoch_end_func = llvm::Function::Create(end_ft, llvm::Function::ExternalLinkage, "__aevix_epoch_end", module.get());
+    {
+        auto body = llvm::BasicBlock::Create(*context, "entry", epoch_end_func);
+        llvm::IRBuilder<> tmp(*context);
+        tmp.SetInsertPoint(body);
+        tmp.CreateStore(epoch_end_func->arg_begin(), off_global);
+        tmp.CreateRetVoid();
+    }
+}
+
+/**
  * Throws a runtime error to stop IR emission upon discovering a semantic fault.
  */
 void CodeGenerator::error(const std::string& msg) {
@@ -85,13 +170,20 @@ void CodeGenerator::pop_scope() {
     if (!scope_open_arrays_count.empty()) {
         auto target = scope_open_arrays_count.back();
         scope_open_arrays_count.pop_back();
-        while (open_arrays.size() > target) {
-            auto it = open_arrays.end(); --it;
-            std::string name = *it;
-            open_arrays.erase(it);
-            named_values.back().erase(name + ".len");
+        while (open_array_order.size() > target) {
+            std::string name = open_array_order.back();
+            open_array_order.pop_back();
+            open_arrays.erase(name);
+            open_epochs.erase(name);
+            open_array_elem_types.erase(name);
         }
     }
+}
+
+void CodeGenerator::register_open_array(const std::string& name, llvm::Type* elem_ty) {
+    open_arrays.insert(name);
+    open_array_order.push_back(name);
+    open_array_elem_types[name] = elem_ty;
 }
 
 bool CodeGenerator::is_open_array(const std::string& name) {
@@ -104,13 +196,50 @@ llvm::Type* CodeGenerator::open_array_elem_type(const std::string& name) {
     return builder->getInt32Ty();
 }
 
-llvm::Value* CodeGenerator::lookup_open_array_len(const std::string& name) {
-    std::string key = name + ".len";
-    for (auto it = named_values.rbegin(); it != named_values.rend(); ++it) {
-        auto vit = it->find(key);
-        if (vit != it->end()) return vit->second;
-    }
+// ============================================================================
+// Slice Handling: open arrays (int[]) as a single { base*, i32 } value
+// ============================================================================
+
+llvm::StructType* CodeGenerator::slice_type_for(const std::string& base) {
+    auto it = slice_types.find(base);
+    if (it != slice_types.end()) return it->second;
+    auto st = llvm::StructType::create(
+        *context,
+        {llvm::PointerType::getUnqual(*context), builder->getInt32Ty()},
+        base + "Slice");
+    slice_types[base] = st;
+    slice_bases[st] = base;
+    return st;
+}
+
+llvm::Type* CodeGenerator::slice_elem_type(llvm::StructType* st) {
+    auto it = slice_bases.find(st);
+    if (it == slice_bases.end()) return nullptr;
+    llvm::Type* e = scalar_type_for(it->second);
+    if (e) return e;
+    auto sit = struct_types.find(it->second);
+    if (sit != struct_types.end()) return sit->second;
     return nullptr;
+}
+
+bool CodeGenerator::is_slice_ty(llvm::Type* ty) {
+    if (!ty->isStructTy()) return false;
+    return slice_bases.count(llvm::cast<llvm::StructType>(ty)) > 0;
+}
+
+llvm::Value* CodeGenerator::make_slice(llvm::Value* ptr, llvm::Type* elem, llvm::Value* len) {
+    std::string base;
+    int sz = -1;
+    // Recover the base string from the element type to build the slice type.
+    if (elem->isIntegerTy(32)) base = "int";
+    else if (elem->isDoubleTy()) base = "float";
+    else if (elem->isIntegerTy(1)) base = "bool";
+    else if (elem->isStructTy()) base = elem->getStructName().str();
+    else error("Cannot build a slice of element type " + llvm_type_name(elem));
+    llvm::StructType* st = slice_type_for(base);
+    auto slice = builder->CreateInsertValue(llvm::UndefValue::get(st), ptr, 0, "slice");
+    slice = builder->CreateInsertValue(slice, len, 1, "slice.len");
+    return slice;
 }
 
 void CodeGenerator::define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty) {
@@ -173,8 +302,8 @@ llvm::Type* CodeGenerator::signature_type_for(const std::string& tn, const std::
     llvm::Type* b = scalar_type_for(base);
     if (arr_size >= 0) {
         if (arr_size == 0) {
-            // Open array (int[]) in signature context
-            return llvm::PointerType::getUnqual(*context);
+            // Open array (int[]) in signature context: a slice { base*, i32 }
+            return slice_type_for(base);
         }
         return llvm::ArrayType::get(b, arr_size);
     }
@@ -209,7 +338,13 @@ void CodeGenerator::register_struct(const StructDecl& sd) {
     if (struct_types.find(sd.name) != struct_types.end()) return;
     struct_decls[sd.name] = &sd;
     std::vector<llvm::Type*> field_types;
-    for (const auto& f : sd.fields) field_types.push_back(llvm_type_from_name(f.var_type));
+    for (const auto& f : sd.fields) {
+        std::string fb;
+        int fsz = -1;
+        parse_type(f.var_type, fb, fsz);
+        if (fsz == 0) error("Open array fields are not yet supported: '" + f.name + "' in struct '" + sd.name + "'");
+        field_types.push_back(llvm_type_from_name(f.var_type));
+    }
     auto st = llvm::StructType::create(*context, field_types, sd.name);
     struct_types[sd.name] = st;
     std::map<std::string, int> idx_map;
@@ -225,8 +360,8 @@ llvm::Type* CodeGenerator::llvm_type_from_name(const std::string& tn) {
     int arr_size = -1;
     parse_type(tn, base, arr_size);
     if (arr_size == 0) {
-        // open array in struct — not yet supported
-        return llvm::PointerType::getUnqual(*context);
+        // open array (int[]) maps to a slice struct { base*, i32 }
+        return slice_type_for(base);
     }
     if (arr_size > 0) {
         llvm::Type* sc = scalar_type_for(base);
@@ -403,9 +538,10 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
     llvm::Value* open_len = nullptr;
     llvm::Type* open_elem = nullptr;
     if (is_open) {
-        open_len = builder->CreateLoad(builder->getInt32Ty(),
-            lookup_open_array_len(var->name), var->name + ".len");
-        ptr = builder->CreateLoad(llvm::PointerType::getUnqual(*context), alloc, var->name + ".ptr");
+        // The variable stores a slice { data*, len } — load the whole value.
+        auto slice = builder->CreateLoad(arr_ty, alloc, var->name);
+        ptr = builder->CreateExtractValue(slice, 0, var->name + ".ptr");
+        open_len = builder->CreateExtractValue(slice, 1, var->name + ".len");
         open_elem = open_array_elem_type(var->name);
     } else {
         if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
@@ -415,7 +551,7 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
         llvm::Value* idx = generate_expr((*it)->index);
         if (!idx) error("Invalid array index expression");
         if (!idx->getType()->isIntegerTy(32)) error("Array index must be an integer");
-        int dim = cur_arr->isPointerTy() ? -1 : (int)cur_arr->getArrayNumElements();
+        int dim = is_open ? -1 : (int)cur_arr->getArrayNumElements();
 
         llvm::Value* neg = builder->CreateICmpSLT(idx, builder->getInt32(0));
         llvm::Value* huge;
@@ -434,7 +570,7 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
         builder->CreateUnreachable();
 
         builder->SetInsertPoint(ok);
-        if (cur_arr->isPointerTy()) {
+        if (is_open) {
             ptr = builder->CreateInBoundsGEP(open_elem, ptr, {idx}, "idx");
         } else {
             ptr = builder->CreateInBoundsGEP(cur_arr, ptr, {builder->getInt32(0), idx}, "idx");
@@ -443,6 +579,110 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
     }
     elem_ty = is_open ? open_elem : cur_arr;
     return ptr;
+}
+
+// Allocates elem[sz] in the arena (zeroed) and returns a slice handle.
+llvm::Value* CodeGenerator::gen_new(const New& n) {
+    std::string base;
+    int sz = -1;
+    parse_type(n.arr_type, base, sz);
+    if (sz <= 0) error("new requires an explicit array size, e.g. new int[16]");
+    llvm::Type* elem = scalar_type_for(base);
+    if (!elem) {
+        auto it = struct_types.find(base);
+        if (it == struct_types.end()) error("Unknown type in new: " + base);
+        elem = it->second;
+    }
+
+    uint64_t elem_bytes = module->getDataLayout().getTypeAllocSize(elem);
+    llvm::Value* bytes64 = llvm::ConstantInt::get(builder->getInt64Ty(), elem_bytes * (uint64_t)sz);
+    llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes");
+    llvm::Value* ptr = builder->CreateCall(alloc_func, {bytes32}, "new.ptr");
+
+    llvm::Function* memset_fn = llvm::Intrinsic::getOrInsertDeclaration(
+        module.get(), llvm::Intrinsic::memset, llvm::Type::getVoidTy(*context),
+        {llvm::PointerType::getUnqual(*context), builder->getInt8Ty(),
+         builder->getInt64Ty(), builder->getInt1Ty()});
+    builder->CreateCall(memset_fn, {ptr, builder->getInt8(0), bytes64, builder->getInt1(false)});
+
+    return make_slice(ptr, elem, builder->getInt32(sz));
+}
+
+// Copies a stack array value into fresh arena memory, returning a slice.
+// Used when an int[] function returns a fixed (stack) array literal/value.
+llvm::Value* CodeGenerator::copy_array_to_slice(llvm::Value* arr_val, llvm::StructType* slice_ty) {
+    auto at = llvm::cast<llvm::ArrayType>(arr_val->getType());
+    llvm::Type* elem = at->getElementType();
+    uint64_t elem_bytes = module->getDataLayout().getTypeAllocSize(elem);
+    llvm::Value* bytes64 = llvm::ConstantInt::get(builder->getInt64Ty(), elem_bytes * at->getNumElements());
+    llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes");
+    llvm::Value* arena_ptr = builder->CreateCall(alloc_func, {bytes32}, "ret.ptr");
+    for (uint64_t i = 0; i < at->getNumElements(); ++i) {
+        llvm::Value* ep = builder->CreateInBoundsGEP(elem, arena_ptr, {builder->getInt32((uint32_t)i)}, "ret.elem");
+        llvm::Value* ev = builder->CreateExtractValue(arr_val, i, "elem");
+        builder->CreateStore(ev, ep);
+    }
+    return make_slice(arena_ptr, elem, builder->getInt32((int)at->getNumElements()));
+}
+
+// Emits a runtime loop that prints an open array as [a, b, c].
+void CodeGenerator::emit_slice_print(llvm::Value* slice) {
+    llvm::Type* elem = slice_elem_type(llvm::cast<llvm::StructType>(slice->getType()));
+    if (elem->isStructTy()) error("Cannot print an open array of structs yet");
+
+    auto ptr_val = builder->CreateExtractValue(slice, 0, "sp.ptr");
+    auto len_val = builder->CreateExtractValue(slice, 1, "sp.len");
+
+    llvm::FunctionType* printf_ft = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+    auto printf_func = module->getOrInsertFunction("printf", printf_ft);
+    auto open_br = builder->CreateGlobalString("[", "open_br");
+    builder->CreateCall(printf_func, {open_br});
+
+    llvm::Function* func = builder->GetInsertBlock()->getParent();
+    auto head = llvm::BasicBlock::Create(*context, "sp.head", func);
+    auto body = llvm::BasicBlock::Create(*context, "sp.body", func);
+    auto merge = llvm::BasicBlock::Create(*context, "sp.end");
+
+    auto idx = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sp.i");
+    builder->CreateStore(builder->getInt32(0), idx);
+    builder->CreateBr(head);
+    builder->SetInsertPoint(head);
+    auto icur = builder->CreateLoad(builder->getInt32Ty(), idx, "sp.i.cur");
+    auto cmp = builder->CreateICmpSLT(icur, len_val, "sp.cmp");
+    builder->CreateCondBr(cmp, body, merge);
+
+    builder->SetInsertPoint(body);
+    auto isfirst = builder->CreateICmpEQ(icur, builder->getInt32(0), "sp.first");
+    auto comma_block = llvm::BasicBlock::Create(*context, "sp.comma", func);
+    auto nocomma_block = llvm::BasicBlock::Create(*context, "sp.nocomma", func);
+    auto cont_block = llvm::BasicBlock::Create(*context, "sp.cont", func);
+    builder->CreateCondBr(isfirst, nocomma_block, comma_block);
+    builder->SetInsertPoint(comma_block);
+    auto comma = builder->CreateGlobalString(", ", "comma");
+    builder->CreateCall(printf_func, {comma});
+    builder->CreateBr(cont_block);
+    builder->SetInsertPoint(nocomma_block);
+    builder->CreateBr(cont_block);
+    builder->SetInsertPoint(cont_block);
+
+    auto ep = builder->CreateInBoundsGEP(elem, ptr_val, {icur}, "sp.elem");
+    auto ev = builder->CreateLoad(elem, ep, "sp.val");
+    llvm::Value* fmt = nullptr;
+    llvm::Value* a = ev;
+    if (elem->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
+    else if (elem->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
+    else if (elem->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
+    else error("Cannot print open array element of type " + llvm_type_name(elem));
+    builder->CreateCall(printf_func, {fmt, a});
+
+    auto inext = builder->CreateAdd(icur, builder->getInt32(1), "sp.i.next");
+    builder->CreateStore(inext, idx);
+    builder->CreateBr(head);
+
+    func->insert(func->end(), merge);
+    builder->SetInsertPoint(merge);
+    auto close_br = builder->CreateGlobalString("]\n", "close_br");
+    builder->CreateCall(printf_func, {close_br});
 }
 
 // ============================================================================
@@ -492,20 +732,19 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     if (auto sl = std::dynamic_pointer_cast<StructLiteral>(expr)) {
         return build_struct_literal(*sl);
     }
+    if (auto n = std::dynamic_pointer_cast<New>(expr)) {
+        return gen_new(*n);
+    }
     if (auto call = std::dynamic_pointer_cast<Call>(expr)) {
         // Handle len() builtin
         if (call->callee == "len" && call->args.size() == 1) {
-            auto var = std::dynamic_pointer_cast<Variable>(call->args[0]);
-            if (var && is_open_array(var->name)) {
-                return builder->CreateLoad(builder->getInt32Ty(),
-                    lookup_open_array_len(var->name), var->name + ".len");
+            auto av = generate_expr(call->args[0]);
+            if (!av) return nullptr;
+            if (av->getType()->isArrayTy()) {
+                return builder->getInt32((int)llvm::cast<llvm::ArrayType>(av->getType())->getNumElements());
             }
-            if (var) {
-                llvm::Type* t = nullptr;
-                llvm::Value* alloc = lookup_var(var->name, t);
-                if (alloc && t->isArrayTy()) {
-                    return builder->getInt32((int)t->getArrayNumElements());
-                }
+            if (is_slice_ty(av->getType())) {
+                return builder->CreateExtractValue(av, 1, "len");
             }
             error("len() requires an array variable");
         }
@@ -521,34 +760,19 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (i < func->arg_size()) {
                 llvm::Type* param_ty = func->getArg(i)->getType();
 
-                // Open array param: expect i32*, pass ptr + len
-                if (param_ty->isPointerTy() && i + 1 < func->arg_size()
-                    && func->getArg(i + 1)->getType()->isIntegerTy(32)) {
-                    // Argument is a closed array: decay to ptr + len
+                // Open array param: a slice { base*, i32 }. Closed arrays decay
+                // into one automatically; anything already a slice passes through.
+                if (is_slice_ty(param_ty)) {
                     if (v->getType()->isArrayTy()) {
                         auto at = llvm::cast<llvm::ArrayType>(v->getType());
                         auto tmp = builder->CreateAlloca(at, nullptr, "tmp");
                         builder->CreateStore(v, tmp);
-                        args.push_back(tmp);
-                        args.push_back(builder->getInt32((int)at->getNumElements()));
-                        i++; // skip the synthetic len arg
-                        continue;
+                        v = make_slice(tmp, at->getElementType(), builder->getInt32((int)at->getNumElements()));
+                    } else if (v->getType() != param_ty) {
+                        error("Cannot pass " + llvm_type_name(v->getType()) + " to open array parameter of '" + call->callee + "'");
                     }
-                    // Argument is an open array variable: load ptr + len
-                    if (auto var = std::dynamic_pointer_cast<Variable>(call->args[i])) {
-                        if (is_open_array(var->name)) {
-                            llvm::Type* ty2 = nullptr;
-                            llvm::Value* alloc = lookup_var(var->name, ty2);
-                            auto ptr_val = builder->CreateLoad(llvm::PointerType::getUnqual(*context), alloc, var->name + ".ptr");
-                            auto len_val = builder->CreateLoad(builder->getInt32Ty(),
-                                lookup_open_array_len(var->name), var->name + ".len");
-                            args.push_back(ptr_val);
-                            args.push_back(len_val);
-                            i++; // skip the synthetic len arg
-                            continue;
-                        }
-                    }
-                    error("Cannot pass non-array value to open array parameter");
+                    args.push_back(v);
+                    continue;
                 }
 
                 if (param_ty != v->getType()) {
@@ -741,21 +965,27 @@ void CodeGenerator::generate_let(const Let& let) {
         int arr_size = -1;
         if (!parse_type(let.var_type, base, arr_size)) error("Unknown type: " + let.var_type);
         if (arr_size == 0) {
-            // Open array let: let arr: int[] = [1, 2, 3]
-            auto at = llvm::dyn_cast<llvm::ArrayType>(ty);
-            if (!at) error("Type mismatch for '" + let.name + "': expected array for open array type");
-            llvm::Type* elem = at->getElementType();
-            auto data_alloca = builder->CreateAlloca(at, nullptr, let.name + ".data");
-            builder->CreateStore(val, data_alloca);
-            auto ptr_alloca = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, let.name);
-            builder->CreateStore(data_alloca, ptr_alloca);
-            auto len_alloca = builder->CreateAlloca(builder->getInt32Ty(), nullptr, let.name + ".len");
-            builder->CreateStore(builder->getInt32((int)at->getNumElements()), len_alloca);
-            named_values.back()[let.name] = ptr_alloca;
-            named_types.back()[let.name] = llvm::PointerType::getUnqual(*context);
-            named_values.back()[let.name + ".len"] = len_alloca;
-            open_arrays.insert(let.name);
-            open_array_elem_types[let.name] = elem;
+            // Open array let: let arr: int[] = <array literal | slice value>
+            llvm::StructType* st = slice_type_for(base);
+            if (val->getType()->isArrayTy()) {
+                // let arr: int[] = [1, 2, 3]  → stack copy decayed into a slice
+                auto at = llvm::cast<llvm::ArrayType>(val->getType());
+                llvm::Type* elem_ty = slice_elem_type(st);
+                if (at->getElementType() != elem_ty) {
+                    error("Element type mismatch for '" + let.name + "': expected " + llvm_type_name(elem_ty));
+                }
+                auto tmp = builder->CreateAlloca(at, nullptr, let.name + ".data");
+                builder->CreateStore(val, tmp);
+                val = make_slice(tmp, elem_ty, builder->getInt32((int)at->getNumElements()));
+            } else if (!is_slice_ty(val->getType())) {
+                error("Type mismatch for '" + let.name + "': expected an array for open array type");
+            }
+            auto alloc = builder->CreateAlloca(st, nullptr, let.name);
+            builder->CreateStore(val, alloc);
+            named_values.back()[let.name] = alloc;
+            named_types.back()[let.name] = st;
+            register_open_array(let.name, slice_elem_type(st));
+            open_epochs[let.name] = epoch_depth;
             return;
         } else if (arr_size > 0) {
             llvm::ArrayType* at = llvm::dyn_cast<llvm::ArrayType>(ty);
@@ -773,6 +1003,17 @@ void CodeGenerator::generate_let(const Let& let) {
                 error("Type mismatch for '" + let.name + "': cannot assign " + llvm_type_name(val->getType()) + " to " + let.var_type);
             }
         }
+    }
+
+    if (is_slice_ty(ty)) {
+        // Inference: let a = <slice expr>  (new / int[] call) → open array var
+        auto alloc = builder->CreateAlloca(ty, nullptr, let.name);
+        builder->CreateStore(val, alloc);
+        named_values.back()[let.name] = alloc;
+        named_types.back()[let.name] = ty;
+        register_open_array(let.name, slice_elem_type(llvm::cast<llvm::StructType>(ty)));
+        open_epochs[let.name] = epoch_depth;
+        return;
     }
 
     auto alloc = builder->CreateAlloca(ty, nullptr, let.name);
@@ -821,6 +1062,18 @@ void CodeGenerator::generate_assign(const Assign& a) {
     if (!val) return;
 
     llvm::Type* val_ty = val->getType();
+    if (is_slice_ty(ty)) {
+        // Assigning a slice: the target must live at or below the current epoch
+        // depth, otherwise the arena rollback would leave it dangling.
+        if (open_epochs[var->name] < epoch_depth) {
+            error("Cannot move an arena slice out of its epoch: assignment to '" + var->name + "'");
+        }
+        if (val_ty != ty) {
+            error("Type mismatch for '" + var->name + "': cannot assign " + llvm_type_name(val_ty) + " to " + llvm_type_name(ty));
+        }
+        builder->CreateStore(val, alloc);
+        return;
+    }
     if (ty->isDoubleTy() && val_ty->isIntegerTy(32)) {
         val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
     } else if (ty != val_ty) {
@@ -832,6 +1085,18 @@ void CodeGenerator::generate_assign(const Assign& a) {
 
 void CodeGenerator::generate_hot(const Hot& hot) {
     for (const auto& stmt : hot.body) generate_stmt(stmt);
+}
+
+void CodeGenerator::generate_epoch(const Epoch& ep) {
+    auto save = builder->CreateCall(epoch_begin_func, {}, "epoch.save");
+    epoch_depth++;
+    push_scope();
+    for (const auto& stmt : ep.body) generate_stmt(stmt);
+    if (!block_has_terminator(builder->GetInsertBlock())) {
+        builder->CreateCall(epoch_end_func, {save});
+    }
+    pop_scope();
+    epoch_depth--;
 }
 
 void CodeGenerator::generate_print(const Print& print) {
@@ -900,6 +1165,10 @@ void CodeGenerator::generate_print(const Print& print) {
         }
         auto close_br = builder->CreateGlobalString("]\n", "close_br");
         builder->CreateCall(printf_func, {close_br});
+        return;
+    }
+    else if (is_slice_ty(val->getType())) {
+        emit_slice_print(val);
         return;
     }
     else if (val->getType()->isStructTy()) {
@@ -1028,13 +1297,21 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     auto func = builder->GetInsertBlock()->getParent();
     llvm::Value* arr = generate_expr(fi.iterable);
     if (!arr) return;
-    auto at = llvm::dyn_cast<llvm::ArrayType>(arr->getType());
-    if (!at) error("for-in requires an array, got " + llvm_type_name(arr->getType()));
-    auto N = (int)at->getNumElements();
-    llvm::Type* elem = at->getElementType();
 
-    auto tmp = builder->CreateAlloca(at, nullptr, "forin.arr");
-    builder->CreateStore(arr, tmp);
+    llvm::Type* elem = nullptr;
+    llvm::Value* data_ptr = nullptr;
+    llvm::Value* len_val = nullptr;
+    bool is_slice = is_slice_ty(arr->getType());
+    if (is_slice) {
+        elem = slice_elem_type(llvm::cast<llvm::StructType>(arr->getType()));
+        data_ptr = builder->CreateExtractValue(arr, 0, "forin.ptr");
+        len_val = builder->CreateExtractValue(arr, 1, "forin.len");
+    } else {
+        auto at = llvm::dyn_cast<llvm::ArrayType>(arr->getType());
+        if (!at) error("for-in requires an array, got " + llvm_type_name(arr->getType()));
+        elem = at->getElementType();
+    }
+    int N = is_slice ? -1 : (int)llvm::cast<llvm::ArrayType>(arr->getType())->getNumElements();
 
     push_scope();
     auto xalloc = builder->CreateAlloca(elem, nullptr, fi.var);
@@ -1051,11 +1328,23 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     builder->CreateBr(cond_block);
     builder->SetInsertPoint(cond_block);
     auto icur = builder->CreateLoad(builder->getInt32Ty(), i, "forin.i.cur");
-    auto cmp = builder->CreateICmpSLT(icur, builder->getInt32(N), "forin.cmp");
+    llvm::Value* cmp;
+    if (is_slice) {
+        cmp = builder->CreateICmpSLT(icur, len_val, "forin.cmp");
+    } else {
+        cmp = builder->CreateICmpSLT(icur, builder->getInt32(N), "forin.cmp");
+    }
     builder->CreateCondBr(cmp, body_block, merge_block);
 
     builder->SetInsertPoint(body_block);
-    auto eptr = builder->CreateInBoundsGEP(at, tmp, {builder->getInt32(0), icur}, "forin.elem");
+    llvm::Value* eptr;
+    if (is_slice) {
+        eptr = builder->CreateInBoundsGEP(elem, data_ptr, {icur}, "forin.elem");
+    } else {
+        auto tmp = builder->CreateAlloca(arr->getType(), nullptr, "forin.arr");
+        builder->CreateStore(arr, tmp);
+        eptr = builder->CreateInBoundsGEP(arr->getType(), tmp, {builder->getInt32(0), icur}, "forin.elem");
+    }
     auto ev = builder->CreateLoad(elem, eptr, "forin.val");
     builder->CreateStore(ev, xalloc);
     generate_block(fi.body);
@@ -1072,11 +1361,22 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
 }
 
 void CodeGenerator::generate_return(const Return& r) {
+    if (epoch_depth > 0) {
+        error("Cannot return from inside an epoch block: the arena rollback would invalidate any data you sent back");
+    }
     llvm::Type* ret_ty = return_type_stack.empty() ? nullptr : return_type_stack.back();
     if (r.value) {
         auto val = generate_expr(r.value);
         if (!val) return;
-        if (ret_ty && ret_ty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
+        if (ret_ty && is_slice_ty(ret_ty)) {
+            // Returning a fixed (stack) array from an int[] function: copy the
+            // values into fresh arena memory so the returned slice owns its data.
+            if (val->getType()->isArrayTy()) {
+                val = copy_array_to_slice(val, llvm::cast<llvm::StructType>(ret_ty));
+            } else if (val->getType() != ret_ty) {
+                error("Cannot return " + llvm_type_name(val->getType()) + " where " + llvm_type_name(ret_ty) + " is expected");
+            }
+        } else if (ret_ty && ret_ty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
             val = builder->CreateSIToFP(val, builder->getDoubleTy());
         }
         builder->CreateRet(val);
@@ -1099,25 +1399,14 @@ void CodeGenerator::generate_return(const Return& r) {
 // ============================================================================
 
 void CodeGenerator::declare_func(const FuncDecl& fd) {
-    std::string base;
-    int arr_size = -1;
-
-    // Check return type first — open arrays not allowed as return
-    if (!fd.return_type.empty()) {
-        parse_type(fd.return_type, base, arr_size);
-        if (arr_size == 0) error("Cannot use open array type as return type");
-    }
-
     std::vector<llvm::Type*> param_types;
     for (auto& p : fd.params) {
         std::string pbase;
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
         if (parr == 0) {
-            // Open array: split into ptr + len
-            llvm::Type* elem = llvm_type_from_name(pbase);
-            param_types.push_back(llvm::PointerType::getUnqual(*context));
-            param_types.push_back(builder->getInt32Ty());
+            // Open array (int[]) is a single slice { base*, i32 } argument
+            param_types.push_back(slice_type_for(pbase));
         } else {
             llvm::Type* t = signature_type_for(p.var_type, "parameter '" + p.name + "'");
             if (!t) t = builder->getInt32Ty();
@@ -1149,19 +1438,15 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
         if (parr == 0) {
-            // Open array: arg is i32*, next arg is i32 len
-            llvm::Argument& ptr_arg = *arg_it++;
-            llvm::Argument& len_arg = *arg_it++;
-            llvm::Type* elem = llvm_type_from_name(pbase);
-            auto ptr_alloca = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, p.name);
-            builder->CreateStore(&ptr_arg, ptr_alloca);
-            auto len_alloca = builder->CreateAlloca(builder->getInt32Ty(), nullptr, p.name + ".len");
-            builder->CreateStore(&len_arg, len_alloca);
-            named_values.back()[p.name] = ptr_alloca;
-            named_types.back()[p.name] = llvm::PointerType::getUnqual(*context);
-            named_values.back()[p.name + ".len"] = len_alloca;
-            open_arrays.insert(p.name);
-            open_array_elem_types[p.name] = elem;
+            // Open array: one slice { base*, i32 } argument, stored as a whole
+            llvm::Argument& arg = *arg_it++;
+            llvm::Type* st = slice_type_for(pbase);
+            auto alloca = builder->CreateAlloca(st, nullptr, p.name);
+            builder->CreateStore(&arg, alloca);
+            named_values.back()[p.name] = alloca;
+            named_types.back()[p.name] = st;
+            register_open_array(p.name, llvm_type_from_name(pbase));
+            open_epochs[p.name] = epoch_depth;
         } else {
             llvm::Argument& arg = *arg_it++;
             llvm::Type* pt = signature_type_for(p.var_type, "parameter '" + p.name + "'");
@@ -1193,6 +1478,7 @@ void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
     switch (stmt->kind) {
         case Stmt::Kind::Let:      generate_let(stmt->let); break;
         case Stmt::Kind::Hot:      generate_hot(stmt->hot); break;
+        case Stmt::Kind::Epoch:    generate_epoch(stmt->epoch); break;
         case Stmt::Kind::Print:    generate_print(stmt->print); break;
         case Stmt::Kind::If:       if (stmt->if_stmt) generate_if(*stmt->if_stmt); break;
         case Stmt::Kind::While:    if (stmt->while_stmt) generate_while(*stmt->while_stmt); break;

@@ -99,6 +99,10 @@ struct StructLiteral : public Expr {
     std::vector<std::shared_ptr<Expr>> args;
 };
 
+struct New : public Expr {
+    std::string arr_type;   // "int[16]" etc.
+};
+
 // Statements
 struct Stmt;
 
@@ -109,6 +113,10 @@ struct Let {
 };
 
 struct Hot {
+    std::vector<std::shared_ptr<Stmt>> body;
+};
+
+struct Epoch {
     std::vector<std::shared_ptr<Stmt>> body;
 };
 
@@ -176,10 +184,11 @@ struct StructDecl {
 };
 
 struct Stmt {
-    enum class Kind { Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl };
+    enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl };
     Kind kind;
     Let let;
     Hot hot;
+    Epoch epoch;
     Print print;
     std::shared_ptr<If> if_stmt;
     std::shared_ptr<While> while_stmt;

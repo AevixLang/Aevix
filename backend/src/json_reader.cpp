@@ -129,6 +129,11 @@ static std::shared_ptr<Expr> parse_expr(const json& j) {
         }
         return s;
     }
+    else if (type == "New") {
+        auto n = std::make_shared<New>();
+        n->arr_type = j["arr_type"];
+        return n;
+    }
 
     return nullptr;
 }
@@ -172,6 +177,13 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         for (const auto& inner : j["body"]) {
             auto child = parse_stmt(inner);
             if (child) stmt->hot.body.push_back(child);
+        }
+    }
+    else if (type == "Epoch") {
+        stmt->kind = Stmt::Kind::Epoch;
+        for (const auto& inner : j["body"]) {
+            auto child = parse_stmt(inner);
+            if (child) stmt->epoch.body.push_back(child);
         }
     }
     else if (type == "Print") {
