@@ -16,6 +16,7 @@ var rootDir string
 
 func runCmd(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Dir = rootDir
@@ -109,6 +110,7 @@ func runLLVMTool(name string, args ...string) error {
 
 func runTool(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Dir = rootDir
