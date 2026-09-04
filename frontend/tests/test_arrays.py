@@ -13,6 +13,7 @@ ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 VENV_PYTHON = os.path.join(ROOT, "venv", "bin", "python")
 FRONTEND_DIR = os.path.join(ROOT, "frontend")
 BACKEND_BIN = os.path.join(ROOT, "backend", "build", "aevix-backend")
+RUNTIME_OBJ = os.path.join(ROOT, "backend", "build", "runtime.o")
 LLC = shutil.which("llc") or "/opt/homebrew/opt/llvm/bin/llc"
 
 
@@ -72,7 +73,7 @@ def run_and_capture(code):
         if lc.returncode != 0:
             return lc.returncode, [], lc.stderr
         exe = os.path.join(workdir, "prog")
-        cl = subprocess.run(["clang", obj, "-o", exe],
+        cl = subprocess.run(["clang", obj, RUNTIME_OBJ, "-o", exe],
                             capture_output=True, text=True)
         if cl.returncode != 0:
             return cl.returncode, [], cl.stderr
@@ -520,4 +521,47 @@ def test_for_in_over_scalar_rejected():
     )
     assert ec != 0, "for-in over a non-array should be rejected"
     assert "for-in requires an array" in err
+
+
+def test_open_array_let_returned_is_arena_backed():
+    ec, out, err = run_and_capture(
+        "func make() : int[] {\n"
+        "    let arr: int[] = [1, 2, 3];\n"
+        "    return arr;\n"
+        "}\n"
+        "let s = make();\n"
+        "print s;\n"
+        "s[1] = 9;\n"
+        "print s;\n"
+    )
+    assert ec == 0, err
+    assert out == ["[1, 2, 3]", "[1, 9, 3]"]
+
+
+def test_arena_grows_past_64_mib():
+    ec, out, err = run_and_capture(
+        "let big: int[] = new int[17000000];\n"
+        "big[16999999] = 42;\n"
+        "print big[16999999];\n"
+    )
+    assert ec == 0, err
+    assert out == ["42"]
+
+
+def test_closed_arg_to_open_param_is_arena_backed():
+    ec, out, err = run_and_capture(
+        "func id(s: int[]) : int[] {\n"
+        "    return s;\n"
+        "}\n"
+        "func maker() : int[] {\n"
+        "    let r = id([1, 2, 3]);\n"
+        "    return r;\n"
+        "}\n"
+        "let top = maker();\n"
+        "print top;\n"
+        "top[1] = 99;\n"
+        "print top;\n"
+    )
+    assert ec == 0, err
+    assert out == ["[1, 2, 3]", "[1, 99, 3]"]
 

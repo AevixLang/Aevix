@@ -13,6 +13,7 @@ ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 VENV_PYTHON = os.path.join(ROOT, "venv", "bin", "python")
 FRONTEND_DIR = os.path.join(ROOT, "frontend")
 BACKEND_BIN = os.path.join(ROOT, "backend", "build", "aevix-backend")
+RUNTIME_OBJ = os.path.join(ROOT, "backend", "build", "runtime.o")
 LLC = shutil.which("llc") or "/opt/homebrew/opt/llvm/bin/llc"
 
 
@@ -71,7 +72,7 @@ def run_and_capture(code):
         if lc.returncode != 0:
             return lc.returncode, [], lc.stderr
         exe = os.path.join(workdir, "prog")
-        cl = subprocess.run(["clang", obj, "-o", exe],
+        cl = subprocess.run(["clang", obj, RUNTIME_OBJ, "-o", exe],
                             capture_output=True, text=True)
         if cl.returncode != 0:
             return cl.returncode, [], cl.stderr
