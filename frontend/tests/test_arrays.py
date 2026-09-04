@@ -329,6 +329,53 @@ def test_new_struct_array():
     assert out == ["7", "6", "2"]
 
 
+def test_new_runtime_size():
+    ec, out, err = run_and_capture(
+        "let n = 5;\n"
+        "let a = new int[n];\n"
+        "let i = 0;\n"
+        "while (i < n) {\n"
+        "    a[i] = i * i;\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "print len(a);\n"
+        "print a[4];\n"
+    )
+    assert ec == 0, err
+    assert out == ["5", "16"]
+
+
+def test_new_runtime_size_expression():
+    ec, out, err = run_and_capture(
+        "let n = 3;\n"
+        "let a = new float[n + 1];\n"
+        "a[0] = 1.5;\n"
+        "print a[n];\n"
+        "print a[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["0.000000", "0.000000"]
+
+
+def test_new_runtime_size_struct():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let k = 2;\n"
+        "let pts = new Point[k];\n"
+        "pts[0].x = 7;\n"
+        "print pts[0].x;\n"
+        "print len(pts);\n"
+    )
+    assert ec == 0, err
+    assert out == ["7", "2"]
+
+
+def test_new_zero_size_rejected():
+    code, err = compile_only("let a = new int[0];\n")
+    assert code != 0, "new int[0] should be rejected"
+    assert "positive array size" in err
+
+
 def test_open_array_return_and_use():
     ec, out, err = run_and_capture(
         "func make(): int[] {\n"
@@ -378,6 +425,119 @@ def test_for_in_over_new_array():
     )
     assert ec == 0, err
     assert out == ["12"]
+
+
+# --- strings (slices of i8) ---
+
+def test_string_print_no_quotes():
+    ec, out, err = run_and_capture('let s: string = "hello";\nprint s;\n')
+    assert ec == 0, err
+    assert out == ["hello"]
+
+
+def test_string_len():
+    ec, out, err = run_and_capture('let s: string = "hello";\nprint len(s);\n')
+    assert ec == 0, err
+    assert out == ["5"]
+
+
+def test_string_index_char():
+    ec, out, err = run_and_capture('let s: string = "hello";\nprint s[0];\nprint s[4];\n')
+    assert ec == 0, err
+    assert out == ["h", "o"]
+
+
+def test_string_concat():
+    ec, out, err = run_and_capture('let a: string = "foo";\nlet b = "bar";\nprint a + b;\nprint len(a + b);\n')
+    assert ec == 0, err
+    assert out == ["foobar", "6"]
+
+
+def test_string_literal_concat():
+    ec, out, err = run_and_capture('print "hello" + " world";\n')
+    assert ec == 0, err
+    assert out == ["hello world"]
+
+
+def test_string_equality():
+    ec, out, err = run_and_capture(
+        'let s: string = "hi";\n'
+        'if (s == "hi") { print "eq"; }\n'
+        'if (s != "hi") { print "neq-wrong"; }\n'
+        'if (s != "hx") { print "ne"; }\n'
+        'if (s == "h") { print "eq-wrong"; }\n'
+    )
+    assert ec == 0, err
+    assert out == ["eq", "ne"]
+
+
+def test_string_concat_comparison():
+    ec, out, err = run_and_capture(
+        'if ("a" + "b" == "ab") { print "yes"; }\n'
+    )
+    assert ec == 0, err
+    assert out == ["yes"]
+
+
+def test_string_char_arithmetic():
+    ec, out, err = run_and_capture(
+        'let s: string = "abc";\nprint s[0] + 1;\n'
+    )
+    assert ec == 0, err
+    assert out == ["98"]
+
+
+def test_string_param_and_return():
+    ec, out, err = run_and_capture(
+        "func greet(p: string): string {\n"
+        '    return p + "!";\n'
+        "}\n"
+        'print greet("hi");\n'
+    )
+    assert ec == 0, err
+    assert out == ["hi!"]
+
+
+def test_string_struct_field():
+    ec, out, err = run_and_capture(
+        'struct User { name: string, age: int }\n'
+        'let u = User { "osman", 30 };\n'
+        "print u.name;\n"
+        "print len(u.name);\n"
+        "print u.name + \"!\";\n"
+        "print u;\n"
+    )
+    assert ec == 0, err
+    assert out == ["osman", "5", "osman!", "{osman, 30}"]
+
+
+def test_string_array_rejected():
+    code, err = compile_only('let a: string[3];\n')
+    assert code != 0
+
+
+def test_new_string_array_rejected():
+    code, err = compile_only('let a = new string[2];\n')
+    assert code != 0
+    assert "not supported" in err
+
+
+def test_string_add_non_string_rejected():
+    code, err = compile_only('let s = "a" + 1;\n')
+    assert code != 0
+    assert "string" in err
+
+
+def test_string_compare_non_string_rejected():
+    code, err = compile_only('let s = "a" == 1;\n')
+    assert code != 0
+    assert "string" in err
+
+
+def test_string_relational_compare_rejected():
+    code, err = compile_only('print "a" < "b";\n')
+    assert code != 0
+    assert "only == and !=" in err
 
 
 # --- epochs ---
