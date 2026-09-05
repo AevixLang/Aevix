@@ -39,3 +39,6 @@ tools/aevix
 ast.json
 examples/
 notes/
+
+# Runtime artifacts written by example programs (write("out.txt", ...))
+out.txt
