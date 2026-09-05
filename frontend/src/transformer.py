@@ -12,6 +12,23 @@ from .ast import (
     New, Epoch
 )
 
+def _decode_escapes(raw):
+    """Decodes string-literal escapes (\\n, \\t, \\r, \\\\, \\") into bytes.
+    Unknown sequences keep the backslash so old verbatim strings stay valid."""
+    ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"'}
+    out = []
+    i = 0
+    while i < len(raw):
+        c = raw[i]
+        if c == "\\" and i + 1 < len(raw) and raw[i + 1] in ESCAPES:
+            out.append(ESCAPES[raw[i + 1]])
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def _expr_from_token(tok):
     """Converts a raw Lark token into the corresponding AST Expression node."""
     if tok.type == "NUMBER":
@@ -21,7 +38,7 @@ def _expr_from_token(tok):
     elif tok.type == "BOOL":
         return Bool(value=(str(tok) == "true"))
     elif tok.type == "STRING":
-        return String(value=str(tok)[1:-1])
+        return String(value=_decode_escapes(str(tok)[1:-1]))
     return Variable(value=str(tok))
 
 def _with_pos(f, data, children, meta):
