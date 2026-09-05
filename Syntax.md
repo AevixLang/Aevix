@@ -165,6 +165,16 @@ if (s != "hello") { ... }
 
 Strings work as function parameters/returns and struct fields. Arrays of strings are not supported yet.
 
+String literals support the escapes `\n`, `\t`, `\r`, `\\` and `\"`; any other
+backslash sequence is kept verbatim:
+
+```aev
+let msg = "line 1\nline 2\t-tabbed";
+```
+
+`to_int`/`to_float` parse the leading number of a string; `to_str` formats
+int/float values back into strings, so numbers and text compose freely:
+
 ---
 
 ## 8. Structs
@@ -217,6 +227,13 @@ Built-in functions:
 | `read(fn)` | `read(fn: string) -> string` | Whole file as a string; `""` if unreadable |
 | `write(fn, s)` | `write(fn: string, s: string) -> bool` | Write `s` to `fn`, truncating; `true` on success |
 | `input()` | `input() -> string` | One line from stdin, without the trailing newline; `""` at EOF |
+| `to_int(s)` | `to_int(s: string) -> int` | Leading decimal integer of `s` (whitespace and `-` honored); `0` if none |
+| `to_float(s)` | `to_float(s: string) -> float` | Leading floating-point number of `s`; `0.0` if none |
+| `to_str(n)` | `to_str(int or float) -> string` | Number rendered as text (floats use `%f`, matching `print`) |
+| `substr(s, start, n)` | `substr(s: string, start: int, n: int) -> string` | Clamped segment of `s`, copied to the arena |
+| `min(a, b)` | `min(int or float...) -> same` | Smaller of two numbers (int/float/mixed) |
+| `max(a, b)` | `max(int or float...) -> same` | Larger of two numbers (int/float/mixed) |
+| `abs(n)` | `abs(int or float) -> same` | Absolute value |
 | `exit(n)` | `exit(n: int)` | Terminate the program with status `n` |
 
 ```aev
