@@ -134,7 +134,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 🚧 Alpha — Under active development. Not yet production-ready. Frontend and backend pipeline currently working end-to-end.
 
 ### Known limitations
-- Arrays of strings (`string[3]`) are not supported yet; strings are slices of `i8`.
 - Struct literals are positional (`Point { 1, 2 }`), not named.
 - Slices of structs and arrays of structs inside print are not supported (int/float/bool/string print everywhere).
 - `read()` on a missing file returns `""`; `write()` reports failure as `false`.

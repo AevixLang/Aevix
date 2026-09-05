@@ -163,7 +163,24 @@ if (s == "hello") { ... }
 if (s != "hello") { ... }
 ```
 
-Strings work as function parameters/returns and struct fields. Arrays of strings are not supported yet.
+Strings work as function parameters/returns and struct fields. Arrays of
+strings are supported in all the same shapes as `int`: open `string[]` slices,
+fixed `string[N]` arrays, `new string[n]`, struct fields and parameters:
+
+```aev
+let parts = split("a,b,c", ",");      // -> string[] slice (arena-allocated)
+print parts;                          // ["a", "b", "c"]
+print parts[1];                       // b
+parts[2] = "z";                       // mutable elements
+print len(parts);                     // 3
+for w in parts { print w; }           // iteration
+let words: string[2] = ["x", "y"];    // fixed array
+let fresh = new string[2];            // zeroed: ["", ""]
+```
+
+`split(s, sep)` splits `s` on every occurrence of `sep` and returns a
+`string[]` slice. Empty pieces are preserved (`"a,,b"` by `","` gives
+`["a", "", "b"]`); an empty separator returns `[s]` unchanged.
 
 String literals support the escapes `\n`, `\t`, `\r`, `\\` and `\"`; any other
 backslash sequence is kept verbatim:
@@ -231,6 +248,7 @@ Built-in functions:
 | `to_float(s)` | `to_float(s: string) -> float` | Leading floating-point number of `s`; `0.0` if none |
 | `to_str(n)` | `to_str(int or float) -> string` | Number rendered as text (floats use `%f`, matching `print`) |
 | `substr(s, start, n)` | `substr(s: string, start: int, n: int) -> string` | Clamped segment of `s`, copied to the arena |
+| `split(s, sep)` | `split(s: string, sep: string) -> string[]` | Split `s` on every `sep`; empty pieces preserved |
 | `min(a, b)` | `min(int or float...) -> same` | Smaller of two numbers (int/float/mixed) |
 | `max(a, b)` | `max(int or float...) -> same` | Larger of two numbers (int/float/mixed) |
 | `abs(n)` | `abs(int or float) -> same` | Absolute value |
