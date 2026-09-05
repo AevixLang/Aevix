@@ -1,0 +1,5 @@
+import "cyc_b";
+
+func from_a(): int {
+    return 1;
+}

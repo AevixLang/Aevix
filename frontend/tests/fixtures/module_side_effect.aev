@@ -1,0 +1,7 @@
+// top-level statements must be dropped when imported (no side effects)
+print "SIDE EFFECT SHOULD NOT RUN";
+let leaked = 42;
+
+func quiet(): int {
+    return 7;
+}

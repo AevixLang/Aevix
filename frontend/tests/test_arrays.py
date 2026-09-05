@@ -41,11 +41,12 @@ def compile_only(code):
         os.unlink(src)
 
 
-def run_and_capture(code, args=(), files=None, stdin=None):
+def run_and_capture(code, args=(), files=None, stdin=None, env=None):
     """Compile and run, returning (exit_code, stdout_lines, error_text).
     `args` are forwarded to the compiled program; `files` (name -> content)
     are written into the run directory before execution; `stdin` is fed to
-    the program on stdin."""
+    the program on stdin; `env` (dict) is merged into the environment of
+    every pipeline step."""
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".aev", delete=False, dir=FRONTEND_DIR
     ) as f:
@@ -53,17 +54,20 @@ def run_and_capture(code, args=(), files=None, stdin=None):
         f.flush()
         src = f.name
     workdir = tempfile.mkdtemp()
+    pipe_env = dict(os.environ)
+    if env:
+        pipe_env.update(env)
     try:
         fe = subprocess.run(
             [VENV_PYTHON, "-m", "src.main", src],
-            cwd=FRONTEND_DIR, capture_output=True, text=True,
+            cwd=FRONTEND_DIR, capture_output=True, text=True, env=pipe_env,
         )
         if fe.returncode != 0:
             return fe.returncode, [], fe.stderr
         # backend reads frontend's ast.json via shared file
         be = subprocess.run(
             [BACKEND_BIN, os.path.join(FRONTEND_DIR, "ast.json")],
-            cwd=workdir, capture_output=True, text=True,
+            cwd=workdir, capture_output=True, text=True, env=pipe_env,
         )
         if be.returncode != 0:
             return be.returncode, [], be.stderr
@@ -84,7 +88,7 @@ def run_and_capture(code, args=(), files=None, stdin=None):
             with open(os.path.join(workdir, name), "w") as fh:
                 fh.write(content)
         run = subprocess.run([exe, *args], capture_output=True, text=True,
-                             cwd=workdir, input=stdin)
+                             cwd=workdir, input=stdin, env=pipe_env)
         return run.returncode, run.stdout.splitlines(), run.stderr
     finally:
         os.unlink(src)

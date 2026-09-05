@@ -1,0 +1,5 @@
+import "shared_core";
+
+func via_a(x: int): int {
+    return twice(x) + 1;
+}

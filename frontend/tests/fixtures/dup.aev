@@ -1,0 +1,4 @@
+// deliberately duplicates a name from geo.aev for the conflict test
+func square_area(side: int): int {
+    return side + 1;
+}

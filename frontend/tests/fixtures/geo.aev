@@ -1,0 +1,8 @@
+// geometry helpers (import fixture for Stage 3)
+func square_area(side: int): int {
+    return side * side;
+}
+
+func circle_area(r: float): float {
+    return 3.14 * r * r;
+}
