@@ -234,3 +234,56 @@ void __aevix_substr(const uint8_t* s, int32_t len, int32_t start, int32_t count,
     *out_ptr = buf;
     *out_len = count;
 }
+
+/* split(s, sep): returns a string[] slice — an arena-allocated array of
+ * { ptr, len } sub-slices, one per piece of s split on every sep occurrence.
+ * An empty separator is treated as "no split" and yields a single-element
+ * array containing s itself. Empty pieces are preserved, so "a,,b" split by
+ * "," gives ["a", "", "b"] and "a,b," gives ["a", "b", ""]. */
+void __aevix_split(const uint8_t* s, int32_t slen, const uint8_t* sep, int32_t seplen,
+                   uint8_t** out_ptr, int32_t* out_len) {
+    typedef struct { uint8_t* ptr; int32_t len; } aevix_str;
+    if (seplen <= 0) {
+        aevix_str* arr = (aevix_str*)__aevix_alloc((int32_t)sizeof(aevix_str));
+        uint8_t* copy = slen > 0 ? (uint8_t*)__aevix_alloc(slen) : NULL;
+        if (slen > 0) memcpy(copy, s, (size_t)slen);
+        arr[0].ptr = copy;
+        arr[0].len = slen;
+        *out_ptr = (uint8_t*)arr;
+        *out_len = 1;
+        return;
+    }
+    int32_t count = 1;
+    for (int32_t i = 0; i + seplen <= slen; ++i) {
+        int32_t j = 0;
+        while (j < seplen && s[i + j] == sep[j]) ++j;
+        if (j == seplen) {
+            ++count;
+            i += seplen - 1;
+        }
+    }
+    aevix_str* arr = (aevix_str*)__aevix_alloc((int32_t)(sizeof(aevix_str) * count));
+    int32_t idx = 0;
+    int32_t start = 0;
+    for (int32_t i = 0; i + seplen <= slen; ++i) {
+        int32_t j = 0;
+        while (j < seplen && s[i + j] == sep[j]) ++j;
+        if (j == seplen) {
+            int32_t span = i - start;
+            uint8_t* copy = span > 0 ? (uint8_t*)__aevix_alloc(span) : NULL;
+            if (span > 0) memcpy(copy, s + start, (size_t)span);
+            arr[idx].ptr = copy;
+            arr[idx].len = span;
+            ++idx;
+            i += seplen - 1;
+            start = i + 1;
+        }
+    }
+    int32_t tail = slen - start;
+    uint8_t* tcopy = tail > 0 ? (uint8_t*)__aevix_alloc(tail) : NULL;
+    if (tail > 0) memcpy(tcopy, s + start, (size_t)tail);
+    arr[idx].ptr = tcopy;
+    arr[idx].len = tail;
+    *out_ptr = (uint8_t*)arr;
+    *out_len = count;
+}

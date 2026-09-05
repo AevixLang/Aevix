@@ -54,6 +54,7 @@ private:
     llvm::Function* int_to_str_func;
     llvm::Function* double_to_str_func;
     llvm::Function* substr_func;
+    llvm::Function* split_func;
     void build_conv_runtime();
 
     // Escape-checking for epochs: every open-array variable remembers the
@@ -98,6 +99,8 @@ private:
 
     // Strings are slices of i8: { i8*, i32 }. build the value or test a type.
     llvm::Value* make_string_slice(llvm::Value* ptr, llvm::Value* len);
+    // string[] is a slice whose elements are string slices: { string*, i32 }.
+    llvm::Value* make_string_array_slice(llvm::Value* ptr, llvm::Value* len);
     bool is_string_slice(llvm::Type* ty);
     llvm::Value* gen_string_concat(llvm::Value* left, llvm::Value* right);
     llvm::Function* str_eq_func;
