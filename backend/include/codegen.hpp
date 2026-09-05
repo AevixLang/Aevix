@@ -47,6 +47,15 @@ private:
     llvm::Function* read_line_func;
     void build_io_runtime();
 
+    // String conversion runtime helpers (aevix_runtime.c): parsing, formatting
+    // and slicing. to_str has two backends for int vs float arguments.
+    llvm::Function* to_int_func;
+    llvm::Function* to_float_func;
+    llvm::Function* int_to_str_func;
+    llvm::Function* double_to_str_func;
+    llvm::Function* substr_func;
+    void build_conv_runtime();
+
     // Escape-checking for epochs: every open-array variable remembers the
     // epoch depth it was created at. Assigning a slice to a variable defined
     // at a smaller depth would survive the arena rollback and dangle.

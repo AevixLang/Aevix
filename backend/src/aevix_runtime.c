@@ -176,3 +176,61 @@ void __aevix_read_line(uint8_t** out_ptr, int32_t* out_len) {
     *out_ptr = buf;
     *out_len = (int32_t)n;
 }
+
+/* to_int(s): parses the leading decimal integer of a slice. Leading whitespace
+ * and an optional '-' are honored; parsing stops at the first non-digit. */
+int32_t __aevix_parse_int(const uint8_t* s, int32_t len) {
+    int32_t i = 0;
+    while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
+    int neg = 0;
+    if (i < len && s[i] == '-') { neg = 1; ++i; }
+    int32_t acc = 0;
+    while (i < len && s[i] >= '0' && s[i] <= '9') {
+        acc = acc * 10 + (s[i] - '0');
+        ++i;
+    }
+    return neg ? -acc : acc;
+}
+
+/* to_float(s): parses the leading floating-point number of a slice using a
+ * NUL-terminated arena copy so strtod never reads past the slice. */
+double __aevix_parse_double(const uint8_t* s, int32_t len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(len + 1);
+    memcpy(buf, s, (size_t)len);
+    buf[len] = '\0';
+    return strtod((const char*)buf, NULL);
+}
+
+/* to_str(int): renders an integer with "%d" into arena memory. */
+void __aevix_int_to_str(int32_t n, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(32);
+    int m = snprintf((char*)buf, 32, "%d", (int)n);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (int32_t)m;
+}
+
+/* to_str(float): renders a double with "%f" (6 decimals), matching print. The
+ * buffer is sized for the longest %f form (huge exponents pad out to ~300
+ * chars); m is clamped so a truncated render never reports a bogus length. */
+void __aevix_double_to_str(double d, uint8_t** out_ptr, int32_t* out_len) {
+    enum { CAP = 400 };
+    uint8_t* buf = (uint8_t*)__aevix_alloc(CAP);
+    int m = snprintf((char*)buf, CAP, "%f", d);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (m >= CAP ? CAP - 1 : (int32_t)m);
+}
+
+/* substr(s, start, count): clamps the range to the slice and copies the chosen
+ * segment into the arena. Out-of-range start yields an empty string. */
+void __aevix_substr(const uint8_t* s, int32_t len, int32_t start, int32_t count,
+                    uint8_t** out_ptr, int32_t* out_len) {
+    if (start < 0) start = 0;
+    if (start > len) start = len;
+    if (count < 0) count = 0;
+    int32_t avail = len - start;
+    if (count > avail) count = avail;
+    uint8_t* buf = count > 0 ? (uint8_t*)__aevix_alloc(count) : NULL;
+    if (count > 0) memcpy(buf, s + start, (size_t)count);
+    *out_ptr = buf;
+    *out_len = count;
+}

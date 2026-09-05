@@ -37,6 +37,7 @@ CodeGenerator::CodeGenerator()
     build_oob_runtime();
     build_arena_runtime();
     build_io_runtime();
+    build_conv_runtime();
 
     named_values.emplace_back();
     named_types.emplace_back();
@@ -140,6 +141,39 @@ void CodeGenerator::build_io_runtime() {
     // __aevix_read_line(ptr* out_ptr, ptr* out_len) — one line from stdin; "" on EOF.
     auto line_ft = llvm::FunctionType::get(void_ty, {pp_ty, pp_ty}, false);
     read_line_func = llvm::Function::Create(line_ft, llvm::Function::ExternalLinkage, "__aevix_read_line", module.get());
+}
+
+/**
+ * Declares the string conversion runtime, defined in aevix_runtime.c: parsing a
+ * slice into a number, formatting numbers into arena strings, and substr. All
+ * string-producing helpers write into (ptr* out_ptr, i32* out_len) like read().
+ */
+void CodeGenerator::build_conv_runtime() {
+    auto i32 = builder->getInt32Ty();
+    auto void_ty = llvm::Type::getVoidTy(*context);
+    auto ptr_ty = llvm::PointerType::getUnqual(*context);
+    auto pp_ty = llvm::PointerType::getUnqual(ptr_ty);
+
+    // __aevix_parse_int(ptr s, i32 len) -> i32
+    auto int_ft = llvm::FunctionType::get(i32, {ptr_ty, i32}, false);
+    to_int_func = llvm::Function::Create(int_ft, llvm::Function::ExternalLinkage, "__aevix_parse_int", module.get());
+
+    // __aevix_parse_double(ptr s, i32 len) -> double
+    auto dbl_ty = builder->getDoubleTy();
+    auto dbl_ft = llvm::FunctionType::get(dbl_ty, {ptr_ty, i32}, false);
+    to_float_func = llvm::Function::Create(dbl_ft, llvm::Function::ExternalLinkage, "__aevix_parse_double", module.get());
+
+    // __aevix_int_to_str(i32 n, ptr* out_ptr, i32* out_len)
+    auto str_out_ft = llvm::FunctionType::get(void_ty, {i32, pp_ty, pp_ty}, false);
+    int_to_str_func = llvm::Function::Create(str_out_ft, llvm::Function::ExternalLinkage, "__aevix_int_to_str", module.get());
+
+    // __aevix_double_to_str(double d, ptr* out_ptr, i32* out_len)
+    auto dstr_out_ft = llvm::FunctionType::get(void_ty, {dbl_ty, pp_ty, pp_ty}, false);
+    double_to_str_func = llvm::Function::Create(dstr_out_ft, llvm::Function::ExternalLinkage, "__aevix_double_to_str", module.get());
+
+    // __aevix_substr(ptr s, i32 len, i32 start, i32 count, ptr* out_ptr, i32* out_len)
+    auto sub_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, i32, i32, pp_ty, pp_ty}, false);
+    substr_func = llvm::Function::Create(sub_ft, llvm::Function::ExternalLinkage, "__aevix_substr", module.get());
 }
 
 /**
@@ -951,6 +985,103 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "in.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "in.rl");
             return make_string_slice(rp, rl);
+        }
+
+        // to_int(s) -> int: leading decimal number of a string slice.
+        if (call->callee == "to_int" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("to_int() requires a string");
+            return builder->CreateCall(to_int_func,
+                {builder->CreateExtractValue(sv, 0, "ti.ptr"),
+                 builder->CreateExtractValue(sv, 1, "ti.len")}, "to.int");
+        }
+
+        // to_float(s) -> float: leading floating-point number of a string slice.
+        if (call->callee == "to_float" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("to_float() requires a string");
+            return builder->CreateCall(to_float_func,
+                {builder->CreateExtractValue(sv, 0, "tf.ptr"),
+                 builder->CreateExtractValue(sv, 1, "tf.len")}, "to.float");
+        }
+
+        // to_str(int|float) -> string: format a number, matching print's format.
+        if (call->callee == "to_str" && call->args.size() == 1) {
+            auto nv = generate_expr(call->args[0]);
+            if (!nv) return nullptr;
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "ts.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "ts.l");
+            if (nv->getType()->isIntegerTy(32)) {
+                builder->CreateCall(int_to_str_func, {nv, p_out, l_out});
+            } else if (nv->getType()->isDoubleTy()) {
+                builder->CreateCall(double_to_str_func, {nv, p_out, l_out});
+            } else {
+                error("to_str() requires an int or float");
+            }
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "ts.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "ts.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // substr(s, start, count) -> string: clamped segment copied to the arena.
+        if (call->callee == "substr" && call->args.size() == 3) {
+            auto sv = generate_expr(call->args[0]);
+            auto stv = generate_expr(call->args[1]);
+            auto cnv = generate_expr(call->args[2]);
+            if (!sv || !stv || !cnv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("substr() requires a string");
+            if (!stv->getType()->isIntegerTy(32)) error("substr() requires integer start");
+            if (!cnv->getType()->isIntegerTy(32)) error("substr() requires integer count");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "sb.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sb.l");
+            builder->CreateCall(substr_func,
+                {builder->CreateExtractValue(sv, 0, "sb.ptr"),
+                 builder->CreateExtractValue(sv, 1, "sb.len"), stv, cnv, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "sb.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "sb.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // min(a, b) / max(a, b): int or float comparison via select.
+        if ((call->callee == "min" || call->callee == "max") && call->args.size() == 2) {
+            bool want_min = call->callee == "min";
+            auto a = generate_expr(call->args[0]);
+            auto b = generate_expr(call->args[1]);
+            if (!a || !b) return nullptr;
+            require_numeric(a, call->callee);
+            require_numeric(b, call->callee);
+            promote_binop_operands(a, b);
+            if (a->getType()->isDoubleTy() || b->getType()->isDoubleTy()) {
+                if (a->getType()->isIntegerTy(32)) a = builder->CreateSIToFP(a, builder->getDoubleTy(), "tofp");
+                if (b->getType()->isIntegerTy(32)) b = builder->CreateSIToFP(b, builder->getDoubleTy(), "tofp");
+                auto cmp = want_min
+                    ? builder->CreateFCmpOLT(a, b, "min.cmp")
+                    : builder->CreateFCmpOGT(a, b, "max.cmp");
+                return builder->CreateSelect(cmp, a, b, "mm.sel");
+            }
+            auto cmp = want_min
+                ? builder->CreateICmpSLT(a, b, "min.cmp")
+                : builder->CreateICmpSGT(a, b, "max.cmp");
+            return builder->CreateSelect(cmp, a, b, "mm.sel");
+        }
+
+        // abs(n): absolute value for int (select/negate) or float (fabs).
+        if (call->callee == "abs" && call->args.size() == 1) {
+            auto av = generate_expr(call->args[0]);
+            if (!av) return nullptr;
+            if (av->getType()->isIntegerTy(32)) {
+                auto zero = builder->getInt32(0);
+                auto is_neg = builder->CreateICmpSLT(av, zero, "abs.neg");
+                auto neg = builder->CreateSub(zero, av, "abs.negval");
+                return builder->CreateSelect(is_neg, neg, av, "abs.sel");
+            }
+            if (av->getType()->isDoubleTy()) {
+                auto fabs = llvm::Intrinsic::getOrInsertDeclaration(module.get(), llvm::Intrinsic::fabs, {builder->getDoubleTy()});
+                return builder->CreateCall(fabs, {av}, "abs.f");
+            }
+            error("abs() requires an int or float");
         }
 
         auto it = functions.find(call->callee);
