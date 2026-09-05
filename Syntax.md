@@ -6,8 +6,8 @@ This document provides the complete specification for the Aevix language (v0.1).
 ```aev
 func calculate_sum(limit: int) : int {
     let total = 0;
-    for (let i = 0; i < limit; i = i + 1) {
-        total = total + i;
+    for (let i = 0; i < limit; i += 1) {
+        total += i;
     }
     return total;
 }
@@ -45,6 +45,18 @@ Existing variables are updated via simple assignment:
 ```aev
 x = 15;
 ```
+
+Compound assignment is supported for the arithmetic operators on numeric
+targets (variables, array elements, struct fields):
+```aev
+x += 5;      // x = x + 5
+x -= 3;      // x = x - 3
+x *= 4;      // x = x * 4
+x /= 2;      // x = x / 2
+```
+An `int` value is auto-promoted to `float` when the target is `float`
+(`f += 2`); assigning a `float` into an `int` target is an error. Compound
+assignment on strings, booleans or open arrays (slices) is rejected.
 
 ---
 
@@ -91,10 +103,12 @@ while (condition) {
 ### Iteration (`for`)
 C-style loop: `for (init; condition; step) { body }`
 ```aev
-for (let i = 0; i < 10; i = i + 1) {
+for (let i = 0; i < 10; i += 1) {
     print i;
 }
 ```
+Any clause may be omitted (`for (;;)`, `for (; i < 5; i += 1)`, ...) and the
+step may use compound assignment.
 
 ### Iteration (`for-in`)
 Iterate over array elements: `for var in array { body }`
@@ -102,6 +116,18 @@ Iterate over array elements: `for var in array { body }`
 let nums = [10, 20, 30];
 for x in nums {
     print x;
+}
+```
+
+### `break` / `continue`
+`break` exits the innermost loop; `continue` jumps to the next iteration
+(the step for a `for` loop, the condition for `while`/`for-in`). Both are only
+valid inside a loop — anywhere else is a compile error.
+```aev
+for (let i = 0; i < 10; i += 1) {
+    if (i == 3) { continue; }     // skip 3
+    if (i == 6) { break; }        // stop at 6
+    print i;
 }
 ```
 
@@ -261,6 +287,15 @@ Output is handled by the `print` statement (supports int, float, bool, strings, 
 print "System status: OK";
 print 404;
 ```
+`print` accepts multiple comma-separated expressions on one line; values are
+space-separated and a single newline is emitted once at the end:
+```aev
+print 1, "two", 3.5;         // 1 two 3.500000
+```
+Booleans print as the words `true` / `false` (also inside arrays and structs).
+
+Note: printing an open array (slice) of structs is not supported yet; fixed
+arrays of structs and slices of strings print fine.
 
 Built-in functions:
 
@@ -295,12 +330,15 @@ hot {
 ---
 
 ## 12. The `hot` Region
-The `hot` block designates a critical section for maximum hardware optimization. The compiler will attempt to pin all variables in this block to L1 cache or registers.
+The `hot` block marks a section as a critical hot path. It is a valid block
+scope today (variables, statements and epochs work inside it); the L1-cache /
+register pinning optimization that it will drive is on the roadmap and not yet
+implemented.
 
 ```aev
 hot {
     // This block is treated as a high-performance hot path
-    for (let i = 0; i < 1000000; i = i + 1) {
+    for (let i = 0; i < 1000000; i += 1) {
         process(i);
     }
 }

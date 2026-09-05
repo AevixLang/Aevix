@@ -135,7 +135,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ### Known limitations
 - Struct literals are positional (`Point { 1, 2 }`), not named.
-- Slices of structs and arrays of structs inside print are not supported (int/float/bool/string print everywhere).
+- Printing an open array (slice) of structs is not supported (fixed arrays of
+  structs and slices of strings work).
 - `read()` on a missing file returns `""`; `write()` reports failure as `false`.
 - `input()` returns `""` at end of input (EOF); lines are returned without the trailing newline.
 - `func` declarations may not be nested inside other functions.
