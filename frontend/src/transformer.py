@@ -8,7 +8,7 @@ from lark import Transformer, Token, v_args
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
-    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField,
+    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, Import,
     New, Epoch
 )
 
@@ -186,6 +186,9 @@ class AevixTransformer(Transformer):
     # ---- Statements ----
     def stmt(self, items):
         return items[0]
+
+    def import_stmt(self, items):
+        return Import(spec=_decode_escapes(str(items[0])[1:-1]))
 
     def expr_stmt(self, items):
         return items[0]

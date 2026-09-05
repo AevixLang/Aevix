@@ -232,6 +232,11 @@ class StructDecl:
     type: str = "StructDecl"
 
 @dataclass
+class Import:
+    spec: str
+    type: str = "Import"
+
+@dataclass
 class Program:
     body: list
     type: str = "Program"
