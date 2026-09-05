@@ -124,7 +124,7 @@ struct Epoch {
 };
 
 struct Print {
-    std::shared_ptr<Expr> value;
+    std::vector<std::shared_ptr<Expr>> args;
 };
 
 struct Block {
@@ -164,9 +164,16 @@ struct Return {
     std::shared_ptr<Expr> value;
 };
 
+struct Break {
+};
+
+struct Continue {
+};
+
 struct Assign {
-    std::shared_ptr<Expr> name;   // Variable or Index (lvalue)
+    std::shared_ptr<Expr> name;   // Variable, Index or MemberAccess (lvalue)
     std::shared_ptr<Expr> value;
+    std::string op = "=";         // "=", "+=", "-=", "*=", "/="
 };
 
 struct FuncDecl {
@@ -187,7 +194,7 @@ struct StructDecl {
 };
 
 struct Stmt {
-    enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl };
+    enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl, Break, Continue };
     Kind kind;
     int line = 0;   // 1-based source line of the node, 0 if unknown
     int col = 0;    // 1-based source column of the node, 0 if unknown
@@ -204,6 +211,8 @@ struct Stmt {
     std::shared_ptr<FuncDecl> func_decl;
     std::shared_ptr<Call> call_stmt;
     std::shared_ptr<StructDecl> struct_decl;
+    Break break_stmt;
+    Continue continue_stmt;
 };
 
 struct Program {

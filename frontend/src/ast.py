@@ -163,8 +163,16 @@ class Epoch:
 
 @dataclass
 class Print:
-    value: object
+    args: list
     type: str = "Print"
+
+@dataclass
+class Break:
+    type: str = "Break"
+
+@dataclass
+class Continue:
+    type: str = "Continue"
 
 @dataclass
 class If:
@@ -203,6 +211,7 @@ class Return:
 class Assign:
     name: object
     value: object
+    op: str = "="
     type: str = "Assign"
 
 @dataclass

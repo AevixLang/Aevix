@@ -134,7 +134,7 @@ def test_typed_array_func_signature():
 
 def test_func_call():
     ast = parse_dict("print add(4, 5);\n")
-    call = ast["body"][0]["value"]
+    call = ast["body"][0]["args"][0]
     assert call["type"] == "Call"
     assert call["callee"] == "add"
     assert len(call["args"]) == 2
@@ -263,7 +263,7 @@ def test_array_literal_ast():
 
 def test_array_index_read_ast():
     ast = parse_dict("print a[1];\n")
-    value = ast["body"][0]["value"]
+    value = ast["body"][0]["args"][0]
     assert value["type"] == "Index"
     assert value["object"] == {"type": "Variable", "value": "a", "line": 1, "col": 7}
     assert value["index"] == {"type": "Number", "value": 1, "line": 1, "col": 9}
@@ -271,7 +271,7 @@ def test_array_index_read_ast():
 
 def test_array_nested_index_ast():
     ast = parse_dict("print m[1][0];\n")
-    value = ast["body"][0]["value"]
+    value = ast["body"][0]["args"][0]
     assert value["type"] == "Index"
     assert value["object"]["type"] == "Index"
     assert value["object"]["index"]["value"] == 1

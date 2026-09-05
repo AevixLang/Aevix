@@ -12,6 +12,8 @@ stmt: import_stmt
     | for_in_stmt
     | return_stmt
     | assign_stmt
+    | break_stmt
+    | continue_stmt
     | func_decl
     | struct_decl
     | epoch_stmt
@@ -31,18 +33,21 @@ param: CNAME (":" type_name)?
 let_stmt: "let" CNAME (":" type_name)? "=" expr ";"
 hot_block: "hot" block
 expr_stmt: expr ";"
-print_stmt: "print" expr ";"
+print_stmt: "print" print_arg ("," print_arg)* ";"
+print_arg: expr
+break_stmt: "break" ";"
+continue_stmt: "continue" ";"
 if_stmt: "if" "(" expr ")" block ("else" else_branch)?
 else_branch: if_stmt | block
 while_stmt: "while" "(" expr ")" block
-for_stmt: "for" "(" for_init? ";" expr? ";" for_step? ")" block
+for_stmt: "for" "(" for_init? SEMI expr? SEMI for_step? ")" block
 for_in_stmt: "for" CNAME "in" expr block
 for_init: for_let | for_assign | expr
 for_let: "let" CNAME (":" type_name)? "=" expr
-for_assign: expr "=" expr
+for_assign: expr (EQ | OP_ASSIGN) expr
 for_step: for_assign | expr
 return_stmt: "return" expr? ";"
-assign_stmt: expr "=" expr ";"
+assign_stmt: expr (EQ | OP_ASSIGN) expr ";"
 
 block: "{" stmt* "}"
 
@@ -80,6 +85,9 @@ T_FLOAT: "float"
 T_BOOL: "bool"
 T_STRING: "string"
  
+EQ: "="
+SEMI: ";"
+OP_ASSIGN: "+=" | "-=" | "*=" | "/="
 ADDOP: "+" | "-"
 MULOP: "*" | "/"
 MINUS: "-"
@@ -87,7 +95,7 @@ BANG: "!"
 
 BOOL.1: "true" | "false"
 STRING: /"(?:[^"\\]|\\.)*"/
-CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|true\b|false\b|int\b|float\b|bool\b|string\b|new\b|import\b|epoch\b)[a-zA-Z_][a-zA-Z0-9_]*/
+CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|true\b|false\b|int\b|float\b|bool\b|string\b|new\b|import\b|epoch\b|break\b|continue\b)[a-zA-Z_][a-zA-Z0-9_]*/
 NUMBER: /[0-9]+/
 FLOAT: /[0-9]+\.[0-9]+/
 

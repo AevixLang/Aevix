@@ -27,6 +27,11 @@ private:
     std::map<std::string, llvm::Type*> open_array_elem_types;
     std::vector<std::size_t> scope_open_arrays_count;
 
+    // Active loop context for break/continue: each entry is {break BB, continue BB}.
+    // continue for a for() loop points at the step block; for while/for-in it is
+    // the condition block. Empty when not inside a loop -> break/continue errors.
+    std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> loop_ctx;
+
     // Slice { ptr, len }: the single representation of open arrays (int[]).
     // Keyed by the base type string ("int", "float", "bool", struct name).
     std::map<std::string, llvm::StructType*> slice_types;
@@ -152,8 +157,13 @@ public:
     void generate_while(const While& w);
     void generate_for(const For& f);
     void generate_for_in(const ForIn& f);
+    void generate_break(const Break& b);
+    void generate_continue(const Continue& c);
     void generate_return(const Return& r);
     void generate_assign(const Assign& a);
+    llvm::Value* apply_compound(llvm::Value* old, llvm::Value* rhs, const std::string& op,
+                                llvm::Type* target_ty, const std::string& ctx);
+    void emit_print_value(const std::shared_ptr<Expr>& value);
     void declare_func(const FuncDecl& fd);
     void generate_func_decl(const FuncDecl& fd);
     llvm::Value* generate_logical_and(const And& and_);

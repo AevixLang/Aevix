@@ -200,7 +200,9 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
     }
     else if (type == "Print") {
         stmt->kind = Stmt::Kind::Print;
-        stmt->print.value = parse_expr(j["value"]);
+        for (const auto& a : j["args"]) {
+            stmt->print.args.push_back(parse_expr(a));
+        }
     }
     else if (type == "If") {
         stmt->kind = Stmt::Kind::If;
@@ -242,6 +244,12 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         fi->body = parse_block(j["body"]);
         stmt->for_in_stmt = fi;
     }
+    else if (type == "Break") {
+        stmt->kind = Stmt::Kind::Break;
+    }
+    else if (type == "Continue") {
+        stmt->kind = Stmt::Kind::Continue;
+    }
     else if (type == "Return") {
         stmt->kind = Stmt::Kind::Return;
         auto r = std::make_shared<Return>();
@@ -255,6 +263,9 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         auto a = std::make_shared<Assign>();
         a->name = parse_expr(j["name"]);
         a->value = parse_expr(j["value"]);
+        if (j.contains("op") && !j["op"].is_null()) {
+            a->op = j["op"];
+        }
         stmt->assign_stmt = a;
     }
     else if (type == "FuncDecl") {

@@ -9,7 +9,7 @@ from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
     CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, Import,
-    New, Epoch
+    New, Epoch, Break, Continue
 )
 
 def _decode_escapes(raw):
@@ -210,7 +210,16 @@ class AevixTransformer(Transformer):
         return Epoch(body=items[0])
 
     def print_stmt(self, items):
-        return Print(value=items[0])
+        return Print(args=list(items))
+
+    def print_arg(self, items):
+        return items[0]
+
+    def break_stmt(self, items):
+        return Break()
+
+    def continue_stmt(self, items):
+        return Continue()
 
     def if_stmt(self, items):
         condition, then_body = items[0], items[1]
@@ -225,11 +234,19 @@ class AevixTransformer(Transformer):
         return While(condition=items[0], body=items[1])
 
     def for_stmt(self, items):
-        parts = list(items)
-        init = parts[0] if len(parts) >= 1 else None
-        cond = parts[1] if len(parts) >= 2 else None
-        step = parts[2] if len(parts) >= 3 else None
-        body = parts[-1]
+        # Named SEMI keeps the clause separators in the parse tree, so empty
+        # init/cond/step are unambiguous (positional indexing misaligns when a
+        # clause is omitted, e.g. "for (; i < 5; i += 1)").
+        parts = [[]]
+        for i in items:
+            if isinstance(i, Token) and i.type == "SEMI":
+                parts.append([])
+            else:
+                parts[-1].append(i)
+        body = parts[-1][-1]
+        init = parts[0][0] if len(parts[0]) else None
+        cond = parts[1][0] if len(parts[1]) else None
+        step = parts[2][0] if len(parts[2]) else None
         return For(init=init, condition=cond, step=step, body=body)
 
     def for_in_stmt(self, items):
@@ -249,13 +266,15 @@ class AevixTransformer(Transformer):
         return Let(name=name, value=value, var_type=var_type)
 
     def for_assign(self, items):
-        return Assign(name=items[0], value=items[1])
+        name, op, value = items[0], str(items[1]), items[2]
+        return Assign(name=name, op=op, value=value)
 
     def return_stmt(self, items):
         return Return(value=items[0]) if items else Return()
 
     def assign_stmt(self, items):
-        return Assign(name=items[0], value=items[1])
+        name, op, value = items[0], str(items[1]), items[2]
+        return Assign(name=name, op=op, value=value)
 
     # ---- Functions ----
     def func_decl(self, items):

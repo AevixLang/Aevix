@@ -153,7 +153,7 @@ def test_struct_string_field():
         "print u.name;\n"
     )
     assert ec == 0, err
-    assert out == ["{alice, 30, 1}", "alice"]
+    assert out == ["{alice, 30, true}", "alice"]
 
 
 # --- structs in functions ---

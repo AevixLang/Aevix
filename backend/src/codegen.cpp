@@ -844,7 +844,12 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) 
     }
     else if (elem->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
     else if (elem->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
-    else if (elem->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
+    else if (elem->isIntegerTy(1)) {
+        auto tr = builder->CreateGlobalString("true", "bool.true");
+        auto fl = builder->CreateGlobalString("false", "bool.false");
+        fmt = builder->CreateGlobalString("%s", "fmt");
+        a = builder->CreateSelect(ev, tr, fl);
+    }
     else error("Cannot print open array element of type " + llvm_type_name(elem));
     if (fmt) builder->CreateCall(printf_func, {fmt, a});
 
@@ -1437,18 +1442,60 @@ void CodeGenerator::generate_let(const Let& let) {
     define_var(let.name, alloc, ty);
 }
 
+llvm::Value* CodeGenerator::apply_compound(llvm::Value* old, llvm::Value* rhs,
+                                           const std::string& op, llvm::Type* target_ty,
+                                           const std::string& ctx) {
+    if (!target_ty->isIntegerTy(32) && !target_ty->isDoubleTy()) {
+        error("Operator '" + op + "' requires a numeric target (" + ctx + ")");
+    }
+    if (rhs->getType()->isIntegerTy(8)) rhs = builder->CreateZExt(rhs, builder->getInt32Ty(), "char.up");
+    if (!rhs->getType()->isIntegerTy(32) && !rhs->getType()->isDoubleTy()) {
+        error("Operator '" + op + "' requires a numeric right-hand side (" + ctx + ")");
+    }
+    if (target_ty->isDoubleTy() && rhs->getType()->isIntegerTy(32)) {
+        rhs = builder->CreateSIToFP(rhs, builder->getDoubleTy(), "tofloat");
+    } else if (target_ty->isIntegerTy(32) && rhs->getType()->isDoubleTy()) {
+        error("Operator '" + op + "' cannot store a float into an int variable (" + ctx + ")");
+    }
+    if (op == "+=") {
+        return target_ty->isDoubleTy() ? builder->CreateFAdd(old, rhs, "cmp.add")
+                                       : builder->CreateAdd(old, rhs, "cmp.add");
+    }
+    if (op == "-=") {
+        return target_ty->isDoubleTy() ? builder->CreateFSub(old, rhs, "cmp.sub")
+                                       : builder->CreateSub(old, rhs, "cmp.sub");
+    }
+    if (op == "*=") {
+        return target_ty->isDoubleTy() ? builder->CreateFMul(old, rhs, "cmp.mul")
+                                       : builder->CreateMul(old, rhs, "cmp.mul");
+    }
+    if (op == "/=") {
+        return target_ty->isDoubleTy() ? builder->CreateFDiv(old, rhs, "cmp.div")
+                                       : builder->CreateSDiv(old, rhs, "cmp.div");
+    }
+    error("Unknown assignment operator '" + op + "'");
+}
+
 void CodeGenerator::generate_assign(const Assign& a) {
     if (auto ix = std::dynamic_pointer_cast<Index>(a.name)) {
         llvm::Type* elem_ty = nullptr;
         llvm::Value* ptr = gen_index_ptr(*ix, elem_ty);
-        llvm::Value* val = generate_expr(a.value);
-        if (!val) return;
-        if (elem_ty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
-            val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
-        } else if (elem_ty->isArrayTy()) {
-            error("Cannot assign an array to a single array element");
-        } else if (elem_ty != val->getType()) {
-            error("Type mismatch for indexed assignment");
+        llvm::Value* val = nullptr;
+        if (a.op == "=") {
+            val = generate_expr(a.value);
+            if (!val) return;
+            if (elem_ty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
+                val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
+            } else if (elem_ty->isArrayTy()) {
+                error("Cannot assign an array to a single array element");
+            } else if (elem_ty != val->getType()) {
+                error("Type mismatch for indexed assignment");
+            }
+        } else {
+            auto old = builder->CreateLoad(elem_ty, ptr, "cmp.old");
+            auto rhs = generate_expr(a.value);
+            if (!rhs) return;
+            val = apply_compound(old, rhs, a.op, elem_ty, "indexed assignment");
         }
         builder->CreateStore(val, ptr);
         return;
@@ -1457,15 +1504,23 @@ void CodeGenerator::generate_assign(const Assign& a) {
     if (auto ma = std::dynamic_pointer_cast<MemberAccess>(a.name)) {
         llvm::Type* fty = nullptr;
         llvm::Value* ptr = gen_member_ptr_inner(*ma, fty);
-        llvm::Value* val = generate_expr(a.value);
-        if (!val) return;
-        if (fty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
-            val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
-        } else if (is_slice_ty(fty)) {
-            val = coerce_to_slice(val, llvm::cast<llvm::StructType>(fty),
-                "Type mismatch for field assignment");
-        } else if (fty != val->getType()) {
-            error("Type mismatch for field assignment");
+        llvm::Value* val = nullptr;
+        if (a.op == "=") {
+            val = generate_expr(a.value);
+            if (!val) return;
+            if (fty->isDoubleTy() && val->getType()->isIntegerTy(32)) {
+                val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
+            } else if (is_slice_ty(fty)) {
+                val = coerce_to_slice(val, llvm::cast<llvm::StructType>(fty),
+                    "Type mismatch for field assignment");
+            } else if (fty != val->getType()) {
+                error("Type mismatch for field assignment");
+            }
+        } else {
+            auto old = builder->CreateLoad(fty, ptr, "cmp.old");
+            auto rhs = generate_expr(a.value);
+            if (!rhs) return;
+            val = apply_compound(old, rhs, a.op, fty, "field assignment");
         }
         builder->CreateStore(val, ptr);
         return;
@@ -1477,6 +1532,19 @@ void CodeGenerator::generate_assign(const Assign& a) {
     llvm::Type* ty = nullptr;
     llvm::Value* alloc = lookup_var(var->name, ty);
     if (!alloc) error("Cannot assign to unknown variable: " + var->name);
+
+    if (a.op != "=") {
+        if (is_slice_ty(ty)) {
+            error("Operator '" + a.op + "' cannot be used on a slice (open array)");
+        }
+        auto old = builder->CreateLoad(ty, alloc, "cmp.old");
+        auto rhs = generate_expr(a.value);
+        if (!rhs) return;
+        llvm::Value* val = apply_compound(old, rhs, a.op, ty, "assignment to '" + var->name + "'");
+        builder->CreateStore(val, alloc);
+        return;
+    }
+
     llvm::Value* val = generate_expr(a.value);
     if (!val) return;
 
@@ -1524,31 +1592,55 @@ void CodeGenerator::generate_epoch(const Epoch& ep) {
 }
 
 void CodeGenerator::generate_print(const Print& print) {
-    auto val = generate_expr(print.value);
+    llvm::FunctionType* printf_ft = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+    auto printf_func = module->getOrInsertFunction("printf", printf_ft);
+    size_t n = print.args.size();
+    for (size_t i = 0; i < n; ++i) {
+        if (i > 0) {
+            auto sp = builder->CreateGlobalString(" ", "print.space");
+            builder->CreateCall(printf_func, {sp});
+        }
+        emit_print_value(print.args[i]);
+    }
+    auto nl = builder->CreateGlobalString("\n", "print.nl");
+    builder->CreateCall(printf_func, {nl});
+}
+
+void CodeGenerator::emit_print_value(const std::shared_ptr<Expr>& value) {
+    auto val = generate_expr(value);
     if (!val) return;
 
     llvm::Value* format_str = nullptr;
     llvm::Value* arg = val;
 
     if (val->getType()->isIntegerTy(8)) {
-        format_str = builder->CreateGlobalString("%c\n", "format");
+        format_str = builder->CreateGlobalString("%c", "format");
         arg = builder->CreateZExt(val, builder->getInt32Ty());
     }
-    else if (val->getType()->isIntegerTy(32)) format_str = builder->CreateGlobalString("%d\n", "format");
-    else if (val->getType()->isDoubleTy()) format_str = builder->CreateGlobalString("%f\n", "format");
+    else if (val->getType()->isIntegerTy(32)) format_str = builder->CreateGlobalString("%d", "format");
+    else if (val->getType()->isDoubleTy()) format_str = builder->CreateGlobalString("%f", "format");
     else if (val->getType()->isIntegerTy(1)) {
-        format_str = builder->CreateGlobalString("%d\n", "format");
-        arg = builder->CreateZExt(val, builder->getInt32Ty());
+        auto tr = builder->CreateGlobalString("true", "bool.true");
+        auto fl = builder->CreateGlobalString("false", "bool.false");
+        format_str = builder->CreateGlobalString("%s", "format");
+        arg = builder->CreateSelect(val, tr, fl);
     }
-    else if (val->getType()->isPointerTy()) format_str = builder->CreateGlobalString("%s\n", "format");
-    else if (val->getType()->isArrayTy()) {
+    else if (val->getType()->isPointerTy()) format_str = builder->CreateGlobalString("%s", "format");
+
+    auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+    auto printf_func = module->getOrInsertFunction("printf", printf_type);
+
+    if (format_str) {
+        builder->CreateCall(printf_func, {format_str, arg});
+        return;
+    }
+
+    if (val->getType()->isArrayTy()) {
         auto at = llvm::cast<llvm::ArrayType>(val->getType());
         int n = (int)at->getNumElements();
         llvm::Type* elem = at->getElementType();
         auto tmp = builder->CreateAlloca(at, nullptr, "print.arr");
         builder->CreateStore(val, tmp);
-        auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
-        auto printf_func = module->getOrInsertFunction("printf", printf_type);
         auto open_br = builder->CreateGlobalString("[", "open_br");
         builder->CreateCall(printf_func, {open_br});
         for (int i = 0; i < n; ++i) {
@@ -1562,7 +1654,12 @@ void CodeGenerator::generate_print(const Print& print) {
             llvm::Value* a = ev;
             if (elem->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
             else if (elem->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
-            else if (elem->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
+            else if (elem->isIntegerTy(1)) {
+                auto tr = builder->CreateGlobalString("true", "bool.true");
+                auto fl = builder->CreateGlobalString("false", "bool.false");
+                fmt = builder->CreateGlobalString("%s", "fmt");
+                a = builder->CreateSelect(ev, tr, fl);
+            }
             else if (is_string_slice(elem)) {
                 auto quote = builder->CreateGlobalString("\"", "sq");
                 builder->CreateCall(printf_func, {quote});
@@ -1571,7 +1668,7 @@ void CodeGenerator::generate_print(const Print& print) {
                 auto sf = builder->CreateGlobalString("%.*s", "sfmt");
                 builder->CreateCall(printf_func, {sf, fl, fp});
                 builder->CreateCall(printf_func, {quote});
-                goto skip_printf;
+                continue;
             }
             else if (elem->isStructTy()) {
                 auto op = builder->CreateGlobalString("{", "open_br");
@@ -1588,20 +1685,24 @@ void CodeGenerator::generate_print(const Print& print) {
                     llvm::Value* fa = fv;
                     if (fv->getType()->isIntegerTy(32)) ff = builder->CreateGlobalString("%d", "fmt");
                     else if (fv->getType()->isDoubleTy()) ff = builder->CreateGlobalString("%f", "fmt");
-                    else if (fv->getType()->isIntegerTy(1)) { ff = builder->CreateGlobalString("%d", "fmt"); fa = builder->CreateZExt(fv, builder->getInt32Ty()); }
+                    else if (fv->getType()->isIntegerTy(1)) {
+                        auto tr = builder->CreateGlobalString("true", "bool.true");
+                        auto fl = builder->CreateGlobalString("false", "bool.false");
+                        ff = builder->CreateGlobalString("%s", "fmt");
+                        fa = builder->CreateSelect(fv, tr, fl);
+                    }
                     else if (fv->getType()->isPointerTy()) ff = builder->CreateGlobalString("%s", "fmt");
                     else error("Cannot print struct field of type " + llvm_type_name(fv->getType()) + " (nested structs not yet supported in print)");
                     builder->CreateCall(printf_func, {ff, fa});
                 }
                 auto cl = builder->CreateGlobalString("}", "close_br");
                 builder->CreateCall(printf_func, {cl});
-                goto skip_printf;
+                continue;
             }
             else error("Cannot print array element of type " + llvm_type_name(elem));
             builder->CreateCall(printf_func, {fmt, a});
-            skip_printf:;
         }
-        auto close_br = builder->CreateGlobalString("]\n", "close_br");
+        auto close_br = builder->CreateGlobalString("]", "close_br");
         builder->CreateCall(printf_func, {close_br});
         return;
     }
@@ -1609,13 +1710,11 @@ void CodeGenerator::generate_print(const Print& print) {
         if (is_string_slice(val->getType())) {
             auto sp = builder->CreateExtractValue(val, 0, "sp.ptr");
             auto slen = builder->CreateExtractValue(val, 1, "sp.len");
-            auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
-            auto printf_func = module->getOrInsertFunction("printf", printf_type);
-            auto fmt = builder->CreateGlobalString("%.*s\n", "format");
+            auto fmt = builder->CreateGlobalString("%.*s", "format");
             builder->CreateCall(printf_func, {fmt, slen, sp});
             return;
         }
-        emit_slice_print(val);
+        emit_slice_print(val, false);
         return;
     }
     else if (val->getType()->isStructTy()) {
@@ -1623,8 +1722,6 @@ void CodeGenerator::generate_print(const Print& print) {
         int n = (int)st->getNumElements();
         auto tmp = builder->CreateAlloca(st, nullptr, "print.struct");
         builder->CreateStore(val, tmp);
-        auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
-        auto printf_func = module->getOrInsertFunction("printf", printf_type);
         auto open_br = builder->CreateGlobalString("{", "open_br");
         builder->CreateCall(printf_func, {open_br});
         for (int i = 0; i < n; ++i) {
@@ -1638,7 +1735,12 @@ void CodeGenerator::generate_print(const Print& print) {
             llvm::Value* a = ev;
             if (ev->getType()->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
             else if (ev->getType()->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
-            else if (ev->getType()->isIntegerTy(1)) { fmt = builder->CreateGlobalString("%d", "fmt"); a = builder->CreateZExt(ev, builder->getInt32Ty()); }
+            else if (ev->getType()->isIntegerTy(1)) {
+                auto tr = builder->CreateGlobalString("true", "bool.true");
+                auto fl = builder->CreateGlobalString("false", "bool.false");
+                fmt = builder->CreateGlobalString("%s", "fmt");
+                a = builder->CreateSelect(ev, tr, fl);
+            }
             else if (ev->getType()->isPointerTy()) fmt = builder->CreateGlobalString("%s", "fmt");
             else if (is_string_slice(ev->getType())) {
                 auto fp = builder->CreateExtractValue(ev, 0, "pfld.p");
@@ -1654,15 +1756,11 @@ void CodeGenerator::generate_print(const Print& print) {
             else error("Cannot print struct field of type " + llvm_type_name(ev->getType()) + " (nested structs not yet supported in print)");
             builder->CreateCall(printf_func, {fmt, a});
         }
-        auto close_br = builder->CreateGlobalString("}\n", "close_br");
+        auto close_br = builder->CreateGlobalString("}", "close_br");
         builder->CreateCall(printf_func, {close_br});
         return;
     }
-    else error("Cannot print a value of type " + llvm_type_name(val->getType()));
-
-    auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
-    auto printf_func = module->getOrInsertFunction("printf", printf_type);
-    builder->CreateCall(printf_func, {format_str, arg});
+    error("Cannot print a value of type " + llvm_type_name(val->getType()));
 }
 
 void CodeGenerator::generate_block(const std::shared_ptr<Block>& block) {
@@ -1712,7 +1810,9 @@ void CodeGenerator::generate_while(const While& w) {
     builder->CreateCondBr(cond, body_block, merge_block);
 
     builder->SetInsertPoint(body_block);
+    loop_ctx.push_back({merge_block, cond_block});
     generate_block(w.body);
+    loop_ctx.pop_back();
     if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(cond_block);
 
     func->insert(func->end(), merge_block);
@@ -1740,7 +1840,9 @@ void CodeGenerator::generate_for(const For& f) {
     }
 
     builder->SetInsertPoint(body_block);
+    loop_ctx.push_back({merge_block, step_block});
     generate_block(f.body);
+    loop_ctx.pop_back();
     if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(step_block);
 
     builder->SetInsertPoint(step_block);
@@ -1805,7 +1907,9 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     }
     auto ev = builder->CreateLoad(elem, eptr, "forin.val");
     builder->CreateStore(ev, xalloc);
+    loop_ctx.push_back({merge_block, step_block});
     generate_block(fi.body);
+    loop_ctx.pop_back();
     if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(step_block);
 
     builder->SetInsertPoint(step_block);
@@ -1816,6 +1920,20 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
     pop_scope();
+}
+
+void CodeGenerator::generate_break(const Break& b) {
+    if (loop_ctx.empty()) {
+        error("Cannot use 'break' outside a loop");
+    }
+    builder->CreateBr(loop_ctx.back().first);
+}
+
+void CodeGenerator::generate_continue(const Continue& c) {
+    if (loop_ctx.empty()) {
+        error("Cannot use 'continue' outside a loop");
+    }
+    builder->CreateBr(loop_ctx.back().second);
 }
 
 void CodeGenerator::generate_return(const Return& r) {
@@ -1933,6 +2051,10 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
 
 void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
     if (!stmt) return;
+    // Skip statements after a terminator (return/break/continue): the block is
+    // already closed and any instruction emitted into it would be invalid IR.
+    auto cur = builder->GetInsertBlock();
+    if (cur && cur->getTerminatorOrNull()) return;
     if (stmt->line > 0) {
         current_line = stmt->line;
         current_col = stmt->col;
@@ -1951,6 +2073,8 @@ void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
         case Stmt::Kind::FuncDecl: generate_func_decl(*stmt->func_decl); break;
         case Stmt::Kind::CallStmt: if (stmt->call_stmt) generate_expr(stmt->call_stmt); break;
         case Stmt::Kind::StructDecl: break; // already registered in pass 1
+        case Stmt::Kind::Break:    generate_break(stmt->break_stmt); break;
+        case Stmt::Kind::Continue: generate_continue(stmt->continue_stmt); break;
     }
 }
 

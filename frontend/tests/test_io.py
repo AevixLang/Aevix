@@ -129,7 +129,7 @@ def test_write_returns_bool():
         'hot { let ok = write("f.txt", "z"); print ok; if (ok) { print "yes"; } }\n'
     )
     assert ec == 0, err
-    assert out == ["1", "yes"]
+    assert out == ["true", "yes"]
 
 
 def test_read_into_string_operations():
