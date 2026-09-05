@@ -518,15 +518,25 @@ def test_string_struct_field():
     assert out == ["osman", "5", "osman!", "{osman, 30}"]
 
 
-def test_string_array_rejected():
-    code, err = compile_only('let a: string[3];\n')
-    assert code != 0
+def test_string_array_literal_let():
+    ec, out, err = run_and_capture(
+        'let a: string[3] = ["x", "y", "z"];\n'
+        "print a;\n"
+        "print a[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ['["x", "y", "z"]', "y"]
 
 
-def test_new_string_array_rejected():
-    code, err = compile_only('let a = new string[2];\n')
-    assert code != 0
-    assert "not supported" in err
+def test_new_string_array_works():
+    ec, out, err = run_and_capture(
+        'let a = new string[2];\n'
+        'a[0] = "hello";\n'
+        'a[1] = "world";\n'
+        "print a;\n"
+    )
+    assert ec == 0, err
+    assert out == ['["hello", "world"]']
 
 
 def test_string_add_non_string_rejected():
