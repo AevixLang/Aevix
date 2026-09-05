@@ -139,6 +139,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - `read()` on a missing file returns `""`; `write()` reports failure as `false`.
 - `input()` returns `""` at end of input (EOF); lines are returned without the trailing newline.
 - `func` declarations may not be nested inside other functions.
+- `import` is top-level only; there are no namespaces yet, so imported
+  declarations merge globally and a duplicate name across files is an error.
+- Package imports (`name:module`) require a project `aevix.lock` — the package
+  manager that writes it is still under development.
 - The arena grows on demand (chunked virtual memory) up to what the OS will map; it is never freed individually, and epoch blocks roll the allocation point back.
 
 ## Acknowledgments

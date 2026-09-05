@@ -118,7 +118,35 @@ func power(base: float, exp: float) : float {
 
 ---
 
-## 6. Arrays and Slices
+## 6. Modules and imports
+
+A source file can pull declarations (`func` / `struct`) from other files:
+```aev
+import "utils.aev";            // path relative to the importing file
+import "geometry/circle";      // ".aev" is appended when missing
+import "submit:io";            // package "submit", module "io" (via aevix.lock)
+```
+
+Rules:
+- Imports are only allowed at the top level of a file.
+- Path-spec resolution order: relative to the importing file → the project's
+  `lib/` directory → the directories in `$AEVIX_PATH`.
+- A spec with `:` is a package import (`package:module`); the compiler finds
+  the package through the project's `aevix.lock` (written by the package
+  manager). `std:` is reserved for the future standard library.
+- Imported **declarations** are merged into one flat program. Top-level
+  statements of a module (its side effects) are dropped.
+- A file imported more than once is included only once (dedup by real path).
+- Circular imports are an error.
+- A name defined in two different files is a conflict — an error. There are no
+  namespaces yet; everything merges globally.
+- `import` is a reserved word (it cannot be used as an identifier).
+
+See `notes/package-manager.md` for the compiler ↔ package-manager contract.
+
+---
+
+## 7. Arrays and Slices
 
 Fixed-size arrays copy by value; open arrays (`int[]`) are slices `{ data*, len }` allocated in the arena.
 
@@ -149,7 +177,7 @@ Out-of-range array access aborts the program with a bounds error at runtime.
 
 ---
 
-## 7. Strings
+## 8. Strings
 
 Strings are slices of `i8`, so they are values: comparable, concatenable, indexable.
 
@@ -194,7 +222,7 @@ int/float values back into strings, so numbers and text compose freely:
 
 ---
 
-## 8. Structs
+## 9. Structs
 
 ```aev
 struct Point { x: int, y: int }
@@ -212,7 +240,7 @@ Struct fields are accessed with `.`; member access chains and arrays of structs 
 
 ---
 
-## 9. Epochs (arena rollback)
+## 10. Epochs (arena rollback)
 
 `epoch { ... }` saves the arena position on entry and restores it on exit, logically freeing everything allocated inside. Variables defined before the epoch survive; slices cannot escape an epoch.
 
@@ -226,7 +254,7 @@ print len(keep);               // still 2
 
 ---
 
-## 10. Standard I/O and Builtins
+## 11. Standard I/O and Builtins
 
 Output is handled by the `print` statement (supports int, float, bool, strings, arrays/slices, structs):
 ```aev
@@ -266,7 +294,7 @@ hot {
 
 ---
 
-## 11. The `hot` Region
+## 12. The `hot` Region
 The `hot` block designates a critical section for maximum hardware optimization. The compiler will attempt to pin all variables in this block to L1 cache or registers.
 
 ```aev
