@@ -89,6 +89,17 @@ Once bootstrapped, you can use the `aevix` CLI to build and run your programs:
 ```
 *On Windows, use `aevix.exe` instead of `./aevix`.*
 
+### Global install
+Bootstrap also symlinks the CLI into `~/.local/bin`, so once you have run
+`python bootstrap.py` (or `source activate.sh`) the `aevix` command works from
+**any** directory — the CLI locates the compiler repo from its own path, and
+relative `.aev` paths / program file I/O resolve to your current working
+directory:
+
+```bash
+aevix run ~/somewhere/else/prog.aev   # works from anywhere
+```
+
 ### Example
 ```aev
 let x = 10;

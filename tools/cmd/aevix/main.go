@@ -13,6 +13,20 @@ const (
 )
 
 var rootDir string
+var workDir string
+
+func repoRootDir() string {
+	// Locate the compiler repo from this executable's own location so that a
+	// globally-installed `aevix` works from any directory.
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err2 := filepath.EvalSymlinks(exe); err2 == nil {
+		exe = resolved
+	}
+	return filepath.Dir(exe)
+}
 
 func runCmd(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
@@ -41,7 +55,7 @@ func buildProject(srcFile string) error {
 	if filepath.IsAbs(srcFile) {
 		absSrc = srcFile
 	} else {
-		absSrc = filepath.Join(rootDir, srcFile)
+		absSrc = filepath.Join(workDir, srcFile)
 	}
 
 	cmd := exec.Command(python, "-m", "src.main", absSrc)
@@ -117,6 +131,18 @@ func runTool(name string, args ...string) error {
 	return cmd.Run()
 }
 
+func runToolIn(dir, name string, args ...string) error {
+	if dir == "" {
+		dir = rootDir
+	}
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Dir = dir
+	return cmd.Run()
+}
+
 type writeBuffer struct{ dst *[]byte }
 
 func decodeOut(b *[]byte) *writeBuffer { return &writeBuffer{dst: b} }
@@ -143,11 +169,17 @@ func main() {
 	}
 
 	if rootDir == "" {
+		rootDir = repoRootDir()
+	}
+	if rootDir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
 			panic(err)
 		}
 		rootDir = wd
+	}
+	if wd, err := os.Getwd(); err == nil {
+		workDir = wd
 	}
 
 	cmd := args[0]
@@ -176,7 +208,7 @@ func main() {
 		if runtime.GOOS == "windows" {
 			prog += ".exe"
 		}
-		if err := runTool(prog, cmdArgs[1:]...); err != nil {
+		if err := runToolIn(workDir, prog, cmdArgs[1:]...); err != nil {
 			if ee, ok := err.(*exec.ExitError); ok {
 				os.Exit(ee.ExitCode())
 			}

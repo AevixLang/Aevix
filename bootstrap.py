@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import platform
@@ -75,6 +76,37 @@ def setup_tools():
         print_error("Go build failed. Make sure Go is installed.")
         sys.exit(1)
     print_status("Go CLI built successfully (executable: ./aevix).")
+    install_cli_symlink()
+
+
+def path_list():
+    return [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+
+
+def install_cli_symlink():
+    """Symlink the built CLI into ~/.local/bin so `aevix` works from anywhere.
+    The CLI locates the compiler repo from its own path, so the symlink is safe."""
+    if platform.system() == "Windows":
+        print_status("Skipping PATH install on Windows (add %AEVIX_HOME% manually).")
+        return
+    home = Path.home()
+    bin_dir = home / ".local" / "bin"
+    try:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        link = bin_dir / "aevix"
+        target = Path("aevix").resolve()
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(target)
+    except OSError as e:
+        print_error(f"Could not symlink aevix into {bin_dir}: {e}")
+        return
+    if str(bin_dir) in path_list():
+        print_status(f"Global CLI installed: {link} -> {target}")
+    else:
+        print_status(f"Global CLI installed at {link}")
+        print(f"ℹ️  Add {bin_dir} to your PATH (export PATH=\"$HOME/.local/bin:$PATH\").")
+
 
 def main():
     print("=== Aevix Project Bootstrap ===")
@@ -107,6 +139,7 @@ def main():
 
     print("\n✅ Everything is ready!")
     print("You can now use the CLI: ./aevix build <file.aev>")
+    print("It is also on your PATH, so `aevix` works from any directory.")
     if platform.system() == "Windows":
         print("On Windows, use: aevix.exe build <file.aev>")
 
