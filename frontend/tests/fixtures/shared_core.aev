@@ -1,0 +1,4 @@
+// shared dependency for the dedup diamond test
+func twice(x: int): int {
+    return x * 2;
+}

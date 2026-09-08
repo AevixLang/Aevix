@@ -1,0 +1,44 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# C++
+build/
+*.o
+*.ll
+*.out
+program
+CMakeCache.txt
+CMakeFiles/
+
+# Go
+aevix
+aevix.exe
+tools/aevix
+*.exe
+*.test
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# JSON
+*.json
+ast.json
+examples/
+notes/
+
+# Runtime artifacts written by example programs (write("out.txt", ...))
+out.txt

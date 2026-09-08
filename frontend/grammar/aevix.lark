@@ -1,0 +1,107 @@
+start: _program
+_program: stmt*
+
+stmt: import_stmt
+    | let_stmt
+    | hot_block
+    | expr_stmt
+    | print_stmt
+    | if_stmt
+    | while_stmt
+    | for_stmt
+    | for_in_stmt
+    | return_stmt
+    | assign_stmt
+    | break_stmt
+    | continue_stmt
+    | func_decl
+    | struct_decl
+    | epoch_stmt
+
+import_stmt: "import" STRING ";"
+
+epoch_stmt: "epoch" block
+
+struct_decl: "struct" CNAME "{" struct_fields? "}"
+struct_fields: struct_field ("," struct_field)* ","?
+struct_field: CNAME ":" type_name
+
+func_decl: "func" CNAME "(" params ")" (":" type_name)? block
+params: (param ("," param)*)?
+param: CNAME (":" type_name)?
+
+let_stmt: "let" CNAME (":" type_name)? "=" expr ";"
+hot_block: "hot" block
+expr_stmt: expr ";"
+print_stmt: "print" print_arg ("," print_arg)* ";"
+print_arg: expr
+break_stmt: "break" ";"
+continue_stmt: "continue" ";"
+if_stmt: "if" "(" expr ")" block ("else" else_branch)?
+else_branch: if_stmt | block
+while_stmt: "while" "(" expr ")" block
+for_stmt: "for" "(" for_init? SEMI expr? SEMI for_step? ")" block
+for_in_stmt: "for" CNAME "in" expr block
+for_init: for_let | for_assign | expr
+for_let: "let" CNAME (":" type_name)? "=" expr
+for_assign: expr (EQ | OP_ASSIGN) expr
+for_step: for_assign | expr
+return_stmt: "return" expr? ";"
+assign_stmt: expr (EQ | OP_ASSIGN) expr ";"
+
+block: "{" stmt* "}"
+
+// Precedence: or >> and >> comparison >> +- >> */ >> unary(-, !) >> atom
+expr: or_
+or_: and_ (OROP and_)*
+and_: comparison (ANDOP comparison)*
+comparison: arith (CMPOP arith)*
+arith: term (ADDOP term)*
+term: factor (MULOP factor)*
+factor: MINUS factor | BANG factor | atom
+atom: NUMBER | FLOAT | BOOL | STRING | array_lit | struct_lit | primary | "(" expr ")" | new_expr
+new_expr: "new" (scalar_type | CNAME) "[" expr "]"
+primary: CNAME suffix*
+suffix: call_suffix | index_suffix | dot_suffix
+call_suffix: "(" arg_list? ")"
+arg_list: expr ("," expr)*
+index_suffix: "[" expr "]"
+dot_suffix: "." CNAME
+array_lit: "[" array_items? "]"
+array_items: expr ("," expr)*
+struct_lit: CNAME "{" struct_lit_items? "}"
+struct_lit_items: struct_lit_item ("," struct_lit_item)* ","?
+struct_lit_item: expr
+
+OROP: "||"
+ANDOP: "&&"
+CMPOP: "==" | "!=" | "<" | ">" | "<=" | ">="
+
+type_name: array_type | scalar_type | CNAME
+array_type: (scalar_type | CNAME) "[" NUMBER? "]"
+scalar_type: T_INT | T_FLOAT | T_BOOL | T_STRING
+T_INT: "int"
+T_FLOAT: "float"
+T_BOOL: "bool"
+T_STRING: "string"
+ 
+EQ: "="
+SEMI: ";"
+OP_ASSIGN: "+=" | "-=" | "*=" | "/="
+ADDOP: "+" | "-"
+MULOP: "*" | "/"
+MINUS: "-"
+BANG: "!"
+
+BOOL.1: "true" | "false"
+STRING: /"(?:[^"\\]|\\.)*"/
+CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|true\b|false\b|int\b|float\b|bool\b|string\b|new\b|import\b|epoch\b|break\b|continue\b)[a-zA-Z_][a-zA-Z0-9_]*/
+NUMBER: /[0-9]+/
+FLOAT: /[0-9]+\.[0-9]+/
+
+%ignore " "
+%ignore "\n"
+%ignore "\r"
+%ignore "\t"
+%ignore /\/\/.*/              // line comment
+%ignore /\/\*[\s\S]*?\*\//    // block comment

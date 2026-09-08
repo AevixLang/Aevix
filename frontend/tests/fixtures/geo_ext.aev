@@ -1,0 +1,7 @@
+// imports geo transitively: geo functions become visible through this module
+import "geo";
+
+func cube_volume(side: int): int {
+    let a = square_area(side);
+    return a * side;
+}

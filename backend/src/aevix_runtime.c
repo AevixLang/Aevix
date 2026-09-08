@@ -1,0 +1,289 @@
+/*
+ * Aevix arena runtime: a chunked bump allocator backed by virtual memory.
+ *
+ * Chunks are mapped on demand, so the arena grows until the OS refuses the
+ * mapping instead of hitting a fixed cap. Memory is never freed individually;
+ * epoch blocks save/restore the current (chunk, offset) pair, which logically
+ * rolls back every allocation made between the two calls.
+ *
+ * Compiled to runtime.o and linked into every Aevix binary (see CMakeLists;
+ * frontend tests and the Go CLI pass it to clang alongside the llc output).
+ */
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
+
+#define ARENA_ALIGN 16u
+#define ARENA_CHUNK (64u * 1024u * 1024u) /* commit granularity: 64 MiB */
+#define ARENA_MAX_EPOCHS 4096
+
+typedef struct arena_frame {
+    uint8_t* chunk;
+    size_t off;
+    size_t cap;
+} arena_frame;
+
+static uint8_t* cur_chunk = NULL;
+static size_t cur_off = 0;
+static size_t cur_cap = 0;
+
+static arena_frame frames[ARENA_MAX_EPOCHS];
+static size_t frame_depth = 0;
+
+#if defined(_WIN32)
+/* VirtualAlloc commits eagerly; Windows does not overcommit, so the arena is
+ * limited by real RAM here rather than by virtual address space. */
+static int reserve_chunk(size_t bytes, uint8_t** out) {
+    uint8_t* p = (uint8_t*)VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    *out = p;
+    return p != NULL;
+}
+#else
+static int reserve_chunk(size_t bytes, uint8_t** out) {
+    void* p = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) {
+        *out = NULL;
+        return 0;
+    }
+    *out = (uint8_t*)p;
+    return 1;
+}
+#endif
+
+static void arena_oom(void) {
+    fputs("arena out of memory\n", stderr);
+    exit(1);
+}
+
+/* Makes sure the current chunk fits `need` more bytes, opening a new mapping
+ * otherwise. Allocations never span chunk boundaries. */
+static void ensure_capacity(size_t need) {
+    if (cur_chunk != NULL && cur_off + need <= cur_cap) return;
+    size_t bytes = need > ARENA_CHUNK ? need : ARENA_CHUNK;
+    uint8_t* fresh = NULL;
+    if (!reserve_chunk(bytes, &fresh)) arena_oom();
+    cur_chunk = fresh;
+    cur_cap = bytes;
+    cur_off = 0;
+}
+
+void* __aevix_alloc(int32_t bytes) {
+    if (bytes < 0) arena_oom();
+    size_t need = (size_t)bytes;
+    size_t aligned = (cur_off + (ARENA_ALIGN - 1)) & ~(ARENA_ALIGN - 1);
+    cur_off = aligned;
+    ensure_capacity(need);
+    uint8_t* p = cur_chunk + cur_off;
+    cur_off += need;
+    return p;
+}
+
+int32_t __aevix_epoch_begin(void) {
+    if (cur_chunk == NULL) ensure_capacity(ARENA_CHUNK);
+    if (frame_depth >= ARENA_MAX_EPOCHS) arena_oom();
+    frames[frame_depth].chunk = cur_chunk;
+    frames[frame_depth].off = cur_off;
+    frames[frame_depth].cap = cur_cap;
+    return (int32_t)++frame_depth;
+}
+
+void __aevix_epoch_end(int32_t saved) {
+    if (saved <= 0 || (size_t)saved > frame_depth) arena_oom();
+    frame_depth = (size_t)saved - 1;
+    arena_frame f = frames[frame_depth];
+    cur_chunk = f.chunk;
+    cur_off = f.off;
+    cur_cap = f.cap;
+}
+
+/* Content equality for string slices: returns 1 if both slices hold the same
+ * bytes, 0 otherwise. Lengths are compared first, so mismatched sizes short-cut. */
+int32_t __aevix_str_eq(const uint8_t* a, int32_t alen, const uint8_t* b, int32_t blen) {
+    if (alen != blen) return 0;
+    for (int32_t i = 0; i < alen; ++i) {
+        if (a[i] != b[i]) return 0;
+    }
+    return 1;
+}
+
+/* Reads an entire file into arena memory. On failure (missing file, read
+ * error) out_ptr/out_len are set to NULL/0, i.e. the caller sees "". */
+void __aevix_read_file(const uint8_t* path, uint8_t** out_ptr, int32_t* out_len) {
+    FILE* f = fopen((const char*)path, "rb");
+    if (f == NULL) {
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    long sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    fseek(f, 0, SEEK_SET);
+    uint8_t* buf = sz > 0 ? (uint8_t*)__aevix_alloc((int32_t)sz) : NULL;
+    size_t got = 0;
+    if (sz > 0) got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    *out_ptr = buf;
+    *out_len = (int32_t)got;
+}
+
+/* Writes a byte buffer to a file, truncating it first. Returns 1 on success,
+ * 0 if the file could not be opened or the write was short. */
+int32_t __aevix_write_file(const uint8_t* path, const uint8_t* data, int32_t len) {
+    FILE* f = fopen((const char*)path, "wb");
+    if (f == NULL) return 0;
+    size_t w = len > 0 ? fwrite(data, 1, (size_t)len, f) : 0;
+    int rc = fclose(f);
+    if (rc != 0) return 0;
+    return w == (size_t)len ? 1 : 0;
+}
+
+/* Reads one line from stdin (without the trailing newline) into the arena.
+ * On EOF returns NULL/0, i.e. the caller sees "". */
+void __aevix_read_line(uint8_t** out_ptr, int32_t* out_len) {
+    char* line = NULL;
+    size_t cap = 0;
+    ssize_t n = getline(&line, &cap, stdin);
+    if (n < 0) {
+        free(line);
+        *out_ptr = NULL;
+        *out_len = 0;
+        return;
+    }
+    if (n > 0 && line[n - 1] == '\n') --n;
+    uint8_t* buf = n > 0 ? (uint8_t*)__aevix_alloc((int32_t)n) : NULL;
+    if (n > 0) memcpy(buf, line, (size_t)n);
+    free(line);
+    *out_ptr = buf;
+    *out_len = (int32_t)n;
+}
+
+/* to_int(s): parses the leading decimal integer of a slice. Leading whitespace
+ * and an optional '-' are honored; parsing stops at the first non-digit. */
+int32_t __aevix_parse_int(const uint8_t* s, int32_t len) {
+    int32_t i = 0;
+    while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
+    int neg = 0;
+    if (i < len && s[i] == '-') { neg = 1; ++i; }
+    int32_t acc = 0;
+    while (i < len && s[i] >= '0' && s[i] <= '9') {
+        acc = acc * 10 + (s[i] - '0');
+        ++i;
+    }
+    return neg ? -acc : acc;
+}
+
+/* to_float(s): parses the leading floating-point number of a slice using a
+ * NUL-terminated arena copy so strtod never reads past the slice. */
+double __aevix_parse_double(const uint8_t* s, int32_t len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(len + 1);
+    memcpy(buf, s, (size_t)len);
+    buf[len] = '\0';
+    return strtod((const char*)buf, NULL);
+}
+
+/* to_str(int): renders an integer with "%d" into arena memory. */
+void __aevix_int_to_str(int32_t n, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(32);
+    int m = snprintf((char*)buf, 32, "%d", (int)n);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (int32_t)m;
+}
+
+/* to_str(float): renders a double with "%f" (6 decimals), matching print. The
+ * buffer is sized for the longest %f form (huge exponents pad out to ~300
+ * chars); m is clamped so a truncated render never reports a bogus length. */
+void __aevix_double_to_str(double d, uint8_t** out_ptr, int32_t* out_len) {
+    enum { CAP = 400 };
+    uint8_t* buf = (uint8_t*)__aevix_alloc(CAP);
+    int m = snprintf((char*)buf, CAP, "%f", d);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (m >= CAP ? CAP - 1 : (int32_t)m);
+}
+
+/* substr(s, start, count): clamps the range to the slice and copies the chosen
+ * segment into the arena. Out-of-range start yields an empty string. */
+void __aevix_substr(const uint8_t* s, int32_t len, int32_t start, int32_t count,
+                    uint8_t** out_ptr, int32_t* out_len) {
+    if (start < 0) start = 0;
+    if (start > len) start = len;
+    if (count < 0) count = 0;
+    int32_t avail = len - start;
+    if (count > avail) count = avail;
+    uint8_t* buf = count > 0 ? (uint8_t*)__aevix_alloc(count) : NULL;
+    if (count > 0) memcpy(buf, s + start, (size_t)count);
+    *out_ptr = buf;
+    *out_len = count;
+}
+
+/* split(s, sep): returns a string[] slice — an arena-allocated array of
+ * { ptr, len } sub-slices, one per piece of s split on every sep occurrence.
+ * An empty separator is treated as "no split" and yields a single-element
+ * array containing s itself. Empty pieces are preserved, so "a,,b" split by
+ * "," gives ["a", "", "b"] and "a,b," gives ["a", "b", ""]. */
+void __aevix_split(const uint8_t* s, int32_t slen, const uint8_t* sep, int32_t seplen,
+                   uint8_t** out_ptr, int32_t* out_len) {
+    typedef struct { uint8_t* ptr; int32_t len; } aevix_str;
+    if (seplen <= 0) {
+        aevix_str* arr = (aevix_str*)__aevix_alloc((int32_t)sizeof(aevix_str));
+        uint8_t* copy = slen > 0 ? (uint8_t*)__aevix_alloc(slen) : NULL;
+        if (slen > 0) memcpy(copy, s, (size_t)slen);
+        arr[0].ptr = copy;
+        arr[0].len = slen;
+        *out_ptr = (uint8_t*)arr;
+        *out_len = 1;
+        return;
+    }
+    int32_t count = 1;
+    for (int32_t i = 0; i + seplen <= slen; ++i) {
+        int32_t j = 0;
+        while (j < seplen && s[i + j] == sep[j]) ++j;
+        if (j == seplen) {
+            ++count;
+            i += seplen - 1;
+        }
+    }
+    aevix_str* arr = (aevix_str*)__aevix_alloc((int32_t)(sizeof(aevix_str) * count));
+    int32_t idx = 0;
+    int32_t start = 0;
+    for (int32_t i = 0; i + seplen <= slen; ++i) {
+        int32_t j = 0;
+        while (j < seplen && s[i + j] == sep[j]) ++j;
+        if (j == seplen) {
+            int32_t span = i - start;
+            uint8_t* copy = span > 0 ? (uint8_t*)__aevix_alloc(span) : NULL;
+            if (span > 0) memcpy(copy, s + start, (size_t)span);
+            arr[idx].ptr = copy;
+            arr[idx].len = span;
+            ++idx;
+            i += seplen - 1;
+            start = i + 1;
+        }
+    }
+    int32_t tail = slen - start;
+    uint8_t* tcopy = tail > 0 ? (uint8_t*)__aevix_alloc(tail) : NULL;
+    if (tail > 0) memcpy(tcopy, s + start, (size_t)tail);
+    arr[idx].ptr = tcopy;
+    arr[idx].len = tail;
+    *out_ptr = (uint8_t*)arr;
+    *out_len = count;
+}
