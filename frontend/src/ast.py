@@ -12,7 +12,7 @@ from typing import List, Union, Optional
 # exported JSON shape changes; the backend refuses files with a different
 # version, so a mismatch is caught at load time instead of crashing deep
 # inside the parser.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 def to_dict(obj):
     """
@@ -224,6 +224,8 @@ class Assign:
 class Param:
     name: str
     var_type: Optional[str] = None
+    is_ref: bool = False
+    is_out: bool = False
     type: str = "Param"
 
 @dataclass

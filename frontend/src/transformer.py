@@ -183,6 +183,14 @@ class AevixTransformer(Transformer):
         size = str(items[1]) if len(items) > 1 else ""
         return f"{base}[{size}]"
 
+    def param_type(self, items):
+        kind = None
+        if items and isinstance(items[0], Token) and items[0].type in ("REF", "OUT"):
+            kind = items[0].type
+            items = items[1:]
+        t = items[0]
+        return (kind, str(t) if not isinstance(t, str) else t)
+
     # ---- Statements ----
     def stmt(self, items):
         return items[0]
@@ -292,8 +300,15 @@ class AevixTransformer(Transformer):
 
     def param(self, items):
         name = str(items[0])
-        var_type = items[1] if len(items) > 1 else None
-        return Param(name=name, var_type=var_type)
+        is_ref = is_out = False
+        var_type = None
+        if len(items) > 1:
+            kind, var_type = items[1]
+            if kind == "REF":
+                is_ref = True
+            elif kind == "OUT":
+                is_out = True
+        return Param(name=name, var_type=var_type, is_ref=is_ref, is_out=is_out)
 
     # ---- Structs ----
     def struct_decl(self, items):
