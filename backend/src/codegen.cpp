@@ -606,7 +606,7 @@ llvm::Value* CodeGenerator::gen_ref_arg_ptr(const std::shared_ptr<Expr>& e) {
         llvm::Type* fty = nullptr;
         return gen_member_ptr_inner(*ma, fty);
     }
-    error("Cannot pass a temporary value to a ref/out parameter");
+    error("Cannot pass a temporary value to a ref parameter");
     return nullptr;
 }
 
@@ -1206,12 +1206,12 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         std::vector<llvm::Value*> args;
         auto callee_params_it = func_params_.find(call->callee);
         for (std::size_t i = 0; i < call->args.size(); ++i) {
-            bool is_ref_out = false;
+            bool is_ref = false;
             if (callee_params_it != func_params_.end() && i < callee_params_it->second.size())
-                is_ref_out = callee_params_it->second[i].is_ref || callee_params_it->second[i].is_out;
+                is_ref = callee_params_it->second[i].is_ref;
 
-            if (is_ref_out) {
-                // ref/out parameter: pass the address of the lvalue. Sema has
+            if (is_ref) {
+                // ref parameter: pass the address of the lvalue. Sema has
                 // already verified the argument is an assignable lvalue.
                 auto addr = gen_ref_arg_ptr(call->args[i]);
                 if (!addr) return nullptr;
@@ -1599,7 +1599,7 @@ void CodeGenerator::generate_assign(const Assign& a) {
     if (!alloc) error("Cannot assign to unknown variable: " + var->name);
 
     if (is_ref_var(var->name)) {
-            // Write through a ref/out parameter: load the caller's address
+            // Write through a ref parameter: load the caller's address
             // and target that storage directly instead of the local slot.
             alloc = builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
         }
@@ -2051,8 +2051,8 @@ void CodeGenerator::declare_func(const FuncDecl& fd) {
         std::string pbase;
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
-        if (p.is_ref || p.is_out) {
-            // ref/out parameter: the caller passes the address of the lvalue.
+        if (p.is_ref) {
+            // ref parameter: the caller passes the address of the lvalue.
             param_types.push_back(builder->getPtrTy());
         } else if (parr == 0) {
             // Open array (int[]) is a single slice { base*, i32 } argument
@@ -2088,8 +2088,8 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
         std::string pbase;
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
-        if (p.is_ref || p.is_out) {
-            // ref/out parameter: the incoming value is the caller's address.
+        if (p.is_ref) {
+            // ref parameter: the incoming value is the caller's address.
             // Store it in a local slot and remember that reads/writes go
             // through one extra pointer layer (ref_indirect via ref_scopes_).
             llvm::Argument& arg = *arg_it++;

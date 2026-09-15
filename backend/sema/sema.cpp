@@ -52,11 +52,6 @@ private:
 
     const std::string* current_fn_ = nullptr;
 
-    // Out-parameter initialization tracking: `out` parameters must be
-    // assigned before they are read. Written state is per function body.
-    std::set<std::string> out_params_;
-    std::set<std::string> written_outs_;
-
     static bool is_primitive(const std::string& t) {
         return t == "int" || t == "float" || t == "bool" || t == "string";
     }
@@ -86,12 +81,9 @@ private:
     void check_struct_lit(StructLiteral* sl);
     std::string bin_arith(Expr* l, Expr* r, int line, int col);
 
-    // ref/out parameter helpers
+    // ref parameter helpers
     static bool is_lvalue(const Expr* e);
     static std::string lvalue_root(const Expr* e);
-    bool member_type(const std::string& struct_name, const std::string& member, std::string& out);
-    std::string infer_assign_target(Expr* e);
-    void mark_written(Expr* target);
 
     // Epoch depth of the arena allocation a slice-typed expression refers to.
     // -1 when the expression holds no arena-referencing pointer.
@@ -155,10 +147,7 @@ std::string Checker::infer(Expr* e) {
     if (auto* b = dynamic_cast<Bool*>(e)) { (void)b; return "bool"; }
     if (auto* s = dynamic_cast<String*>(e)) { (void)s; return "string"; }
     if (auto* v = dynamic_cast<Variable*>(e)) {
-        std::string t = lookup_var(v->name, e->line, e->col);
-        if (!t.empty() && out_params_.count(v->name) && !written_outs_.count(v->name))
-            error("read of out parameter before it is assigned", e->line, e->col);
-        return t;
+        return lookup_var(v->name, e->line, e->col);
     }
     if (auto* n = dynamic_cast<Neg*>(e)) {
         std::string t = infer(n->value.get());
@@ -303,7 +292,7 @@ void Checker::check_escapes_target(Expr* target, Expr* value) {
 }
 
 // ---------------------------------------------------------------------------
-// ref/out parameter helpers
+// ref parameter helpers
 // ---------------------------------------------------------------------------
 
 bool Checker::is_lvalue(const Expr* e) {
@@ -316,45 +305,6 @@ std::string Checker::lvalue_root(const Expr* e) {
     if (auto* ix = dynamic_cast<const Index*>(e)) return lvalue_root(ix->object.get());
     if (auto* ma = dynamic_cast<const MemberAccess*>(e)) return lvalue_root(ma->object.get());
     return "";
-}
-
-bool Checker::member_type(const std::string& struct_name, const std::string& member, std::string& out) {
-    auto it = structs_.find(struct_name);
-    if (it == structs_.end()) return false;
-    for (const StructField& f : it->second.fields)
-        if (f.name == member) { out = f.var_type; return true; }
-    return false;
-}
-
-// Like infer(), but the top-level lvalue variable of the expression is
-// resolved for its address only — reading a still-unassigned out parameter
-// as an assignment target is not a read of its value.
-std::string Checker::infer_assign_target(Expr* e) {
-    if (auto* v = dynamic_cast<Variable*>(e))
-        return lookup_var(v->name, e->line, e->col);
-    if (auto* ix = dynamic_cast<Index*>(e)) {
-        std::string obj = infer_assign_target(ix->object.get());
-        std::string idx = infer(ix->index.get());
-        if (obj.empty() || (!is_slice(obj) && !is_fixed_array(obj)))
-            error("indexing a non-array value", e->line, e->col);
-        if (idx != "int") error("array index must be an int", e->line, e->col);
-        return element_type(obj);
-    }
-    if (auto* ma = dynamic_cast<MemberAccess*>(e)) {
-        std::string obj = infer_assign_target(ma->object.get());
-        std::string fty;
-        if (!member_type(obj, ma->member, fty)) {
-            error("unknown member", e->line, e->col);
-            return "";
-        }
-        return fty;
-    }
-    return infer(e);
-}
-
-void Checker::mark_written(Expr* target) {
-    std::string root = lvalue_root(target);
-    if (!root.empty() && out_params_.count(root)) written_outs_.insert(root);
 }
 
 // ---------------------------------------------------------------------------
@@ -392,13 +342,7 @@ std::string Checker::check_call(Call* c) {
     }
     for (size_t i = 0; i < fn.params.size(); ++i) {
         const Param& p = fn.params[i];
-        if (p.is_out) {
-            if (!is_lvalue(c->args[i].get()))
-                error("out parameter requires an lvalue argument", c->line, c->col);
-            // A still-unassigned out parameter handed to another out parameter
-            // is fine: the callee assigns through it, so mark it written first.
-            mark_written(c->args[i].get());
-        } else if (p.is_ref) {
+        if (p.is_ref) {
             if (!is_lvalue(c->args[i].get()))
                 error("ref parameter requires an lvalue argument", c->line, c->col);
         }
@@ -406,16 +350,16 @@ std::string Checker::check_call(Call* c) {
         if (!assignable(p.var_type, t))
             error("argument type mismatch in function call", c->line, c->col);
     }
-    // Two ref/out parameters of one call must not alias the same variable:
+    // Two ref parameters of one call must not alias the same variable:
     // the callee could otherwise write to one via the other.
     std::set<std::string> seen;
     for (size_t i = 0; i < fn.params.size(); ++i) {
         const Param& p = fn.params[i];
-        if (!(p.is_ref || p.is_out)) continue;
+        if (!p.is_ref) continue;
         std::string root = lvalue_root(c->args[i].get());
         if (root.empty()) continue;
         if (!seen.insert(root).second)
-            error("two ref/out parameters bound to the same variable", c->line, c->col);
+            error("two ref parameters bound to the same variable", c->line, c->col);
     }
     return fn.return_type;
 }
@@ -495,26 +439,20 @@ void Checker::check_stmt(Stmt& s) {
     }
     case Stmt::Kind::Assign: {
         Assign* a = s.assign_stmt.get();
-        std::string target_ty = (a->op == "=")
-            ? infer_assign_target(a->name.get())
-            : infer(a->name.get()); // compound operators read the old value first
+        std::string target_ty = infer(a->name.get());
         std::string value_ty = infer(a->value.get());
         if (a->op != "=" && target_ty != "int" && target_ty != "float")
             error("compound assignment requires a numeric target", s.line, s.col);
         if (!target_ty.empty() && !assignable(target_ty, value_ty))
             error("cannot assign value of incompatible type", s.line, s.col);
         check_escapes_target(a->name.get(), a->value.get());
-        mark_written(a->name.get());
         break;
     }
     case Stmt::Kind::FuncDecl: {
         scopes_.push_back({});
-        out_params_.clear();
-        written_outs_.clear();
         SemaFn& fn = funcs_[s.func_decl->name];
         for (const Param& p : fn.params) {
             declare_var(p.name, p.var_type, s.line, s.col);
-            if (p.is_out) out_params_.insert(p.name);
         }
         current_fn_ = &s.func_decl->name;
         check_block(s.func_decl->body->body);
@@ -540,7 +478,7 @@ bool Checker::run() {
         switch (s->kind) {
         case Stmt::Kind::FuncDecl:
             for (const Param& p : s->func_decl->params)
-                if ((p.is_ref || p.is_out) && is_slice(p.var_type))
+                if (p.is_ref && is_slice(p.var_type))
                     error("open array parameters cannot be passed by reference", s->line, s->col);
             if (!funcs_.emplace(s->func_decl->name,
                         SemaFn{s->func_decl->params, s->func_decl->return_type}).second)

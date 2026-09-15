@@ -21,7 +21,7 @@ private:
     std::map<std::string, llvm::Function*> functions;
     std::vector<std::map<std::string, llvm::Value*>> named_values;
     std::vector<std::map<std::string, llvm::Type*>> named_types;
-    // Per-scope flag: a name declared as a ref/out parameter reads and writes
+    // Per-scope flag: a name declared as a ref parameter reads and writes
     // through an extra pointer layer stored on the stack (an alloca of the
     // caller's address). Mirrors named_values scope-for-scope.
     std::vector<std::set<std::string>> ref_scopes_;
@@ -93,8 +93,8 @@ private:
     llvm::Value* lookup_var(const std::string& name, llvm::Type*& ty);
     llvm::Value* lookup_var_indexed(const std::string& name, llvm::Type*& ty, std::size_t& idx);
     bool is_ref_var(const std::string& name);
-    // Resolves the address of an lvalue passed to a ref/out parameter
-    // (dereferencing one pointer layer when the lvalue is itself a ref/out
+    // Resolves the address of an lvalue passed to a ref parameter
+    // (dereferencing one pointer layer when the lvalue is itself a ref
     // parameter of the current function).
     llvm::Value* gen_ref_arg_ptr(const std::shared_ptr<Expr>& e);
     llvm::Type* llvm_type_for(const std::string& tn);

@@ -300,15 +300,13 @@ class AevixTransformer(Transformer):
 
     def param(self, items):
         name = str(items[0])
-        is_ref = is_out = False
+        is_ref = False
         var_type = None
         if len(items) > 1:
             kind, var_type = items[1]
             if kind == "REF":
                 is_ref = True
-            elif kind == "OUT":
-                is_out = True
-        return Param(name=name, var_type=var_type, is_ref=is_ref, is_out=is_out)
+        return Param(name=name, var_type=var_type, is_ref=is_ref)
 
     # ---- Structs ----
     def struct_decl(self, items):

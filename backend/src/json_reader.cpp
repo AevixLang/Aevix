@@ -10,7 +10,7 @@
 
 // Version of the frontend -> backend AST JSON schema. The frontend stamps
 // every ast.json with this value; anything else is rejected up front.
-constexpr int SCHEMA_VERSION = 2;
+constexpr int SCHEMA_VERSION = 3;
 
 static std::shared_ptr<Expr> parse_expr(const json& j);
 
@@ -284,9 +284,6 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
             }
             if (p.contains("is_ref") && p["is_ref"].is_boolean()) {
                 param.is_ref = p["is_ref"];
-            }
-            if (p.contains("is_out") && p["is_out"].is_boolean()) {
-                param.is_out = p["is_out"];
             }
             fd->params.push_back(param);
         }
