@@ -134,6 +134,8 @@ struct Block {
 struct Param {
     std::string name;
     std::string var_type;
+    bool is_ref = false;  // parameter passed by reference (read-write)
+    bool is_out = false;  // parameter passed by reference (write-only until assigned)
 };
 
 struct If {
