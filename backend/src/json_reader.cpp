@@ -8,6 +8,10 @@
 #include <fstream>
 #include <iostream>
 
+// Version of the frontend -> backend AST JSON schema. The frontend stamps
+// every ast.json with this value; anything else is rejected up front.
+constexpr int SCHEMA_VERSION = 1;
+
 static std::shared_ptr<Expr> parse_expr(const json& j);
 
 /**
@@ -324,6 +328,19 @@ Program parse_json(const std::string& filename) {
 
     json data;
     file >> data;
+
+    // Refuse ASTs exported by a different frontend version rather than
+    // failing on the first incompatible node.
+    if (!data.contains("schemaVersion") ||
+        data["schemaVersion"].get<int>() != SCHEMA_VERSION) {
+        std::string got = "(missing)";
+        if (data.contains("schemaVersion") && data["schemaVersion"].is_number_integer()) {
+            got = std::to_string(data["schemaVersion"].get<int>());
+        }
+        std::cerr << "❌ Unsupported AST schema version " << got
+                  << " (expected " << SCHEMA_VERSION << ")" << std::endl;
+        exit(1);
+    }
 
     Program program;
     for (const auto& stmt : data["body"]) {

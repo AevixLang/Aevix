@@ -8,6 +8,12 @@
 from dataclasses import dataclass
 from typing import List, Union, Optional
 
+# Version of the frontend -> backend AST JSON schema. Bump whenever the
+# exported JSON shape changes; the backend refuses files with a different
+# version, so a mismatch is caught at load time instead of crashing deep
+# inside the parser.
+SCHEMA_VERSION = 1
+
 def to_dict(obj):
     """
     Recursively converts AST dataclasses and lists into dictionaries

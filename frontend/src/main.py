@@ -9,7 +9,7 @@ import sys
 import json
 from .parser import format_parse_error
 from .importer import load_program, ImportResolveError, SourceParseError
-from .ast import to_dict
+from .ast import to_dict, SCHEMA_VERSION
 
 
 def main():
@@ -52,7 +52,8 @@ def main():
         sys.exit(1)
 
     # Serialize AST to JSON for the backend
-    json_data = to_dict(program)
+    json_data = {"schemaVersion": SCHEMA_VERSION}
+    json_data.update(to_dict(program))
 
     with open(out_path, "w") as f:
         json.dump(json_data, f, indent=2)
