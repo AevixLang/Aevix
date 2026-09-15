@@ -78,8 +78,24 @@ visible in `git log --graph`.
 
 ## Golden corpus
 
-Examples in `examples/` serve as the language's living contract. Each
-example that compiles and runs deterministically without arguments has
-a matching `examples/<name>.golden` file containing the exact expected
-stdout. `aevix test` verifies these automatically. If your change alters
-output, update the `.golden` file in the same commit.
+`frontend/tests/corpus/` holds the language's living output contract. Every
+`corpus/*.aev` paired with a `corpus/*.golden` is built through the full
+pipeline (frontend -> backend -> llvm -> clang) and run with **no arguments
+and empty stdin**; its stdout must exactly match the `.golden` file
+(checked by `frontend/tests/test_golden.py`, part of `aevix test`). Files
+without a `.golden` are ignored by the test.
+
+If your change intentionally alters output, regenerate the goldens in the
+same commit:
+
+```bash
+venv/bin/python tools/gen_golden.py
+```
+
+## Benchmarks
+
+`aevix bench` builds a small (`examples/test.aev`) and a synthetic large
+(2000-variable chain) source through the pipeline, prints per-stage
+timings, and appends a dated baseline row to `notes/benchmarks.md`
+(local, Git-ignored). It is run manually when evaluating parser/codegen
+performance — never by `aevix test`.

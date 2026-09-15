@@ -1,0 +1,21 @@
+// basics.aev — values, arithmetic, compound assignment.
+hot {
+    let a = 42;
+    let b = 2.5;
+    let c = "hello";
+    let d = true;
+
+    print a;
+    print b;
+    print c;
+    print d;
+
+    a = a + 1;
+    b = b * 2.0;
+
+    print a;
+    print b;
+    print c + "!";
+    print a * 2 - 3;
+    print 10 / 4;
+}

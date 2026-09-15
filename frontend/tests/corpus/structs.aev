@@ -1,0 +1,17 @@
+// structs.aev — struct literals, field access, mutation, func params.
+struct Vec2 {
+    x: float,
+    y: float
+}
+
+func dist2(v: Vec2) : float {
+    return v.x * v.x + v.y * v.y;
+}
+
+hot {
+    let v = Vec2 { 3.0, 4.0 };
+    print v;
+    v.x = 10.0;
+    print v;
+    print dist2(v);
+}
