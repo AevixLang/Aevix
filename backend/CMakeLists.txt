@@ -74,6 +74,16 @@ add_executable(aevix-backend
     src/codegen.cpp
 )
 
+# Static semantic analysis: ast.json -> diagnostics (no side effects).
+find_path(NLOHMANN_INCLUDE_DIR nlohmann/json.hpp
+    HINTS /opt/homebrew/include /usr/local/include
+)
+add_executable(aevix-sema
+    sema/sema.cpp
+    src/json_reader.cpp
+)
+target_include_directories(aevix-sema PRIVATE include ${NLOHMANN_INCLUDE_DIR})
+
 # Arena runtime object, linked into every final Aevix binary (tests + Go CLI).
 set(RUNTIME_OBJ ${CMAKE_BINARY_DIR}/runtime.o)
 add_custom_command(

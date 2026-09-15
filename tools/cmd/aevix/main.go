@@ -122,8 +122,10 @@ func buildProject(srcFile string, verbose bool, only string) (string, error) {
 	}
 
 	backendExe := filepath.Join(rootDir, "backend", "build", "aevix-backend")
+	semaExe := filepath.Join(rootDir, "backend", "build", "aevix-sema")
 	if runtime.GOOS == "windows" {
 		backendExe += ".exe"
+		semaExe += ".exe"
 	}
 
 	var absSrc string
@@ -146,7 +148,7 @@ func buildProject(srcFile string, verbose bool, only string) (string, error) {
 		progOut += ".exe"
 	}
 
-	stages := makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, false)
+	stages := makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, semaExe, false)
 
 	if _, err := runStages(stages, verbose, only); err != nil {
 		return "", err
@@ -158,7 +160,7 @@ func buildProject(srcFile string, verbose bool, only string) (string, error) {
 
 // benchSource runs the whole pipeline for `src` silently and returns the
 // per-stage timings. Used by `aevix bench`.
-func benchSource(src, python, backendExe string) ([]stageResult, error) {
+func benchSource(src, python, backendExe, semaExe string) ([]stageResult, error) {
 	absSrc := src
 	if !filepath.IsAbs(absSrc) {
 		absSrc = filepath.Join(workDir, src)
@@ -171,7 +173,7 @@ func benchSource(src, python, backendExe string) ([]stageResult, error) {
 	irPath := filepath.Join(buildDir, "output.ll")
 	objPath := filepath.Join(buildDir, "output.o")
 	progOut := filepath.Join(buildDir, "bench-program")
-	stages := makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, true)
+	stages := makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, semaExe, true)
 	return runStages(stages, false, "")
 }
 
@@ -205,7 +207,7 @@ func timingLine(res []stageResult) string {
 // saveBenchRow appends one dated row of build timings to notes/benchmarks.md.
 func saveBenchRow(src string, res []stageResult) {
 	path := filepath.Join(rootDir, "notes", "benchmarks.md")
-	header := "# Aevix build benchmarks\n\nBaseline recorded by `aevix bench`.\n\n| date | source | parse | backend | llc | link |\n|---|---|---|---|---|---|\n"
+	header := "# Aevix build benchmarks\n\nBaseline recorded by `aevix bench`.\n\n| date | source | parse | sema | backend | llc | link |\n|---|---|---|---|---|---|---|\n"
 	var existing string
 	if data, err := os.ReadFile(path); err == nil {
 		existing = string(data)
@@ -237,8 +239,10 @@ func bench() {
 		os.Exit(1)
 	}
 	backendExe := filepath.Join(rootDir, "backend", "build", "aevix-backend")
+	semaExe := filepath.Join(rootDir, "backend", "build", "aevix-sema")
 	if runtime.GOOS == "windows" {
 		backendExe += ".exe"
+		semaExe += ".exe"
 	}
 
 	smallSrc := filepath.Join(rootDir, "examples", "test.aev")
@@ -260,7 +264,7 @@ func bench() {
 		{"examples/test.aev", smallSrc},
 		{"synthetic (2000 vars)", synth},
 	} {
-		res, err := benchSource(spec.src, python, backendExe)
+		res, err := benchSource(spec.src, python, backendExe, semaExe)
 		if err != nil {
 			fmt.Println("❌ bench failed:", err)
 			os.Exit(1)
@@ -271,13 +275,17 @@ func bench() {
 	fmt.Println("📈 Baseline saved to notes/benchmarks.md")
 }
 
-// makeStages returns the four build pipeline stages for a source file.
+// makeStages returns the build pipeline stages for a source file.
 // `quiet` silences chatty stage output (used by bench).
-func makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe string, quiet bool) []stage {
+func makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, semaExe string, quiet bool) []stage {
 	return []stage{
 		{"parse", func() error {
 			// Python: .aev -> ast.json (written straight into the build dir)
 			return runFrontend(python, absSrc, astPath, quiet)
+		}},
+		{"sema", func() error {
+			// Sema: ast.json -> type/scope/escape diagnostics (validates in place)
+			return runTool(semaExe, astPath)
 		}},
 		{"backend", func() error {
 			// Backend: ast.json -> LLVM IR on stdout, captured to a file

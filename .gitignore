@@ -22,9 +22,9 @@ CMakeCache.txt
 CMakeFiles/
 
 # Go
-aevix
+/aevix
 aevix.exe
-tools/aevix
+/tools/aevix
 *.exe
 *.test
 
