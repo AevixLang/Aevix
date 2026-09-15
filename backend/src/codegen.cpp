@@ -41,6 +41,7 @@ CodeGenerator::CodeGenerator()
 
     named_values.emplace_back();
     named_types.emplace_back();
+    ref_scopes_.emplace_back();
 }
 
 /**
@@ -195,12 +196,14 @@ void CodeGenerator::error(const std::string& msg) {
 void CodeGenerator::push_scope() {
     named_values.emplace_back();
     named_types.emplace_back();
+    ref_scopes_.emplace_back();
     scope_open_arrays_count.push_back(open_arrays.size());
 }
 
 void CodeGenerator::pop_scope() {
     named_values.pop_back();
     named_types.pop_back();
+    ref_scopes_.pop_back();
     if (!scope_open_arrays_count.empty()) {
         auto target = scope_open_arrays_count.back();
         scope_open_arrays_count.pop_back();
@@ -327,15 +330,27 @@ void CodeGenerator::define_var(const std::string& name, llvm::Value* alloc, llvm
 }
 
 llvm::Value* CodeGenerator::lookup_var(const std::string& name, llvm::Type*& ty) {
+    std::size_t idx = 0;
+    return lookup_var_indexed(name, ty, idx);
+}
+
+llvm::Value* CodeGenerator::lookup_var_indexed(const std::string& name, llvm::Type*& ty, std::size_t& idx) {
     for (auto it = named_values.rbegin(); it != named_values.rend(); ++it) {
         auto vit = it->find(name);
         if (vit != it->end()) {
-            std::size_t idx = named_values.size() - 1 - std::distance(named_values.rbegin(), it);
+            idx = named_values.size() - 1 - std::distance(named_values.rbegin(), it);
             ty = named_types[idx][name];
             return vit->second;
         }
     }
     return nullptr;
+}
+
+bool CodeGenerator::is_ref_var(const std::string& name) {
+    std::size_t idx = 0;
+    llvm::Type* ty = nullptr;
+    if (!lookup_var_indexed(name, ty, idx)) return false;
+    return ref_scopes_[idx].count(name) > 0;
 }
 
 /**
@@ -505,6 +520,9 @@ llvm::Value* CodeGenerator::gen_member_ptr_inner(const MemberAccess& ma, llvm::T
     if (auto var = std::dynamic_pointer_cast<Variable>(ma.object)) {
         base = lookup_var(var->name, st_ty);
         if (!base) error("Variable not found: " + var->name);
+        if (is_ref_var(var->name)) {
+            base = builder->CreateLoad(builder->getPtrTy(), base, var->name + ".ref");
+        }
         if (!st_ty->isStructTy()) error("'." + ma.member + "' on a non-struct value");
     } else if (auto inner = std::dynamic_pointer_cast<MemberAccess>(ma.object)) {
         llvm::Type* inner_ty = nullptr;
@@ -570,6 +588,27 @@ std::string CodeGenerator::llvm_type_name(llvm::Type* ty) {
 // ============================================================================
 // Array Handling
 // ============================================================================
+
+llvm::Value* CodeGenerator::gen_ref_arg_ptr(const std::shared_ptr<Expr>& e) {
+    if (auto var = std::dynamic_pointer_cast<Variable>(e)) {
+        llvm::Type* ty = nullptr;
+        llvm::Value* alloc = lookup_var(var->name, ty);
+        if (!alloc) error("Cannot resolve lvalue: " + var->name);
+        if (is_ref_var(var->name))
+            return builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+        return alloc;
+    }
+    if (auto ix = std::dynamic_pointer_cast<Index>(e)) {
+        llvm::Type* elem_ty = nullptr;
+        return gen_index_ptr(*ix, elem_ty);
+    }
+    if (auto ma = std::dynamic_pointer_cast<MemberAccess>(e)) {
+        llvm::Type* fty = nullptr;
+        return gen_member_ptr_inner(*ma, fty);
+    }
+    error("Cannot pass a temporary value to a ref/out parameter");
+    return nullptr;
+}
 
 llvm::Type* CodeGenerator::element_type_of(const std::shared_ptr<Expr>& e) {
     if (auto n = std::dynamic_pointer_cast<Number>(e)) return builder->getInt32Ty();
@@ -650,17 +689,24 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
     if (var) {
         llvm::Value* alloc = lookup_var(var->name, arr_ty);
         if (!alloc) error("Variable not found: " + var->name);
-        ptr = alloc;
-        cur_arr = arr_ty;
-        is_open = is_open_array(var->name);
-        if (is_open) {
-            // The variable stores a slice { data*, len } — load the whole value.
-            auto slice = builder->CreateLoad(arr_ty, alloc, var->name);
-            ptr = builder->CreateExtractValue(slice, 0, var->name + ".ptr");
-            open_len = builder->CreateExtractValue(slice, 1, var->name + ".len");
-            open_elem = open_array_elem_type(var->name);
+        if (is_ref_var(var->name)) {
+            // Ref/out storage holds the caller's array address: load it first.
+            ptr = builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+            cur_arr = arr_ty;
+            is_open = false;
         } else {
-            if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+            ptr = alloc;
+            cur_arr = arr_ty;
+            is_open = is_open_array(var->name);
+            if (is_open) {
+                // The variable stores a slice { data*, len } — load the whole value.
+                auto slice = builder->CreateLoad(arr_ty, alloc, var->name);
+                ptr = builder->CreateExtractValue(slice, 0, var->name + ".ptr");
+                open_len = builder->CreateExtractValue(slice, 1, var->name + ".len");
+                open_elem = open_array_elem_type(var->name);
+            } else {
+                if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+            }
         }
     } else if (ma) {
         // Struct member access yielding a slice: b.items[0]
@@ -884,8 +930,13 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     if (auto var = std::dynamic_pointer_cast<Variable>(expr)) {
         llvm::Type* ty = nullptr;
         llvm::Value* alloc = lookup_var(var->name, ty);
-        if (alloc) return builder->CreateLoad(ty, alloc, var->name);
-        error("Variable not found: " + var->name);
+        if (!alloc) error("Variable not found: " + var->name);
+        llvm::Value* addr = alloc;
+        if (is_ref_var(var->name)) {
+            // Ref/out param storage holds the caller's address: load it first.
+            addr = builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+        }
+        return builder->CreateLoad(ty, addr, var->name);
     }
     if (auto al = std::dynamic_pointer_cast<ArrayLit>(expr)) {
         llvm::Type* arr_ty = build_array_type(*al);
@@ -1153,7 +1204,21 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (it == functions.end()) error("Unknown function: " + call->callee);
         llvm::Function* func = it->second;
         std::vector<llvm::Value*> args;
+        auto callee_params_it = func_params_.find(call->callee);
         for (std::size_t i = 0; i < call->args.size(); ++i) {
+            bool is_ref_out = false;
+            if (callee_params_it != func_params_.end() && i < callee_params_it->second.size())
+                is_ref_out = callee_params_it->second[i].is_ref || callee_params_it->second[i].is_out;
+
+            if (is_ref_out) {
+                // ref/out parameter: pass the address of the lvalue. Sema has
+                // already verified the argument is an assignable lvalue.
+                auto addr = gen_ref_arg_ptr(call->args[i]);
+                if (!addr) return nullptr;
+                args.push_back(addr);
+                continue;
+            }
+
             auto v = generate_expr(call->args[i]);
             if (!v) return nullptr;
 
@@ -1532,6 +1597,12 @@ void CodeGenerator::generate_assign(const Assign& a) {
     llvm::Type* ty = nullptr;
     llvm::Value* alloc = lookup_var(var->name, ty);
     if (!alloc) error("Cannot assign to unknown variable: " + var->name);
+
+    if (is_ref_var(var->name)) {
+            // Write through a ref/out parameter: load the caller's address
+            // and target that storage directly instead of the local slot.
+            alloc = builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+        }
 
     if (a.op != "=") {
         if (is_slice_ty(ty)) {
@@ -1980,7 +2051,10 @@ void CodeGenerator::declare_func(const FuncDecl& fd) {
         std::string pbase;
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
-        if (parr == 0) {
+        if (p.is_ref || p.is_out) {
+            // ref/out parameter: the caller passes the address of the lvalue.
+            param_types.push_back(builder->getPtrTy());
+        } else if (parr == 0) {
             // Open array (int[]) is a single slice { base*, i32 } argument
             param_types.push_back(llvm_type_from_name(p.var_type));
         } else {
@@ -1995,6 +2069,7 @@ void CodeGenerator::declare_func(const FuncDecl& fd) {
     auto func_type = llvm::FunctionType::get(ret_ty, param_types, false);
     auto func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, fd.name, module.get());
     functions[fd.name] = func;
+    func_params_[fd.name] = fd.params;
 }
 
 void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
@@ -2013,7 +2088,19 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
         std::string pbase;
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
-        if (parr == 0) {
+        if (p.is_ref || p.is_out) {
+            // ref/out parameter: the incoming value is the caller's address.
+            // Store it in a local slot and remember that reads/writes go
+            // through one extra pointer layer (ref_indirect via ref_scopes_).
+            llvm::Argument& arg = *arg_it++;
+            llvm::Type* val_ty = signature_type_for(p.var_type, "parameter '" + p.name + "'");
+            if (!val_ty) val_ty = builder->getInt32Ty();
+            auto slot = builder->CreateAlloca(builder->getPtrTy(), nullptr, p.name);
+            builder->CreateStore(&arg, slot);
+            named_values.back()[p.name] = slot;
+            named_types.back()[p.name] = val_ty;
+            ref_scopes_.back().insert(p.name);
+        } else if (parr == 0) {
             // Open array: one slice { base*, i32 } argument, stored as a whole
             llvm::Argument& arg = *arg_it++;
             llvm::Type* st = llvm_type_from_name(p.var_type);
