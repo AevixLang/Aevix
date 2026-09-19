@@ -20,6 +20,7 @@
 struct SemaFn {
     std::vector<Param> params;
     std::string return_type; // "" for void functions
+    std::set<int> escaping_params; // indices of params that escape to outer scope
 };
 
 struct SemaStruct {
@@ -148,13 +149,51 @@ private:
     // function body, epoch, loop and if enters a new scope.
     std::vector<std::map<std::string, std::string>> scopes_;
     int epoch_depth_ = 0;
+    int scope_depth_ = 0; // actual nesting level (function/block depth)
     // Variable -> epoch depth at which it was declared (-1 = no epoch).
     std::map<std::string, int> epoch_of_;
+    // Variable -> scope depth at which it was declared.
+    std::map<std::string, int> scope_depth_of_;
 
     const std::string* current_fn_ = nullptr;
 
     static bool is_primitive(const std::string& t) {
         return t == "bool" || t == "string" || is_numeric(t);
+    }
+
+    // True when the type references arena-allocated memory (slices, arrays,
+    // strings, or structs containing such fields). Register-only types
+    // (int, float, bool, enum) are safe to return from epochs.
+    bool is_arena_linked_type(const std::string& t) {
+        if (is_slice(t) || t == "string") return true;
+        if (is_fixed_array(t)) return true;
+        auto it = structs_.find(t);
+        if (it != structs_.end()) {
+            for (const auto& f : it->second.fields)
+                if (is_arena_linked_type(f.var_type)) return true;
+        }
+        return false;
+    }
+
+    // True when the expression may reference arena memory.
+    bool is_arena_linked_expr(Expr* e) {
+        if (auto* n = dynamic_cast<New*>(e)) return true;
+        if (auto* al = dynamic_cast<ArrayLit*>(e)) return true;
+        if (auto* v = dynamic_cast<Variable*>(e)) {
+            std::string t = lookup_var(v->name, e->line, e->col);
+            return is_arena_linked_type(t);
+        }
+        if (auto* c = dynamic_cast<Call*>(e)) {
+            auto fn = funcs_.find(c->callee);
+            if (fn != funcs_.end())
+                return is_arena_linked_type(fn->second.return_type);
+            return false;
+        }
+        if (auto* ma = dynamic_cast<MemberAccess*>(e))
+            return is_arena_linked_type(infer(ma));
+        if (auto* ix = dynamic_cast<Index*>(e))
+            return is_arena_linked_type(infer(ix));
+        return false;
     }
 
     // Builtin explicit conversions (narrowing is only reachable through these).
@@ -226,6 +265,7 @@ private:
     // -1 when the expression holds no arena-referencing pointer.
     int arena_origin(Expr* e);
     int bind_depth_target(Expr* e);
+    int scope_depth_target(Expr* e);
     void check_escapes_target(Expr* target, Expr* value);
 
     void check_stmt(Stmt& s);
@@ -317,6 +357,7 @@ void Checker::declare_var(const std::string& name, const std::string& type, int 
     }
     top[name] = type;
     epoch_of_[name] = epoch_depth_;
+    scope_depth_of_[name] = scope_depth_;
 }
 
 bool Checker::is_enum_variant(const std::string& en, const std::string& variant) const {
@@ -524,6 +565,18 @@ int Checker::bind_depth_target(Expr* e) {
     return -1;
 }
 
+int Checker::scope_depth_target(Expr* e) {
+    if (auto* v = dynamic_cast<Variable*>(e)) {
+        auto it = scope_depth_of_.find(v->name);
+        return it != scope_depth_of_.end() ? it->second : -1;
+    }
+    if (auto* ix = dynamic_cast<Index*>(e))
+        return scope_depth_target(ix->object.get());
+    if (auto* ma = dynamic_cast<MemberAccess*>(e))
+        return scope_depth_target(ma->object.get());
+    return -1;
+}
+
 void Checker::check_escapes_target(Expr* target, Expr* value) {
     int origin = arena_origin(value);
     if (origin <= 0) return; // primitives are copied; file-scope values are safe
@@ -618,21 +671,36 @@ std::string Checker::check_call(Call* c) {
         if (!seen.insert(root).second)
             error("two ref parameters bound to the same variable", c->line, c->col);
     }
+    // Param escape check: if an arena-linked argument is passed to a parameter
+    // that escapes, the value would dangle after the calling scope ends.
+    for (size_t i = 0; i < fn.params.size(); ++i) {
+        if (fn.escaping_params.count((int)i) && is_arena_linked_expr(c->args[i].get())) {
+            int origin = arena_origin(c->args[i].get());
+            if (origin > 0) {
+                error("passing epoch-allocated value to function may cause escape",
+                      c->line, c->col);
+            }
+        }
+    }
     return fn.return_type;
 }
 
 void Checker::check_epoch(Epoch& e) {
     epoch_depth_++;
+    scope_depth_++;
     scopes_.push_back({});
     for (auto& s : e.body) check_stmt(*s);
     scopes_.pop_back();
+    scope_depth_--;
     epoch_depth_--;
 }
 
 void Checker::check_block(const std::vector<std::shared_ptr<Stmt>>& body) {
+    scope_depth_++;
     scopes_.push_back({});
     for (auto& s : body) check_stmt(*s);
     scopes_.pop_back();
+    scope_depth_--;
 }
 
 void Checker::check_stmt(Stmt& s) {
@@ -696,9 +764,12 @@ void Checker::check_stmt(Stmt& s) {
         if (it != funcs_.end() && !assignable_expr(it->second.return_type, rv))
             error("return value does not match function return type", s.line, s.col);
         if (epoch_depth_ > 0 && rv) {
-            int origin = arena_origin(rv);
-            if (origin >= epoch_depth_)
-                error("returning a value allocated inside an epoch", s.line, s.col);
+            // Only arena-linked values (slices, arrays, strings, structs with
+            // such fields) are forbidden. Primitives (int, float, bool) live
+            // in registers and are safe to return.
+            if (is_arena_linked_expr(rv)) {
+                error("cannot return arena-allocated value from epoch", s.line, s.col);
+            }
         }
         break;
     }
@@ -712,18 +783,40 @@ void Checker::check_stmt(Stmt& s) {
         if (!target_ty.empty() && !assignable_expr(target_ty, a->value.get()))
             error("cannot assign value of incompatible type", s.line, s.col);
         check_escapes_target(a->name.get(), a->value.get());
+        // Track param escape: if value is a function parameter and target is
+        // in an outer scope, mark the parameter as escaping.
+        if (current_fn_ && a->op == "=") {
+            if (auto* v = dynamic_cast<Variable*>(a->value.get())) {
+                auto fn_it = funcs_.find(*current_fn_);
+                if (fn_it != funcs_.end()) {
+                    for (size_t i = 0; i < fn_it->second.params.size(); ++i) {
+                        if (fn_it->second.params[i].name == v->name) {
+                            int target_depth = scope_depth_target(a->name.get());
+                            int param_depth = scope_depth_of_.count(v->name)
+                                ? scope_depth_of_[v->name] : -1;
+                            if (target_depth >= 0 && target_depth < param_depth) {
+                                fn_it->second.escaping_params.insert((int)i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         break;
     }
     case Stmt::Kind::FuncDecl: {
+        scope_depth_++;
         scopes_.push_back({});
         SemaFn& fn = funcs_[s.func_decl->name];
         for (const Param& p : fn.params) {
             declare_var(p.name, p.var_type, s.line, s.col);
         }
         current_fn_ = &s.func_decl->name;
-        check_block(s.func_decl->body->body);
+        // Check body directly (not via check_block) to keep params at same scope depth.
+        for (auto& s : s.func_decl->body->body) check_stmt(*s);
         current_fn_ = nullptr;
         scopes_.pop_back();
+        scope_depth_--;
         break;
     }
     case Stmt::Kind::CallStmt:

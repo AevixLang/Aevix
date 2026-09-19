@@ -153,11 +153,38 @@ def test_sema_rejects_outer_var_epoch_escape():
     assert "may be freed while referenced" in err
 
 
+def test_sema_rejects_param_escape_through_function():
+    err = sema_rejected(
+        "let global_buf: int[] = [];\n"
+        "func stash(data: int[]) {\n"
+        "    global_buf = data;\n"
+        "}\n"
+        "func main() {\n"
+        "    epoch {\n"
+        "        let tmp = new int[50];\n"
+        "        stash(tmp);\n"
+        "    }\n"
+        "}")
+    assert "escape" in err.lower()
+
+
+def test_sema_accepts_non_epoch_param_to_escaping_fn():
+    sema_accepted(
+        "let global_buf: int[] = [];\n"
+        "func stash(data: int[]) {\n"
+        "    global_buf = data;\n"
+        "}\n"
+        "func main() {\n"
+        "    let local = new int[50];\n"
+        "    stash(local);\n"
+        "}")
+
+
 def test_sema_rejects_returning_epoch_slice():
     err = sema_rejected("func f(): int[] {\n"
                         "    epoch { let s = new int[3]; return s; }\n"
                         "}")
-    assert "allocated inside an epoch" in err
+    assert "arena-allocated" in err or "epoch" in err
 
 
 def test_sema_accepts_slice_confined_to_epoch():

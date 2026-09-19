@@ -117,15 +117,15 @@ def test_no_escape_outer_var_assignment_rejected():
 
 def test_no_escape_return_rejected():
     ec, err = compile_only(
-        "func f() : int {\n"
+        "func f() : int[] {\n"
         "    epoch {\n"
         "        let x = new int[2];\n"
-        "        return len(x);\n"
+        "        return x;\n"
         "    }\n"
-        "    return 0;\n"
+        "    return [];\n"
         "}\n"
     )
-    assert ec != 0, "returning from an epoch block must be rejected"
+    assert ec != 0, "returning arena-allocated value from epoch must be rejected"
     assert "epoch" in err.lower()
 
 

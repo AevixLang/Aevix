@@ -735,15 +735,30 @@ def test_epoch_escape_assignment_rejected():
 
 def test_epoch_return_rejected():
     ec, err = compile_only(
+        "func f() : int[] {\n"
+        "    epoch {\n"
+        "        let s = new int[3];\n"
+        "        return s;\n"
+        "    }\n"
+        "    return [];\n"
+        "}\n"
+    )
+    assert ec != 0, "returning arena-allocated value from epoch should be rejected"
+    assert "epoch" in err.lower()
+
+
+def test_epoch_return_primitive_allowed():
+    ec, out, err = run_and_capture(
         "func f() : int {\n"
         "    epoch {\n"
-        "        return 1;\n"
+        "        return 42;\n"
         "    }\n"
         "    return 0;\n"
         "}\n"
+        "print f();\n"
     )
-    assert ec != 0, "returning from inside an epoch should be rejected"
-    assert "epoch" in err.lower()
+    assert ec == 0, f"returning primitive from epoch should be allowed, got error: {err}"
+    assert out == ["42"]
 
 
 # --- runtime bounds checking ---

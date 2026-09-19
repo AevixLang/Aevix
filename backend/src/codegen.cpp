@@ -2601,8 +2601,24 @@ void CodeGenerator::generate_continue(const Continue& c) {
 }
 
 void CodeGenerator::generate_return(const Return& r) {
-    if (epoch_depth > 0) {
-        error("Cannot return from inside an epoch block: the arena rollback would invalidate any data you sent back");
+    if (epoch_depth > 0 && r.value) {
+        // Only arena-linked values (slices, arrays, strings) cannot be returned.
+        // Primitives (int, float, bool) live in registers and are safe.
+        llvm::Type* check_ty = nullptr;
+        if (!return_type_stack.empty() && return_type_stack.back())
+            check_ty = return_type_stack.back();
+        if (!check_ty) {
+            llvm::Value* v = generate_expr(r.value);
+            if (v) check_ty = v->getType();
+        }
+        if (check_ty) {
+            bool arena_linked = is_slice_ty(check_ty) || check_ty->isArrayTy();
+            if (!arena_linked && !return_name_stack.empty())
+                arena_linked = is_slice_dest(return_name_stack.back());
+            if (arena_linked) {
+                error("Cannot return arena-allocated value from epoch");
+            }
+        }
     }
     llvm::Type* ret_ty = return_type_stack.empty() ? nullptr : return_type_stack.back();
     std::string ret_name = return_name_stack.empty() ? "" : return_name_stack.back();
