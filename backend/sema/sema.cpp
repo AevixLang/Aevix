@@ -27,6 +27,105 @@ struct SemaStruct {
 };
 
 // ---------------------------------------------------------------------------
+// Type classification for fixed-width types
+//
+// Numeric types carry an implicit width and signedness. "int" and "float" are
+// legacy aliases for "i32" and "f64" that behave identically in every rule.
+// ---------------------------------------------------------------------------
+
+static bool is_signed_int(const std::string& t) {
+    return t == "int" || t == "i8" || t == "i16" || t == "i32" || t == "i64";
+}
+
+static bool is_unsigned_int(const std::string& t) {
+    return t == "u8" || t == "u16" || t == "u32" || t == "u64";
+}
+
+static bool is_int_type(const std::string& t) {
+    return is_signed_int(t) || is_unsigned_int(t);
+}
+
+static bool is_float_type(const std::string& t) {
+    return t == "float" || t == "f32" || t == "f64";
+}
+
+static bool is_numeric(const std::string& t) {
+    return is_int_type(t) || is_float_type(t);
+}
+
+// Width in bits: int == i32, float == f64.
+static int int_bits(const std::string& t) {
+    if (t == "i16" || t == "u16") return 16;
+    if (t == "i32" || t == "u32" || t == "int") return 32;
+    if (t == "i64" || t == "u64") return 64;
+    return 8; // i8/u8
+}
+
+static int float_bits(const std::string& t) {
+    return t == "f32" ? 32 : 64; // float/f64
+}
+
+// The result type of an arithmetic op, or "" when the operand kinds clash.
+static std::string common_numeric(const std::string& a, const std::string& b) {
+    if (a == b) return a;
+    if (is_float_type(a)) return is_float_type(b) ? (float_bits(a) >= float_bits(b) ? a : b) : a;
+    if (is_float_type(b)) return b;
+    if (is_int_type(a) && is_int_type(b)) {
+        if (is_signed_int(a) != is_signed_int(b)) return ""; // mixed signedness
+        return int_bits(a) >= int_bits(b) ? a : b;
+    }
+    return "";
+}
+
+// True when the value of `src` may be implicitly widened into `dest`.
+// Narrowing is never implicit; only compile-time constants may shrink (see
+// constant_fits / assignable_expr).
+static bool numeric_convertible(const std::string& src, const std::string& dest) {
+    if (!is_numeric(src) || !is_numeric(dest)) return false;
+    if (is_float_type(src) && is_float_type(dest))
+        return float_bits(dest) >= float_bits(src);
+    if (is_int_type(src) && is_float_type(dest)) return true; // any int -> any float
+    if (is_int_type(src) && is_int_type(dest)) {
+        if (is_signed_int(src) != is_signed_int(dest)) return false;
+        return int_bits(dest) >= int_bits(src);
+    }
+    return false; // float -> int is never implicit
+}
+
+// True when the integer constant `v` (sign `negated`) fits in `dest`.
+static bool int_const_fits(const std::string& dest, unsigned long long v, bool negated) {
+    if (!is_int_type(dest)) return true;
+    const int bits = int_bits(dest);
+    if (is_unsigned_int(dest)) {
+        if (negated) return false;
+        return bits == 64 || v <= ((1ULL << bits) - 1);
+    }
+    // Signed: magnitude up to 2^(bits-1) (i32 min), or 2^(bits-1)-1 when
+    // positive (i32 max).
+    const unsigned long long limit = (bits == 64)
+        ? (negated ? 0x8000000000000000ULL : 0x7FFFFFFFFFFFFFFFULL)
+        : ((unsigned long long)1 << (bits - 1)) - (negated ? 0 : 1);
+    return v <= limit;
+}
+
+// True when `e` is a numeric literal (Number or Neg(Number)); returns its
+// magnitude and sign. Used for constant-range checks where inference types
+// would otherwise force a widening (int) classification on the literal.
+static bool unbox_int_literal(Expr* e, unsigned long long& v, bool& negated) {
+    if (auto* num = dynamic_cast<Number*>(e)) {
+        v = num->value; negated = false;
+        return true;
+    }
+    if (auto* neg = dynamic_cast<Neg*>(e)) {
+        if (auto* num = dynamic_cast<Number*>(neg->value.get())) {
+            v = num->value; negated = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // The checker
 // ---------------------------------------------------------------------------
 
@@ -42,6 +141,8 @@ private:
 
     std::map<std::string, SemaFn> funcs_;
     std::map<std::string, SemaStruct> structs_;
+    // Enum name -> variant names (program order).
+    std::map<std::string, std::vector<std::string>> enums_;
 
     // Scope stack. Top-level statements live at depth 0; every block,
     // function body, epoch, loop and if enters a new scope.
@@ -53,7 +154,32 @@ private:
     const std::string* current_fn_ = nullptr;
 
     static bool is_primitive(const std::string& t) {
-        return t == "int" || t == "float" || t == "bool" || t == "string";
+        return t == "bool" || t == "string" || is_numeric(t);
+    }
+
+    // Builtin explicit conversions (narrowing is only reachable through these).
+    static bool is_conversion(const std::string& name) {
+        return builtin_conversions().count(name) != 0;
+    }
+
+    // True when `variant` is declared by enum type `en`.
+    bool is_enum_variant(const std::string& en, const std::string& variant) const;
+
+    // True when `e` is a bare enum variant reference (e.g. `Color.red`).
+    bool is_enum_variant_expr(Expr* e) const;
+
+    static const std::set<std::string>& builtin_conversions() {
+        static const std::set<std::string> s = {
+            "to_int",  "to_float", "to_i8", "to_i16", "to_i32", "to_i64",
+            "to_u8",   "to_u16",   "to_u32", "to_u64", "to_f32", "to_f64",
+        };
+        return s;
+    }
+
+    static const std::string conversion_target(const std::string& name) {
+        if (name == "to_int") return "int";
+        if (name == "to_float") return "float";
+        return name.substr(3); // to_i64 -> i64
     }
 
     static bool is_slice(const std::string& t) {
@@ -69,8 +195,19 @@ private:
         return b == std::string::npos ? t : t.substr(0, b);
     }
 
-    // True when `src` may be stored into a slot of type `dest`.
+    // True when the compile-time constant `e` (a Number literal, possibly
+    // negated or wrapped by a float conversion) fits in a slot of type `dest`.
+    // On success returns true; otherwise reports a range diagnostic and returns
+    // false. Non-constant expressions fall through to assignable().
+    bool constant_fits(const std::string& dest, Expr* e);
+
+    // True when `src` may be stored into a slot of type `dest`, using
+    // constant-shrink for numeric literals and implicit widening otherwise.
     bool assignable(const std::string& dest, const std::string& src);
+
+    // Assignability of an expression against a type: like assignable(), but
+    // allows compile-time numeric constants to (re)fit any destination type.
+    bool assignable_expr(const std::string& dest, Expr* e);
 
     void error(const char* msg, int line, int col);
     std::string lookup_var(const std::string& name, int line, int col);
@@ -101,13 +238,58 @@ private:
 bool Checker::assignable(const std::string& dest, const std::string& src) {
     if (src.empty()) return true; // the error is reported at the source
     if (dest == src) return true;
-    // Widening: int -> float is the only implicit numeric conversion codegen supports.
-    if (dest == "float" && src == "int") return true;
+    // Numeric widening is the only implicit arithmetic conversion; shrinking
+    // is explicit (to_* builtins) or resolved at constant time (assignable_expr).
+    if (is_numeric(dest) && is_numeric(src)) return numeric_convertible(src, dest);
     // A slice may be written into a slice slot when element types agree
     // (array literals are coerced contextually, see infer()).
     if (is_slice(dest) && (is_slice(src) || is_fixed_array(src)))
         return element_type(dest) == element_type(src);
     return false;
+}
+
+// True when a checkable numeric constant fits `dest`. Returns false either for
+// values that overflow (already reported) or for expressions constant_fits
+// cannot adjudicate (non-literals) — callers must then fall back to
+// assignable(infer()). An int literal always fits a float destination.
+bool Checker::constant_fits(const std::string& dest, Expr* e) {
+    unsigned long long v;
+    bool negated;
+    if (!unbox_int_literal(e, v, negated)) return false; // not a checkable constant
+    if (is_float_type(dest)) return true;                // int literal -> any float
+    if (!is_int_type(dest)) return false;                // e.g. literal into a struct/enum
+    if (int_const_fits(dest, v, negated)) return true;
+    const std::string msg = "integer literal out of range for " + dest;
+    error(msg.c_str(), e->line, e->col);
+    return false;
+}
+
+// True when `src` may be stored into a slot of type `dest`, using
+// constant-shrink for numeric literals and implicit widening otherwise.
+bool Checker::assignable_expr(const std::string& dest, Expr* e) {
+    if (!e) return true;
+    unsigned long long v;
+    bool negated;
+    if (constant_fits(dest, e)) return true;
+    // An integer literal into an int slot either fit or was already diagnosed.
+    if (is_int_type(dest) && unbox_int_literal(e, v, negated)) return false;
+    if (auto* fl = dynamic_cast<Float*>(e))
+        return is_float_type(dest);
+    if (auto* al = dynamic_cast<ArrayLit*>(e)) {
+        if (is_slice(dest) || is_fixed_array(dest)) {
+            // Contextual coercion: the destination fixes the element type, so
+            // each element must be assignable to it (constants may shrink).
+            bool ok = true;
+            for (const auto& el : al->elements)
+                if (!assignable_expr(element_type(dest), el.get())) {
+                    error("array literal element has an incompatible type",
+                          el->line, el->col);
+                    ok = false;
+                }
+            return ok;
+        }
+    }
+    return assignable(dest, infer(e));
 }
 
 void Checker::error(const char* msg, int line, int col) {
@@ -137,6 +319,22 @@ void Checker::declare_var(const std::string& name, const std::string& type, int 
     epoch_of_[name] = epoch_depth_;
 }
 
+bool Checker::is_enum_variant(const std::string& en, const std::string& variant) const {
+    auto it = enums_.find(en);
+    if (it == enums_.end()) return false;
+    for (const auto& v : it->second)
+        if (v == variant) return true;
+    return false;
+}
+
+bool Checker::is_enum_variant_expr(Expr* e) const {
+    auto* ma = dynamic_cast<MemberAccess*>(e);
+    if (!ma) return false;
+    auto* v = dynamic_cast<Variable*>(ma->object.get());
+    if (!v || !enums_.count(v->name)) return false;
+    return is_enum_variant(v->name, ma->member);
+}
+
 // ---------------------------------------------------------------------------
 // Type inference
 // ---------------------------------------------------------------------------
@@ -150,8 +348,15 @@ std::string Checker::infer(Expr* e) {
         return lookup_var(v->name, e->line, e->col);
     }
     if (auto* n = dynamic_cast<Neg*>(e)) {
+        // A bare literal over i32 max only fits when the negation targets a
+        // widened slot, which assignable_expr/constant_fits decide downstream.
+        if (auto* lit = dynamic_cast<Number*>(n->value.get()))
+            if (lit->value > 0x80000000ULL)
+                error("integer literal out of range for int (annotate a wider type)",
+                      e->line, e->col);
         std::string t = infer(n->value.get());
-        if (t != "int" && t != "float") error("negation requires a number", e->line, e->col);
+        if (!is_signed_int(t) && !is_float_type(t))
+            error("negation requires a signed number", e->line, e->col);
         return t;
     }
     if (auto* un = dynamic_cast<Not*>(e)) {
@@ -167,8 +372,32 @@ std::string Checker::infer(Expr* e) {
     if (auto* d = dynamic_cast<Div*>(e))
         return bin_arith(d->left.get(), d->right.get(), e->line, e->col);
     if (auto* c = dynamic_cast<CmpOp*>(e)) {
-        infer(c->left.get());
-        infer(c->right.get());
+        std::string t1 = infer(c->left.get()), t2 = infer(c->right.get());
+        if (!t1.empty() && !t2.empty()) {
+            const bool relational = c->op == "<" || c->op == ">" ||
+                                    c->op == "<=" || c->op == ">=";
+            bool num_ok = false;
+            if (is_numeric(t1) && is_numeric(t2)) {
+                // Constants may shrink against the typed side's range.
+                unsigned long long v; bool neg;
+                num_ok = (unbox_int_literal(c->left.get(), v, neg)
+                              ? (is_float_type(t2) || int_const_fits(t2, v, neg))
+                              : true)
+                      && (unbox_int_literal(c->right.get(), v, neg)
+                              ? (is_float_type(t1) || int_const_fits(t1, v, neg))
+                              : true)
+                      && (!is_int_type(t1) || !is_int_type(t2) ||
+                          common_numeric(t1, t2) != "" ||
+                          unbox_int_literal(c->left.get(), v, neg) ||
+                          unbox_int_literal(c->right.get(), v, neg));
+            }
+            if (relational) {
+                if (!num_ok)
+                    error("comparison requires numbers of compatible type", e->line, e->col);
+            } else if (t1 != t2 && !num_ok) {
+                error("== and != require operands of the same type", e->line, e->col);
+            }
+        }
         return "bool";
     }
     if (auto* an = dynamic_cast<And*>(e)) {
@@ -186,10 +415,22 @@ std::string Checker::infer(Expr* e) {
         std::string idx = infer(ix->index.get());
         if (obj.empty() || (!is_slice(obj) && !is_fixed_array(obj)))
             error("indexing a non-array value", e->line, e->col);
-        if (idx != "int") error("array index must be an int", e->line, e->col);
+        if (!is_int_type(idx)) error("array index must be an integer", e->line, e->col);
         return element_type(obj);
     }
     if (auto* ma = dynamic_cast<MemberAccess*>(e)) {
+        // Enum variant: the object is the enum *type* name (`Color.red`),
+        // not a variable. Detect it before the object-inference path.
+        if (auto* tv = dynamic_cast<Variable*>(ma->object.get())) {
+            auto eit = enums_.find(tv->name);
+            if (eit != enums_.end()) {
+                if (!is_enum_variant(tv->name, ma->member)) {
+                    error("unknown enum variant", e->line, e->col);
+                    return "";
+                }
+                return tv->name;
+            }
+        }
         std::string obj = infer(ma->object.get());
         auto it = structs_.find(obj);
         if (it == structs_.end()) {
@@ -206,9 +447,9 @@ std::string Checker::infer(Expr* e) {
         return sl->name;
     }
     if (auto* n = dynamic_cast<New*>(e)) {
-        if (infer(n->size.get()) != "int")
-            error("array size must be an int", e->line, e->col);
-        if (!is_primitive(n->base) && !structs_.count(n->base))
+        if (!is_int_type(infer(n->size.get())))
+            error("array size must be an integer", e->line, e->col);
+        if (!is_primitive(n->base) && !structs_.count(n->base) && !enums_.count(n->base))
             error("new of unknown element type", e->line, e->col);
         return n->base + "[]";
     }
@@ -232,11 +473,13 @@ std::string Checker::infer(Expr* e) {
 
 std::string Checker::bin_arith(Expr* l, Expr* r, int line, int col) {
     std::string lt = infer(l), rt = infer(r);
-    bool lnum = lt == "int" || lt == "float";
-    bool rnum = rt == "int" || rt == "float";
-    if (lnum && rnum) return (lt == "float" || rt == "float") ? "float" : "int";
-    error("binary operator requires two numbers", line, col);
-    return "";
+    if (lt.empty() || rt.empty()) return "";
+    std::string res = common_numeric(lt, rt);
+    if (res.empty()) {
+        error("binary operator requires two numbers of compatible type", line, col);
+        return "";
+    }
+    return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,13 +566,26 @@ void Checker::check_struct_lit(StructLiteral* sl) {
         return;
     }
     for (size_t i = 0; i < st.fields.size(); ++i) {
-        std::string t = infer(sl->args[i].get());
-        if (!assignable(st.fields[i].var_type, t))
+        if (!assignable_expr(st.fields[i].var_type, sl->args[i].get()))
             error("struct literal field type mismatch", sl->line, sl->col);
     }
 }
 
 std::string Checker::check_call(Call* c) {
+    // Explicit conversions are builtins: any numeric may be converted, and a
+    // constant argument is range-checked against the target type.
+    if (builtin_conversions().count(c->callee)) {
+        if (c->args.size() != 1)
+            error("conversion function expects one argument", c->line, c->col);
+        else {
+            std::string t = infer(c->args[0].get());
+            if (!is_numeric(t))
+                error("conversion requires a numeric argument", c->line, c->col);
+            else
+                constant_fits(conversion_target(c->callee), c->args[0].get());
+        }
+        return conversion_target(c->callee);
+    }
     auto it = funcs_.find(c->callee);
     if (it == funcs_.end()) {
         error("call to undefined function", c->line, c->col);
@@ -345,9 +601,10 @@ std::string Checker::check_call(Call* c) {
         if (p.is_ref) {
             if (!is_lvalue(c->args[i].get()))
                 error("ref parameter requires an lvalue argument", c->line, c->col);
+            if (is_enum_variant_expr(c->args[i].get()))
+                error("ref parameter cannot bind an enum variant", c->line, c->col);
         }
-        std::string t = infer(c->args[i].get());
-        if (!assignable(p.var_type, t))
+        if (!assignable_expr(p.var_type, c->args[i].get()))
             error("argument type mismatch in function call", c->line, c->col);
     }
     // Two ref parameters of one call must not alias the same variable:
@@ -382,9 +639,17 @@ void Checker::check_stmt(Stmt& s) {
     switch (s.kind) {
     case Stmt::Kind::Let: {
         std::string t = s.let.var_type;
-        if (t.empty()) t = infer(s.let.value.get());
-        else if (!assignable(t, infer(s.let.value.get())))
+        if (t.empty()) {
+            t = infer(s.let.value.get());
+            // An untyped integer literal over i32 max cannot be stored as int.
+            if (t == "int") {
+                unsigned long long v; bool neg;
+                if (unbox_int_literal(s.let.value.get(), v, neg))
+                    constant_fits("int", s.let.value.get());
+            }
+        } else if (!assignable_expr(t, s.let.value.get())) {
             error("let initialiser type mismatch", s.line, s.col);
+        }
         declare_var(s.let.name, t, s.line, s.col);
         break;
     }
@@ -426,12 +691,12 @@ void Checker::check_stmt(Stmt& s) {
     }
     case Stmt::Kind::Return: {
         if (!current_fn_) break; // top-level return not produced by the parser
-        std::string ret_ty = s.return_stmt->value ? infer(s.return_stmt->value.get()) : "";
+        Expr* rv = s.return_stmt->value.get();
         auto it = funcs_.find(*current_fn_);
-        if (it != funcs_.end() && !assignable(it->second.return_type, ret_ty))
+        if (it != funcs_.end() && !assignable_expr(it->second.return_type, rv))
             error("return value does not match function return type", s.line, s.col);
-        if (epoch_depth_ > 0 && s.return_stmt->value) {
-            int origin = arena_origin(s.return_stmt->value.get());
+        if (epoch_depth_ > 0 && rv) {
+            int origin = arena_origin(rv);
             if (origin >= epoch_depth_)
                 error("returning a value allocated inside an epoch", s.line, s.col);
         }
@@ -440,10 +705,11 @@ void Checker::check_stmt(Stmt& s) {
     case Stmt::Kind::Assign: {
         Assign* a = s.assign_stmt.get();
         std::string target_ty = infer(a->name.get());
-        std::string value_ty = infer(a->value.get());
-        if (a->op != "=" && target_ty != "int" && target_ty != "float")
+        if (is_enum_variant_expr(a->name.get()))
+            error("cannot assign to an enum variant", s.line, s.col);
+        if (a->op != "=" && !is_numeric(target_ty))
             error("compound assignment requires a numeric target", s.line, s.col);
-        if (!target_ty.empty() && !assignable(target_ty, value_ty))
+        if (!target_ty.empty() && !assignable_expr(target_ty, a->value.get()))
             error("cannot assign value of incompatible type", s.line, s.col);
         check_escapes_target(a->name.get(), a->value.get());
         break;
@@ -465,6 +731,8 @@ void Checker::check_stmt(Stmt& s) {
         break;
     case Stmt::Kind::StructDecl:
         break; // collected in pass 1
+    case Stmt::Kind::EnumDecl:
+        break; // collected in pass 1, which registers the enum variants
     case Stmt::Kind::Break:
     case Stmt::Kind::Continue:
         break;
@@ -489,7 +757,27 @@ bool Checker::run() {
                         SemaStruct{s->struct_decl->fields}).second)
                 error("redeclaration of struct", s->line, s->col);
             break;
+        case Stmt::Kind::EnumDecl: {
+            if (!s->enum_decl) break;
+            const EnumDecl* e = s->enum_decl.get();
+            if (!enums_.emplace(e->name, e->variants).second) {
+                error("redeclaration of enum", s->line, s->col);
+                break;
+            }
+            std::set<std::string> seen;
+            for (const std::string& v : e->variants)
+                if (!seen.insert(v).second)
+                    error("duplicate enum variant", s->line, s->col);
+            break;
+        }
         default:
+            break;
+        }
+    }
+    // Type/function/enum names share one namespace.
+    for (const auto& e : enums_) {
+        if (funcs_.count(e.first) || structs_.count(e.first)) {
+            error("enum name conflicts with an existing function or struct", 0, 0);
             break;
         }
     }
