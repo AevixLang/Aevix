@@ -34,11 +34,14 @@ aevix.exe
 *.swp
 *.swo
 
+# Agent config
+.obsidian/
+AGENTS.md
+
 # JSON
 *.json
 ast.json
 examples/
-notes/
 
 # Runtime artifacts written by example programs (write("out.txt", ...))
 out.txt
