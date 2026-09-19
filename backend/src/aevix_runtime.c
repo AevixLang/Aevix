@@ -220,6 +220,22 @@ void __aevix_double_to_str(double d, uint8_t** out_ptr, int32_t* out_len) {
     *out_len = m < 0 ? 0 : (m >= CAP ? CAP - 1 : (int32_t)m);
 }
 
+/* to_str(i64) / to_str(u64): renders a 64-bit integer in signed or unsigned
+ * form. The buffer is sized at 32 bytes (20 digits + sign + nul). */
+void __aevix_i64_to_str(int64_t n, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(32);
+    int m = snprintf((char*)buf, 32, "%lld", (long long)n);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (int32_t)m;
+}
+
+void __aevix_u64_to_str(uint64_t n, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(32);
+    int m = snprintf((char*)buf, 32, "%llu", (unsigned long long)n);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (int32_t)m;
+}
+
 /* substr(s, start, count): clamps the range to the slice and copies the chosen
  * segment into the arena. Out-of-range start yields an empty string. */
 void __aevix_substr(const uint8_t* s, int32_t len, int32_t start, int32_t count,

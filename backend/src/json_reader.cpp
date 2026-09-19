@@ -10,7 +10,7 @@
 
 // Version of the frontend -> backend AST JSON schema. The frontend stamps
 // every ast.json with this value; anything else is rejected up front.
-constexpr int SCHEMA_VERSION = 3;
+constexpr int SCHEMA_VERSION = 4;
 
 static std::shared_ptr<Expr> parse_expr(const json& j);
 
@@ -310,6 +310,15 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
             sd->fields.push_back(field);
         }
         stmt->struct_decl = sd;
+    }
+    else if (type == "EnumDecl") {
+        stmt->kind = Stmt::Kind::EnumDecl;
+        auto ed = std::make_shared<EnumDecl>();
+        ed->name = j["name"];
+        for (const auto& v : j["variants"]) {
+            ed->variants.push_back(v.get<std::string>());
+        }
+        stmt->enum_decl = ed;
     }
     else {
         return nullptr;

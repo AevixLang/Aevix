@@ -14,7 +14,7 @@ struct Expr {
 
 // Expressions
 struct Number : public Expr {
-    int value;
+    unsigned long long value;   // literals are non-negative (unary - wraps in Neg)
 };
 
 struct Float : public Expr {
@@ -194,8 +194,13 @@ struct StructDecl {
     std::vector<StructField> fields;
 };
 
+struct EnumDecl {
+    std::string name;
+    std::vector<std::string> variants;   // in declaration order
+};
+
 struct Stmt {
-    enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl, Break, Continue };
+    enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl, EnumDecl, Break, Continue };
     Kind kind;
     int line = 0;   // 1-based source line of the node, 0 if unknown
     int col = 0;    // 1-based source column of the node, 0 if unknown
@@ -212,6 +217,7 @@ struct Stmt {
     std::shared_ptr<FuncDecl> func_decl;
     std::shared_ptr<Call> call_stmt;
     std::shared_ptr<StructDecl> struct_decl;
+    std::shared_ptr<EnumDecl> enum_decl;
     Break break_stmt;
     Continue continue_stmt;
 };
