@@ -12,7 +12,7 @@ from typing import List, Union, Optional
 # exported JSON shape changes; the backend refuses files with a different
 # version, so a mismatch is caught at load time instead of crashing deep
 # inside the parser.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 def to_dict(obj):
     """
@@ -246,6 +246,12 @@ class StructDecl:
     name: str
     fields: list
     type: str = "StructDecl"
+
+@dataclass
+class EnumDecl:
+    name: str
+    variants: list
+    type: str = "EnumDecl"
 
 @dataclass
 class Import:

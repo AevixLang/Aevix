@@ -8,7 +8,7 @@ from lark import Transformer, Token, v_args
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
-    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, Import,
+    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, EnumDecl, Import,
     New, Epoch, Break, Continue
 )
 
@@ -184,12 +184,12 @@ class AevixTransformer(Transformer):
         return f"{base}[{size}]"
 
     def param_type(self, items):
-        kind = None
-        if items and isinstance(items[0], Token) and items[0].type in ("REF", "OUT"):
-            kind = items[0].type
+        is_ref = False
+        if items and isinstance(items[0], Token) and items[0].type == "REF":
+            is_ref = True
             items = items[1:]
         t = items[0]
-        return (kind, str(t) if not isinstance(t, str) else t)
+        return (is_ref, str(t) if not isinstance(t, str) else t)
 
     # ---- Statements ----
     def stmt(self, items):
@@ -303,9 +303,7 @@ class AevixTransformer(Transformer):
         is_ref = False
         var_type = None
         if len(items) > 1:
-            kind, var_type = items[1]
-            if kind == "REF":
-                is_ref = True
+            is_ref, var_type = items[1]
         return Param(name=name, var_type=var_type, is_ref=is_ref)
 
     # ---- Structs ----
@@ -318,6 +316,14 @@ class AevixTransformer(Transformer):
 
     def struct_field(self, items):
         return StructField(name=str(items[0]), var_type=items[1])
+
+    # ---- Enums ----
+    def enum_decl(self, items):
+        name, variants = str(items[0]), items[1] if len(items) > 1 else []
+        return EnumDecl(name=name, variants=variants)
+
+    def enum_variants(self, items):
+        return [str(i) for i in items]
 
     # ---- Program ----
     def start(self, items):

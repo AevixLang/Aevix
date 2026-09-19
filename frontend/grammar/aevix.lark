@@ -16,6 +16,7 @@ stmt: import_stmt
     | continue_stmt
     | func_decl
     | struct_decl
+    | enum_decl
     | epoch_stmt
 
 import_stmt: "import" STRING ";"
@@ -25,6 +26,9 @@ epoch_stmt: "epoch" block
 struct_decl: "struct" CNAME "{" struct_fields? "}"
 struct_fields: struct_field ("," struct_field)* ","?
 struct_field: CNAME ":" type_name
+
+enum_decl: "enum" CNAME "{" enum_variants? "}"
+enum_variants: CNAME ("," CNAME)* ","?
 
 func_decl: "func" CNAME "(" params ")" (":" type_name)? block
 params: (param ("," param)*)?
@@ -81,10 +85,23 @@ CMPOP: "==" | "!=" | "<" | ">" | "<=" | ">="
 type_name: array_type | scalar_type | CNAME
 array_type: (scalar_type | CNAME) "[" NUMBER? "]"
 scalar_type: T_INT | T_FLOAT | T_BOOL | T_STRING
+    | T_I8 | T_I16 | T_I32 | T_I64
+    | T_U8 | T_U16 | T_U32 | T_U64
+    | T_F32 | T_F64
 T_INT: "int"
 T_FLOAT: "float"
 T_BOOL: "bool"
 T_STRING: "string"
+T_I8: "i8"
+T_I16: "i16"
+T_I32: "i32"
+T_I64: "i64"
+T_U8: "u8"
+T_U16: "u16"
+T_U32: "u32"
+T_U64: "u64"
+T_F32: "f32"
+T_F64: "f64"
 REF: "ref"
 
 EQ: "="
@@ -97,7 +114,7 @@ BANG: "!"
 
 BOOL.1: "true" | "false"
 STRING: /"(?:[^"\\]|\\.)*"/
-CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|true\b|false\b|int\b|float\b|bool\b|string\b|new\b|import\b|epoch\b|break\b|continue\b|ref\b)[a-zA-Z_][a-zA-Z0-9_]*/
+CNAME: /(?!let\b|hot\b|print\b|if\b|else\b|while\b|for\b|in\b|return\b|func\b|struct\b|enum\b|true\b|false\b|int\b|float\b|bool\b|string\b|i8\b|i16\b|i32\b|i64\b|u8\b|u16\b|u32\b|u64\b|f32\b|f64\b|new\b|import\b|epoch\b|break\b|continue\b|ref\b)[a-zA-Z_][a-zA-Z0-9_]*/
 NUMBER: /[0-9]+/
 FLOAT: /[0-9]+\.[0-9]+/
 
