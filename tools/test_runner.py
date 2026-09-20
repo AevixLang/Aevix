@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quiet verbose runner: shows test name + status + percentage."""
+"""Quiet verbose runner: streams test results in real time."""
 import subprocess
 import sys
 import re
@@ -7,40 +7,35 @@ import re
 def main():
     args = sys.argv[1:]
 
-    # collect count first
-    collect = subprocess.run(
-        [sys.executable, "-m", "pytest"] + args + ["--co", "-q"],
-        capture_output=True, text=True
-    )
-    collected = len([l for l in collect.stdout.splitlines() if "::" in l])
-
-    # run tests
-    result = subprocess.run(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "pytest"] + args + ["-v", "--tb=short"],
-        capture_output=True, text=True
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1
     )
 
-    idx = 0
-    failed = []
-    for line in result.stdout.splitlines():
+    tests = []
+
+    for line in proc.stdout:
+        line = line.rstrip()
         m = re.match(r"(.+?)::(\S+)\s+(PASSED|FAILED|ERROR)", line)
         if m:
-            idx += 1
             name = m.group(2)
             ok = m.group(3) == "PASSED"
-            pct = round(idx / collected * 100)
-            tag = "ok" if ok else "FAIL"
-            print(f"  [{tag}] {name}  ({pct}%)")
-            if not ok:
-                failed.append(name)
+            tests.append((name, ok))
+            tag = "\033[32mok\033[0m" if ok else "\033[31mFAIL\033[0m"
+            print(f"  {tag}  {name}")
+            sys.stdout.flush()
 
+    proc.wait()
+
+    total = len(tests)
+    failed = [name for name, ok in tests if not ok]
     print()
     if failed:
-        print(f"Failed ({len(failed)}/{collected}): {', '.join(failed)}")
-        print(result.stderr[-2000:] if result.stderr else "")
+        print(f"\033[31mFailed\033[0m ({len(failed)}/{total}): {', '.join(failed)}")
         sys.exit(1)
     else:
-        print(f"All {collected} tests passed.")
+        print(f"\033[32mAll {total} tests passed.\033[0m")
 
 if __name__ == "__main__":
     main()
