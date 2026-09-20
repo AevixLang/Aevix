@@ -219,6 +219,27 @@ private:
         return s;
     }
 
+    // Known builtin functions and their return types.
+    // These are not declared via func — they are provided by the runtime.
+    static const std::map<std::string, std::string>& builtins() {
+        static const std::map<std::string, std::string> m = {
+            {"len",    "int"},
+            {"argc",   "int"},
+            {"arg",    "string"},
+            {"read",   "string"},
+            {"write",  "bool"},
+            {"input",  "string"},
+            {"to_str", "string"},
+            {"substr", "string"},
+            {"split",  "string[]"},
+            {"min",    "int"},
+            {"max",    "int"},
+            {"abs",    "int"},
+            {"exit",   ""},
+        };
+        return m;
+    }
+
     static const std::string conversion_target(const std::string& name) {
         if (name == "to_int") return "int";
         if (name == "to_float") return "float";
@@ -454,10 +475,12 @@ std::string Checker::infer(Expr* e) {
     if (auto* ix = dynamic_cast<Index*>(e)) {
         std::string obj = infer(ix->object.get());
         std::string idx = infer(ix->index.get());
-        if (obj.empty() || (!is_slice(obj) && !is_fixed_array(obj)))
+        // Strings are i8 slices and support indexing.
+        bool indexable = is_slice(obj) || is_fixed_array(obj) || obj == "string";
+        if (obj.empty() || !indexable)
             error("indexing a non-array value", e->line, e->col);
         if (!is_int_type(idx)) error("array index must be an integer", e->line, e->col);
-        return element_type(obj);
+        return obj == "string" ? "int" : element_type(obj);
     }
     if (auto* ma = dynamic_cast<MemberAccess*>(e)) {
         // Enum variant: the object is the enum *type* name (`Color.red`),
@@ -638,6 +661,11 @@ std::string Checker::check_call(Call* c) {
                 constant_fits(conversion_target(c->callee), c->args[0].get());
         }
         return conversion_target(c->callee);
+    }
+    // Known runtime builtins — accept without declaration.
+    auto bi = builtins().find(c->callee);
+    if (bi != builtins().end()) {
+        return bi->second;
     }
     auto it = funcs_.find(c->callee);
     if (it == funcs_.end()) {
