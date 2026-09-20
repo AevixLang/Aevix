@@ -303,3 +303,11 @@ void __aevix_split(const uint8_t* s, int32_t slen, const uint8_t* sep, int32_t s
     *out_ptr = (uint8_t*)arr;
     *out_len = count;
 }
+
+/* ------------------------------------------------------------------ */
+/* rand(max) -> int: random int in [0, max)                          */
+/* ------------------------------------------------------------------ */
+int32_t aevix_rand(int32_t max) {
+    if (max <= 0) return 0;
+    return (int32_t)(rand() % (unsigned)max);
+}

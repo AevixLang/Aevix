@@ -188,6 +188,10 @@ void CodeGenerator::build_conv_runtime() {
     // out_ptr receives a string[] slice: { string*, i32 } in arena memory.
     auto split_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
     split_func = llvm::Function::Create(split_ft, llvm::Function::ExternalLinkage, "__aevix_split", module.get());
+
+    // aevix_rand(i32 max) -> i32
+    auto rand_ft = llvm::FunctionType::get(i32, {i32}, false);
+    rand_func = llvm::Function::Create(rand_ft, llvm::Function::ExternalLinkage, "aevix_rand", module.get());
 }
 
 /**
@@ -1515,6 +1519,14 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto dead = llvm::BasicBlock::Create(*context, "exit.dead", builder->GetInsertBlock()->getParent());
             builder->SetInsertPoint(dead);
             return nullptr;
+        }
+
+        // rand(max) -> int: random int in [0, max)
+        if (call->callee == "rand" && call->args.size() == 1) {
+            auto v = generate_expr(call->args[0]);
+            if (!v) return nullptr;
+            if (!v->getType()->isIntegerTy(32)) error("rand() requires an integer max value");
+            return builder->CreateCall(rand_func, {v}, "rand");
         }
 
         // read(fn) -> string: whole file as an arena-backed string.

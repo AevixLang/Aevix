@@ -235,6 +235,7 @@ private:
             {"min",    "int"},
             {"max",    "int"},
             {"abs",    "int"},
+            {"rand",   "int"},
             {"exit",   ""},
         };
         return m;

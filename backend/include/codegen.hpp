@@ -80,6 +80,8 @@ private:
     llvm::Function* u64_to_str_func;
     llvm::Function* substr_func;
     llvm::Function* split_func;
+
+    llvm::Function* rand_func;
     void build_conv_runtime();
 
     // Escape-checking for epochs: every open-array variable remembers the
