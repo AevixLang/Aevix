@@ -14,21 +14,35 @@ def main():
     )
 
     tests = []
+    total = 0
 
     for line in proc.stdout:
         line = line.rstrip()
+
+        # parse total from "N selected" or "collected N items"
+        m_sel = re.search(r"(\d+) selected", line)
+        if m_sel:
+            total = int(m_sel.group(1))
+            continue
+        if total == 0:
+            m_col = re.search(r"collected (\d+) items", line)
+            if m_col:
+                total = int(m_col.group(1))
+                continue
+
         m = re.match(r"(.+?)::(\S+)\s+(PASSED|FAILED|ERROR)", line)
         if m:
             name = m.group(2)
             ok = m.group(3) == "PASSED"
             tests.append((name, ok))
+            idx = len(tests)
+            pct = round(idx / total * 100) if total else 0
             tag = "\033[32mok\033[0m" if ok else "\033[31mFAIL\033[0m"
-            print(f"  {tag}  {name}")
+            print(f"  {tag}  {name}  ({pct}%)")
             sys.stdout.flush()
 
     proc.wait()
 
-    total = len(tests)
     failed = [name for name, ok in tests if not ok]
     print()
     if failed:
