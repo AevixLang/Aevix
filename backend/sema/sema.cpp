@@ -6,6 +6,7 @@
 // Exit code: 0 on success, 1 when any diagnostic was emitted.
 // ============================================================
 #include "json_reader.hpp"
+#include "diagnostic.hpp"
 
 #include <iostream>
 #include <map>
@@ -135,10 +136,13 @@ public:
     explicit Checker(Program& program) : program_(program) {}
 
     bool run();
+    void set_file(const std::string& f) { current_file_ = f; }
+    const DiagnosticCollector& diagnostics() const { return diags_; }
 
 private:
     Program& program_;
-    bool failed_ = false;
+    DiagnosticCollector diags_;
+    std::string current_file_ = "input.aev";
 
     std::map<std::string, SemaFn> funcs_;
     std::map<std::string, SemaStruct> structs_;
@@ -333,11 +337,7 @@ bool Checker::assignable_expr(const std::string& dest, Expr* e) {
 }
 
 void Checker::error(const char* msg, int line, int col) {
-    failed_ = true;
-    std::cerr << "error: " << msg;
-    if (line > 0)
-        std::cerr << " (line " << line << ", column " << col << ")";
-    std::cerr << "\n";
+    diags_.error(msg, current_file_, line, col);
 }
 
 std::string Checker::lookup_var(const std::string& name, int line, int col) {
@@ -877,15 +877,18 @@ bool Checker::run() {
     scopes_.push_back({});
     for (auto& s : program_.body) check_stmt(*s);
     scopes_.pop_back();
-    return !failed_;
+    diags_.emit();
+    return !diags_.has_errors();
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::cerr << "usage: aevix-sema <ast.json>\n";
+    if (argc < 2) {
+        std::cerr << "usage: aevix-sema <ast.json> [source.aev]\n";
         return 2;
     }
     Program program = parse_json(argv[1]); // exits on parse/schema failure
     Checker checker(program);
+    if (argc >= 3)
+        checker.set_file(argv[2]);
     return checker.run() ? 0 : 1;
 }

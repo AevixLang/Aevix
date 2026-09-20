@@ -194,11 +194,12 @@ void CodeGenerator::build_conv_runtime() {
  * Throws a runtime error to stop IR emission upon discovering a semantic fault.
  */
 void CodeGenerator::error(const std::string& msg) {
+    std::string formatted = "error: " + msg;
     if (current_line > 0) {
-        throw std::runtime_error(msg + " at line " + std::to_string(current_line) +
-                                 ", column " + std::to_string(current_col));
+        formatted += "\n  --> " + current_file + ":" +
+                     std::to_string(current_line) + ":" + std::to_string(current_col);
     }
-    throw std::runtime_error(msg);
+    throw std::runtime_error(formatted);
 }
 
 void CodeGenerator::push_scope() {

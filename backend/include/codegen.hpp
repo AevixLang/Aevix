@@ -103,6 +103,7 @@ private:
     // Source position of the current expression/statement, used by error().
     int current_line = 0;
     int current_col = 0;
+    std::string current_file = "input.aev";
 
     void push_scope();
     void pop_scope();

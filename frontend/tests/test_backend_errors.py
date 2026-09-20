@@ -8,7 +8,7 @@ from test_arrays import compile_only
 
 
 def _assert_pos(error_text, message, line, col):
-    m = re.search(r"{}\s*at line (\d+), column (\d+)".format(re.escape(message)), error_text)
+    m = re.search(r"{}\s*\n\s*-->.*:(\d+):(\d+)".format(re.escape(message)), error_text)
     assert m, f"no position reported in: {error_text!r}"
     assert int(m.group(1)) == line, f"wrong line in {error_text!r}"
     assert int(m.group(2)) == col, f"wrong column in {error_text!r}"
@@ -42,7 +42,7 @@ def test_nested_call_reports_arg_position():
     ec, err = compile_only('hot {\n    print arg(0, 1);\n}\n')
     assert ec != 0
     assert "arg" in err
-    assert "at line 2, column " in err
+    assert "--> input.aev:2:" in err
 
 
 def test_let_var_type_error_position():
