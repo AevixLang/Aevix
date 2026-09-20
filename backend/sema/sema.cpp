@@ -236,6 +236,15 @@ private:
             {"max",    "int"},
             {"abs",    "int"},
             {"rand",   "int"},
+            {"trim",   "string"},
+            {"contains", "int"},
+            {"replace", "string"},
+            {"upper",  "string"},
+            {"lower",  "string"},
+            {"startswith", "int"},
+            {"endswith", "int"},
+            {"char_at", "string"},
+            {"join",   "string"},
             {"exit",   ""},
         };
         return m;

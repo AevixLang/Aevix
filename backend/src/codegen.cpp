@@ -192,6 +192,43 @@ void CodeGenerator::build_conv_runtime() {
     // aevix_rand(i32 max) -> i32
     auto rand_ft = llvm::FunctionType::get(i32, {i32}, false);
     rand_func = llvm::Function::Create(rand_ft, llvm::Function::ExternalLinkage, "aevix_rand", module.get());
+
+    // String builtins
+    // __aevix_trim(ptr s, i32 len, ptr* out, i32* out_len)
+    auto trim_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, pp_ty, pp_ty}, false);
+    trim_func = llvm::Function::Create(trim_ft, llvm::Function::ExternalLinkage, "__aevix_trim", module.get());
+
+    // __aevix_contains(ptr hay, i32 hlen, ptr ndl, i32 nlen) -> i32
+    auto contains_ft = llvm::FunctionType::get(i32, {ptr_ty, i32, ptr_ty, i32}, false);
+    contains_func = llvm::Function::Create(contains_ft, llvm::Function::ExternalLinkage, "__aevix_contains", module.get());
+
+    // __aevix_replace(ptr s, i32 slen, ptr old, i32 olen, ptr nw, i32 nlen, ptr* out, i32* out_len)
+    auto replace_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
+    replace_func = llvm::Function::Create(replace_ft, llvm::Function::ExternalLinkage, "__aevix_replace", module.get());
+
+    // __aevix_upper(ptr s, i32 len, ptr* out, i32* out_len)
+    auto upper_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, pp_ty, pp_ty}, false);
+    upper_func = llvm::Function::Create(upper_ft, llvm::Function::ExternalLinkage, "__aevix_upper", module.get());
+
+    // __aevix_lower(ptr s, i32 len, ptr* out, i32* out_len)
+    auto lower_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, pp_ty, pp_ty}, false);
+    lower_func = llvm::Function::Create(lower_ft, llvm::Function::ExternalLinkage, "__aevix_lower", module.get());
+
+    // __aevix_startswith(ptr s, i32 slen, ptr pre, i32 plen) -> i32
+    auto startswith_ft = llvm::FunctionType::get(i32, {ptr_ty, i32, ptr_ty, i32}, false);
+    startswith_func = llvm::Function::Create(startswith_ft, llvm::Function::ExternalLinkage, "__aevix_startswith", module.get());
+
+    // __aevix_endswith(ptr s, i32 slen, ptr suf, i32 slen2) -> i32
+    auto endswith_ft = llvm::FunctionType::get(i32, {ptr_ty, i32, ptr_ty, i32}, false);
+    endswith_func = llvm::Function::Create(endswith_ft, llvm::Function::ExternalLinkage, "__aevix_endswith", module.get());
+
+    // __aevix_char_at(ptr s, i32 slen, i32 idx, ptr* out, i32* out_len)
+    auto char_at_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, i32, pp_ty, pp_ty}, false);
+    char_at_func = llvm::Function::Create(char_at_ft, llvm::Function::ExternalLinkage, "__aevix_char_at", module.get());
+
+    // __aevix_join(ptr sep, i32 seplen, ptr arr, i32 count, ptr* out, i32* out_len)
+    auto join_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
+    join_func = llvm::Function::Create(join_ft, llvm::Function::ExternalLinkage, "__aevix_join", module.get());
 }
 
 /**
@@ -1527,6 +1564,151 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!v) return nullptr;
             if (!v->getType()->isIntegerTy(32)) error("rand() requires an integer max value");
             return builder->CreateCall(rand_func, {v}, "rand");
+        }
+
+        // trim(s) -> string: strip leading/trailing whitespace
+        if (call->callee == "trim" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("trim() requires a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "trim.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "trim.sl");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "trim.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "trim.l");
+            builder->CreateCall(trim_func, {sp, sl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "trim.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "trim.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // contains(haystack, needle) -> int: 1 if needle found
+        if (call->callee == "contains" && call->args.size() == 2) {
+            auto hv = generate_expr(call->args[0]);
+            auto nv = generate_expr(call->args[1]);
+            if (!hv || !nv) return nullptr;
+            if (!is_string_slice(hv->getType())) error("contains() arg1 must be a string");
+            if (!is_string_slice(nv->getType())) error("contains() arg2 must be a string");
+            auto hp = builder->CreateExtractValue(hv, 0, "c.hp");
+            auto hl = builder->CreateExtractValue(hv, 1, "c.hl");
+            auto np = builder->CreateExtractValue(nv, 0, "c.np");
+            auto nl = builder->CreateExtractValue(nv, 1, "c.nl");
+            return builder->CreateCall(contains_func, {hp, hl, np, nl}, "contains");
+        }
+
+        // replace(s, old, new) -> string: replace all occurrences
+        if (call->callee == "replace" && call->args.size() == 3) {
+            auto sv = generate_expr(call->args[0]);
+            auto ov = generate_expr(call->args[1]);
+            auto nv = generate_expr(call->args[2]);
+            if (!sv || !ov || !nv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("replace() arg1 must be a string");
+            if (!is_string_slice(ov->getType())) error("replace() arg2 must be a string");
+            if (!is_string_slice(nv->getType())) error("replace() arg3 must be a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "r.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "r.sl");
+            auto op = builder->CreateExtractValue(ov, 0, "r.op");
+            auto ol = builder->CreateExtractValue(ov, 1, "r.ol");
+            auto np = builder->CreateExtractValue(nv, 0, "r.np");
+            auto nl = builder->CreateExtractValue(nv, 1, "r.nl");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "r.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "r.l");
+            builder->CreateCall(replace_func, {sp, sl, op, ol, np, nl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "r.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "r.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // upper(s) -> string
+        if (call->callee == "upper" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("upper() requires a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "u.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "u.sl");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "u.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "u.l");
+            builder->CreateCall(upper_func, {sp, sl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "u.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "u.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // lower(s) -> string
+        if (call->callee == "lower" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("lower() requires a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "lo.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "lo.sl");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "lo.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "lo.l");
+            builder->CreateCall(lower_func, {sp, sl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "lo.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "lo.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // startswith(s, prefix) -> int
+        if (call->callee == "startswith" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto pv = generate_expr(call->args[1]);
+            if (!sv || !pv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("startswith() arg1 must be a string");
+            if (!is_string_slice(pv->getType())) error("startswith() arg2 must be a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "sw.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "sw.sl");
+            auto pp = builder->CreateExtractValue(pv, 0, "sw.pp");
+            auto pl = builder->CreateExtractValue(pv, 1, "sw.pl");
+            return builder->CreateCall(startswith_func, {sp, sl, pp, pl}, "startswith");
+        }
+
+        // endswith(s, suffix) -> int
+        if (call->callee == "endswith" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto pv = generate_expr(call->args[1]);
+            if (!sv || !pv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("endswith() arg1 must be a string");
+            if (!is_string_slice(pv->getType())) error("endswith() arg2 must be a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "ew.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "ew.sl");
+            auto pp = builder->CreateExtractValue(pv, 0, "ew.pp");
+            auto pl = builder->CreateExtractValue(pv, 1, "ew.pl");
+            return builder->CreateCall(endswith_func, {sp, sl, pp, pl}, "endswith");
+        }
+
+        // char_at(s, index) -> string
+        if (call->callee == "char_at" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto iv = generate_expr(call->args[1]);
+            if (!sv || !iv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("char_at() arg1 must be a string");
+            if (!iv->getType()->isIntegerTy(32)) error("char_at() arg2 must be an int");
+            auto sp = builder->CreateExtractValue(sv, 0, "ca.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "ca.sl");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "ca.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "ca.l");
+            builder->CreateCall(char_at_func, {sp, sl, iv, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "ca.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "ca.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // join(sep, arr) -> string: join string array with separator
+        if (call->callee == "join" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto av = generate_expr(call->args[1]);
+            if (!sv || !av) return nullptr;
+            if (!is_string_slice(sv->getType())) error("join() arg1 must be a string (separator)");
+            auto sp = builder->CreateExtractValue(sv, 0, "j.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "j.sl");
+            auto ap = builder->CreateExtractValue(av, 0, "j.ap");
+            auto al = builder->CreateExtractValue(av, 1, "j.al");
+            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "j.p");
+            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "j.l");
+            builder->CreateCall(join_func, {sp, sl, ap, al, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "j.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "j.rl");
+            return make_string_slice(rp, rl);
         }
 
         // read(fn) -> string: whole file as an arena-backed string.
