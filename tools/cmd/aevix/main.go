@@ -317,6 +317,7 @@ func runFrontend(python, src, out string, quiet bool) error {
 	}
 	if _, err := os.Stat(feExe); err == nil {
 		cmd := exec.Command(feExe, src, "-o", out)
+		cmd.Dir = workDir
 		if quiet {
 			cmd.Stdout = io.Discard
 		} else {

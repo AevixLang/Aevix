@@ -18,6 +18,9 @@ public:
 class ImportResolver {
 public:
     Program load(const std::string& path) {
+        if (!std::filesystem::exists(path)) {
+            throw ImportError("file not found: " + path);
+        }
         std::string real_path = std::filesystem::canonical(path).string();
         Program main_prog = parse_file(real_path);
 
