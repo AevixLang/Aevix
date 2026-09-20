@@ -311,6 +311,21 @@ func venvPython() string {
 }
 
 func runFrontend(python, src, out string, quiet bool) error {
+	feExe := filepath.Join(rootDir, "backend", "build", "aevix-frontend")
+	if runtime.GOOS == "windows" {
+		feExe += ".exe"
+	}
+	if _, err := os.Stat(feExe); err == nil {
+		cmd := exec.Command(feExe, src, "-o", out)
+		if quiet {
+			cmd.Stdout = io.Discard
+		} else {
+			cmd.Stdout = os.Stdout
+		}
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	// fallback to Python frontend
 	cmd := exec.Command(python, "-m", "src.main", src, "-o", out)
 	cmd.Dir = filepath.Join(rootDir, "frontend")
 	if quiet {
