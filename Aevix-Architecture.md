@@ -57,7 +57,7 @@ Offers superior concurrency for testing and fast compilation of the toolchain, p
 
 ### Rapid Prototyping Flow
 When adding a new language feature:
-`Update .lark grammar` $\rightarrow$ `Add AST node in ast.py` $\rightarrow$ `Implement LLVM logic in codegen.cpp` $\rightarrow$ `Verify with aevix test`.
+`Update .lark grammar` $\rightarrow$ `Add AST node in ast.py` $\rightarrow$ `Implement LLVM logic in codegen.cpp` $\rightarrow$ `Verify with aevix selftest`.
 
 ---
 

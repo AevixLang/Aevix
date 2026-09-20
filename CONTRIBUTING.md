@@ -5,7 +5,7 @@ the project healthy.
 
 ## The test contract
 
-`aevix test` is the single gate before any merge into `dev`.
+`aevix selftest` is the single gate before any merge into `dev`.
 
 - **A feature without a test does not exist.** If you add a language
   feature, built-in, or behavioural change, there must be at least one
@@ -16,7 +16,7 @@ the project healthy.
   removed. If the language changes to allow the previously-rejected
   pattern, the test must be updated to reflect the new behaviour — not
   deleted.
-- **`aevix test` must be green before every merge.** No exceptions,
+- **`aevix selftest` must be green before every merge.** No exceptions,
   including hotfixes.
 
 ## How we work
@@ -56,7 +56,7 @@ messages.
 
 ```bash
 git switch dev
-aevix test                                  # everything must be green
+aevix selftest                              # everything must be green
 
 git switch main
 git merge --no-ff dev -m "release 0.x.x: short summary"
@@ -82,7 +82,7 @@ visible in `git log --graph`.
 `corpus/*.aev` paired with a `corpus/*.golden` is built through the full
 pipeline (frontend -> backend -> llvm -> clang) and run with **no arguments
 and empty stdin**; its stdout must exactly match the `.golden` file
-(checked by `frontend/tests/test_golden.py`, part of `aevix test`). Files
+(checked by `frontend/tests/test_golden.py`, part of `aevix selftest`). Files
 without a `.golden` are ignored by the test.
 
 If your change intentionally alters output, regenerate the goldens in the
@@ -98,4 +98,4 @@ venv/bin/python tools/gen_golden.py
 (2000-variable chain) source through the pipeline, prints per-stage
 timings, and appends a dated baseline row to `notes/benchmarks.md`
 (local, Git-ignored). It is run manually when evaluating parser/codegen
-performance — never by `aevix test`.
+performance — never by `aevix selftest`.

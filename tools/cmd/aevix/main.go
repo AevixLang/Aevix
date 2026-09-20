@@ -443,13 +443,14 @@ func main() {
 			fmt.Println("❌ Run failed:", err)
 			os.Exit(1)
 		}
-	case "test":
+	case "selftest":
 		python := venvPython()
 		if _, err := os.Stat(python); err != nil {
 			fmt.Fprintln(os.Stderr, "venv not found. Please run `python bootstrap.py` first")
 			os.Exit(1)
 		}
-		args := []string{"-m", "pytest", filepath.Join("frontend", "tests"), "-q"}
+		runner := filepath.Join(rootDir, "tools", "test_runner.py")
+		args := []string{runner}
 		args = append(args, cmdArgs...)
 		if err := runTool(python, args...); err != nil {
 			fmt.Println("❌ Tests failed:", err)
@@ -511,7 +512,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  build <file.aev> [-v] [--stage <name>]  Compile a .aev file into an executable")
 	fmt.Fprintln(os.Stderr, "  run <file.aev> [-v] [args...]    Build, then run with the given program arguments")
-	fmt.Fprintln(os.Stderr, "  test [pytest args]    Run the full backend integration test suite")
-	fmt.Fprintln(os.Stderr, "  bench                 Time parse/backend/llc/link and save a baseline to notes/benchmarks.md")
-	fmt.Fprintln(os.Stderr, "  clean                 Remove generated build artifacts")
+	fmt.Fprintln(os.Stderr, "  selftest [pytest args]  Run the compiler internal test suite")
+	fmt.Fprintln(os.Stderr, "  bench                   Time parse/backend/llc/link and save a baseline to notes/benchmarks.md")
+	fmt.Fprintln(os.Stderr, "  clean                   Remove generated build artifacts")
 }

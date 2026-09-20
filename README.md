@@ -82,7 +82,7 @@ Once bootstrapped, you can use the `aevix` CLI to build and run your programs:
 ./aevix run examples/test.aev alpha beta
 
 # Run the full integration test suite
-./aevix test
+./aevix selftest
 
 # Clean artifacts
 ./aevix clean
