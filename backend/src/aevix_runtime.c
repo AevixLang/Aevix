@@ -453,3 +453,11 @@ void __aevix_join(const uint8_t* sep, int32_t seplen,
     *out_ptr = buf;
     *out_len = total;
 }
+
+/* assert(cond): if cond is 0, print error and exit(1) */
+void aevix_assert(int32_t cond) {
+    if (!cond) {
+        fprintf(stderr, "Assertion failed\n");
+        exit(1);
+    }
+}

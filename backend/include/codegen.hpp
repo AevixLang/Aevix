@@ -91,6 +91,7 @@ private:
     llvm::Function* endswith_func;
     llvm::Function* char_at_func;
     llvm::Function* join_func;
+    llvm::Function* assert_func;
     void build_conv_runtime();
 
     // Escape-checking for epochs: every open-array variable remembers the

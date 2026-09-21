@@ -245,6 +245,7 @@ private:
             {"endswith", "int"},
             {"char_at", "string"},
             {"join",   "string"},
+            {"assert", ""},
             {"exit",   ""},
         };
         return m;

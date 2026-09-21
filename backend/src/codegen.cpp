@@ -229,6 +229,10 @@ void CodeGenerator::build_conv_runtime() {
     // __aevix_join(ptr sep, i32 seplen, ptr arr, i32 count, ptr* out, i32* out_len)
     auto join_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
     join_func = llvm::Function::Create(join_ft, llvm::Function::ExternalLinkage, "__aevix_join", module.get());
+
+    // aevix_assert(i32 cond)
+    auto assert_ft = llvm::FunctionType::get(void_ty, {i32}, false);
+    assert_func = llvm::Function::Create(assert_ft, llvm::Function::ExternalLinkage, "aevix_assert", module.get());
 }
 
 /**
@@ -1544,6 +1548,19 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             merphi->addIncoming(empt, bad);
             merphi->addIncoming(real, ok);
             return merged;
+        }
+
+        // assert(cond): if false, print error and exit(1)
+        if (call->callee == "assert" && call->args.size() == 1) {
+            auto v = generate_expr(call->args[0]);
+            if (!v) return nullptr;
+            llvm::Value* cond = v;
+            if (cond->getType()->isIntegerTy(1))
+                cond = builder->CreateZExt(cond, builder->getInt32Ty(), "assert.ext");
+            else if (!cond->getType()->isIntegerTy(32))
+                error("assert() requires an integer or bool condition");
+            builder->CreateCall(assert_func, {cond});
+            return nullptr;
         }
 
         // exit(n): terminate the program with a status code.
