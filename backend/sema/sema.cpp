@@ -161,6 +161,7 @@ private:
 
     const std::string* current_fn_ = nullptr;
     int loop_depth_ = 0; // tracks nesting inside for/while/for-in loops
+    int hot_depth_ = 0;  // tracks nesting inside hot {} blocks
 
     static bool is_primitive(const std::string& t) {
         return t == "bool" || t == "string" || is_numeric(t);
@@ -834,10 +835,14 @@ void Checker::check_stmt(Stmt& s) {
         break;
     }
     case Stmt::Kind::Epoch:
+        if (hot_depth_ > 0)
+            error("epoch inside hot region defeats L1 cache pinning", s.line, s.col);
         check_epoch(s.epoch);
         break;
     case Stmt::Kind::Hot:
+        hot_depth_++;
         check_block(s.hot.body);
+        hot_depth_--;
         break;
     case Stmt::Kind::Print:
         for (auto& a : s.print.args) infer(a.get());

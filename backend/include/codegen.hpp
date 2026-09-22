@@ -50,6 +50,10 @@ private:
     // the condition block. Empty when not inside a loop -> break/continue errors.
     std::vector<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>> loop_ctx;
 
+    // Hot region depth: > 0 when inside a hot {} block. Drives LLVM function
+    // attributes and loop optimization metadata.
+    int hot_depth_ = 0;
+
     // Slice { ptr, len }: the single representation of open arrays (int[]).
     // Keyed by the base type string ("int", "float", "bool", struct name).
     std::map<std::string, llvm::StructType*> slice_types;
@@ -272,5 +276,8 @@ public:
     llvm::Value* generate_logical_and(const And& and_);
     llvm::Value* generate_logical_or(const Or& or_);
     bool block_has_terminator(llvm::BasicBlock* bb);
+    // Attach loop optimization metadata (vectorize, unroll) to a back-edge
+    // branch when inside a hot region.
+    void attach_hot_loop_metadata(llvm::Instruction* br);
     void finalize();
 };

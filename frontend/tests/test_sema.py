@@ -584,3 +584,39 @@ def test_sema_accepts_valid_builtin_usage():
         '    print argc();\n'
         '    print arg(0);\n'
         '}')
+
+
+# ---------------------------------------------------------------------------
+# 1.8 — hot region: epoch inside hot is rejected
+# ---------------------------------------------------------------------------
+
+def test_sema_rejects_epoch_inside_hot():
+    err = sema_rejected(
+        "func main() {\n"
+        "    hot {\n"
+        "        epoch {\n"
+        "            let tmp = new int[3];\n"
+        "        }\n"
+        "    }\n"
+        "}")
+    assert "epoch inside hot" in err
+
+
+def test_sema_accepts_hot_without_epoch():
+    sema_accepted(
+        "func main() {\n"
+        "    hot {\n"
+        "        let x = 1;\n"
+        "        print x;\n"
+        "    }\n"
+        "}")
+
+
+def test_sema_accepts_epoch_outside_hot():
+    sema_accepted(
+        "func main() {\n"
+        "    epoch {\n"
+        "        let tmp = new int[3];\n"
+        "        print tmp[0];\n"
+        "    }\n"
+        "}")

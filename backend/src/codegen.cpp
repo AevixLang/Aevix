@@ -2397,8 +2397,37 @@ void CodeGenerator::generate_assign(const Assign& a) {
     builder->CreateStore(val, alloc);
 }
 
+void CodeGenerator::attach_hot_loop_metadata(llvm::Instruction* br) {
+    if (hot_depth_ == 0 || !br) return;
+    // Build !llvm.loop metadata that enables vectorization and unrolling.
+    auto* ctx = &*context;
+    llvm::Metadata* loop_id_args[] = {
+        llvm::MDNode::getDistinct(*ctx, {}),
+        llvm::MDString::get(*ctx, "llvm.loop.vectorize.enable"),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::getTrue(
+            llvm::Type::getInt1Ty(*ctx))),
+        llvm::MDString::get(*ctx, "llvm.loop.vectorize.width"),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(*ctx), 4)),
+        llvm::MDString::get(*ctx, "llvm.loop.unroll.count"),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(*ctx), 4)),
+    };
+    llvm::MDNode* loop_id = llvm::MDNode::getDistinct(*ctx, loop_id_args);
+    // First operand is a self-reference.
+    loop_id->replaceOperandWith(0, loop_id);
+    br->setMetadata(llvm::LLVMContext::MD_loop, loop_id);
+}
+
 void CodeGenerator::generate_hot(const Hot& hot) {
+    hot_depth_++;
+    // Mark the enclosing function with the LLVM "hot" attribute so the
+    // optimizer applies aggressive inlining, unrolling and vectorization.
+    if (auto* fn = builder->GetInsertBlock()->getParent()) {
+        fn->addFnAttr(llvm::Attribute::Hot);
+    }
     for (const auto& stmt : hot.body) generate_stmt(stmt);
+    hot_depth_--;
 }
 
 void CodeGenerator::generate_epoch(const Epoch& ep) {
@@ -2689,7 +2718,10 @@ void CodeGenerator::generate_while(const While& w) {
     loop_ctx.push_back({merge_block, cond_block});
     generate_block(w.body);
     loop_ctx.pop_back();
-    if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(cond_block);
+    if (!block_has_terminator(builder->GetInsertBlock())) {
+        auto* br = builder->CreateBr(cond_block);
+        attach_hot_loop_metadata(br);
+    }
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
@@ -2723,7 +2755,10 @@ void CodeGenerator::generate_for(const For& f) {
 
     builder->SetInsertPoint(step_block);
     if (f.step) generate_stmt(f.step);
-    if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(cond_block);
+    if (!block_has_terminator(builder->GetInsertBlock())) {
+        auto* br = builder->CreateBr(cond_block);
+        attach_hot_loop_metadata(br);
+    }
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
@@ -2791,7 +2826,10 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     builder->SetInsertPoint(step_block);
     auto inext = builder->CreateAdd(icur, builder->getInt32(1), "forin.i.next");
     builder->CreateStore(inext, i);
-    builder->CreateBr(cond_block);
+    {
+        auto* br = builder->CreateBr(cond_block);
+        attach_hot_loop_metadata(br);
+    }
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
