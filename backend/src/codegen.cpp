@@ -102,6 +102,16 @@ void CodeGenerator::build_arena_runtime() {
     // __aevix_str_eq(ptr a, i32 alen, ptr b, i32 blen) -> i1  (content compare)
     auto str_eq_ft = llvm::FunctionType::get(builder->getInt1Ty(), {ptr_ty, i32, ptr_ty, i32}, false);
     str_eq_func = llvm::Function::Create(str_eq_ft, llvm::Function::ExternalLinkage, "__aevix_str_eq", module.get());
+
+    // @llvm.prefetch(ptr, rw, locality, cache_type) — used inside hot regions
+    // to bring array data into L1 before the loop body reads it.
+    // rw=0 (read), locality=3 (L1), cache_type=1 (data cache).
+    auto prefetch_ft = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(*context),
+        {ptr_ty, builder->getInt32Ty(), builder->getInt32Ty(), builder->getInt32Ty()},
+        false);
+    prefetch_func = llvm::Function::Create(prefetch_ft, llvm::Function::ExternalLinkage,
+                                           "llvm.prefetch", module.get());
 }
 
 /**
@@ -2194,7 +2204,7 @@ void CodeGenerator::generate_let(const Let& let) {
         llvm::Type* declared = arr_size == -1
             ? llvm_type_from_name(base)
             : llvm_type_from_name(let.var_type);
-        auto alloc = builder->CreateAlloca(declared, nullptr, let.name);
+        auto alloc = hot_alloca(declared, nullptr, let.name);
         builder->CreateStore(val, alloc);
         if (arr_size > 0) {
             // Declared fixed arrays are not open arrays.
@@ -2215,7 +2225,7 @@ void CodeGenerator::generate_let(const Let& let) {
 
     if (is_slice_ty(ty)) {
         // Inference: let a = <slice expr>  (new / int[] call) → open array var
-        auto alloc = builder->CreateAlloca(ty, nullptr, let.name);
+        auto alloc = hot_alloca(ty, nullptr, let.name);
         builder->CreateStore(val, alloc);
         named_values.back()[let.name] = alloc;
         named_types.back()[let.name] = ty;
@@ -2230,7 +2240,7 @@ void CodeGenerator::generate_let(const Let& let) {
         return;
     }
 
-    auto alloc = builder->CreateAlloca(ty, nullptr, let.name);
+    auto alloc = hot_alloca(ty, nullptr, let.name);
     builder->CreateStore(val, alloc);
     define_var(let.name, alloc, ty, tname);
 }
@@ -2395,6 +2405,26 @@ void CodeGenerator::generate_assign(const Assign& a) {
     }
 
     builder->CreateStore(val, alloc);
+}
+
+void CodeGenerator::emit_prefetch(llvm::Value* ptr) {
+    if (!prefetch_func || !ptr) return;
+    // @llvm.prefetch(ptr, rw=0(read), locality=3(L1), cache_type=1(data))
+    builder->CreateCall(prefetch_func, {
+        ptr,
+        builder->getInt32(0),  // read
+        builder->getInt32(3),  // L1 locality
+        builder->getInt32(1)   // data cache
+    });
+}
+
+llvm::Value* CodeGenerator::hot_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name) {
+    auto* ai = builder->CreateAlloca(ty, array_size, name);
+    if (hot_depth_ > 0) {
+        // 64-byte alignment = cache line boundary
+        ai->setAlignment(llvm::Align(64));
+    }
+    return ai;
 }
 
 void CodeGenerator::attach_hot_loop_metadata(llvm::Instruction* br) {
@@ -2785,10 +2815,10 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     int N = is_slice ? -1 : (int)llvm::cast<llvm::ArrayType>(arr->getType())->getNumElements();
 
     push_scope();
-    auto xalloc = builder->CreateAlloca(elem, nullptr, fi.var);
+    auto xalloc = hot_alloca(elem, nullptr, fi.var);
     define_var(fi.var, xalloc, elem);
 
-    auto i = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "forin.i");
+    auto i = hot_alloca(builder->getInt32Ty(), nullptr, "forin.i");
     builder->CreateStore(builder->getInt32(0), i);
 
     auto cond_block = llvm::BasicBlock::Create(*context, "forin.cond", func);
@@ -2812,12 +2842,25 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     if (is_slice) {
         eptr = builder->CreateInBoundsGEP(elem, data_ptr, {icur}, "forin.elem");
     } else {
-        auto tmp = builder->CreateAlloca(arr->getType(), nullptr, "forin.arr");
+        auto tmp = hot_alloca(arr->getType(), nullptr, "forin.arr");
         builder->CreateStore(arr, tmp);
         eptr = builder->CreateInBoundsGEP(arr->getType(), tmp, {builder->getInt32(0), icur}, "forin.elem");
     }
     auto ev = builder->CreateLoad(elem, eptr, "forin.val");
     builder->CreateStore(ev, xalloc);
+    // Inside hot regions: prefetch the next element so L1 has it ready
+    // when the next iteration begins.
+    if (hot_depth_ > 0) {
+        auto inext = builder->CreateAdd(icur, builder->getInt32(1), "forin.prefetch.idx");
+        llvm::Value* next_ptr;
+        if (is_slice) {
+            next_ptr = builder->CreateInBoundsGEP(elem, data_ptr, {inext}, "forin.next");
+        } else {
+            next_ptr = builder->CreateInBoundsGEP(arr->getType(), eptr,
+                {builder->getInt32(0), builder->getInt32(1)}, "forin.next");
+        }
+        emit_prefetch(next_ptr);
+    }
     loop_ctx.push_back({merge_block, step_block});
     generate_block(fi.body);
     loop_ctx.pop_back();

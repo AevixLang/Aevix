@@ -98,6 +98,9 @@ private:
     llvm::Function* assert_func;
     void build_conv_runtime();
 
+    // LLVM prefetch intrinsic — emitted inside hot regions before array loops.
+    llvm::Function* prefetch_func;
+
     // Escape-checking for epochs: every open-array variable remembers the
     // epoch depth it was created at. Assigning a slice to a variable defined
     // at a smaller depth would survive the arena rollback and dangle.
@@ -279,5 +282,9 @@ public:
     // Attach loop optimization metadata (vectorize, unroll) to a back-edge
     // branch when inside a hot region.
     void attach_hot_loop_metadata(llvm::Instruction* br);
+    // Emit @llvm.prefetch(ptr, 0, 3, 1) to bring data into L1 cache.
+    void emit_prefetch(llvm::Value* ptr);
+    // Like CreateAlloca but uses 64-byte (cache-line) alignment when inside hot.
+    llvm::Value* hot_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name);
     void finalize();
 };
