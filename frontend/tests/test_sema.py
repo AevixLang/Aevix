@@ -424,3 +424,163 @@ def test_sema_accepts_enum_in_struct():
         "enum Color { red, green }\n"
         "struct Pixel { c: Color, a: i64 }\n"
         "func main() { let p = Pixel { Color.red, 7 }; print p.a; }")
+
+
+# ---------------------------------------------------------------------------
+# 1.6 — break/continue must be inside a loop
+# ---------------------------------------------------------------------------
+
+def test_sema_rejects_break_outside_loop():
+    err = sema_rejected("func main() { break; }")
+    assert "break/continue outside of loop" in err
+
+
+def test_sema_rejects_continue_outside_loop():
+    err = sema_rejected("func main() { continue; }")
+    assert "break/continue outside of loop" in err
+
+
+def test_sema_rejects_break_in_if_outside_loop():
+    err = sema_rejected("func main() { if (true) { break; } }")
+    assert "break/continue outside of loop" in err
+
+
+def test_sema_rejects_continue_in_epoch_outside_loop():
+    err = sema_rejected("func main() { epoch { continue; } }")
+    assert "break/continue outside of loop" in err
+
+
+def test_sema_accepts_break_inside_for():
+    sema_accepted("func main() { for (let i = 0; i < 10; i += 1) { if (i == 5) { break; } } }")
+
+
+def test_sema_accepts_continue_inside_while():
+    sema_accepted("func main() { let i = 0; while (i < 10) { i += 1; continue; } }")
+
+
+def test_sema_accepts_break_inside_for_in():
+    sema_accepted("func main() { let a = [1, 2, 3]; for x in a { if (x == 2) { break; } } }")
+
+
+# ---------------------------------------------------------------------------
+# 1.7 — builtin argument count and type checking
+# ---------------------------------------------------------------------------
+
+def test_sema_rejects_len_wrong_arg_count():
+    err = sema_rejected("func main() { len(1, 2); }")
+    assert "expects one argument" in err
+
+
+def test_sema_rejects_rand_wrong_arg_count():
+    err = sema_rejected("func main() { rand(); }")
+    assert "expects one argument" in err
+
+
+def test_sema_rejects_rand_non_int_arg():
+    err = sema_rejected('func main() { rand("hello"); }')
+    assert "expects an integer argument" in err
+
+
+def test_sema_rejects_assert_wrong_arg_count():
+    err = sema_rejected("func main() { assert(1, 2); }")
+    assert "expects one argument" in err
+
+
+def test_sema_rejects_assert_non_int_arg():
+    err = sema_rejected('func main() { assert("yes"); }')
+    assert "expects an integer argument" in err
+
+
+def test_sema_rejects_trim_non_string():
+    err = sema_rejected("func main() { trim(42); }")
+    assert "expects a string argument" in err
+
+
+def test_sema_rejects_upper_wrong_arg_count():
+    err = sema_rejected("func main() { upper(); }")
+    assert "expects one argument" in err
+
+
+def test_sema_rejects_join_wrong_arg_count():
+    err = sema_rejected("func main() { join(\"a\"); }")
+    assert "expects two arguments" in err
+
+
+def test_sema_rejects_replace_wrong_arg_count():
+    err = sema_rejected('func main() { replace("a", "b"); }')
+    assert "expects three arguments" in err
+
+
+def test_sema_rejects_min_non_numeric():
+    err = sema_rejected('func main() { min("a", "b"); }')
+    assert "expects numeric arguments" in err
+
+
+def test_sema_rejects_write_wrong_arg_count():
+    err = sema_rejected('func main() { write("f"); }')
+    assert "expects two arguments" in err
+
+
+def test_sema_rejects_read_wrong_arg_count():
+    err = sema_rejected('func main() { read("a", "b"); }')
+    assert "expects one argument" in err
+
+
+def test_sema_rejects_exit_wrong_arg_count():
+    err = sema_rejected("func main() { exit(); }")
+    assert "expects one argument" in err
+
+
+def test_sema_rejects_exit_non_int():
+    err = sema_rejected('func main() { exit("bye"); }')
+    assert "expects an integer argument" in err
+
+
+def test_sema_rejects_startswith_wrong_arg_count():
+    err = sema_rejected('func main() { startswith("a"); }')
+    assert "expects two arguments" in err
+
+
+def test_sema_rejects_endswith_wrong_arg_count():
+    err = sema_rejected('func main() { endswith("a"); }')
+    assert "expects two arguments" in err
+
+
+def test_sema_rejects_char_at_wrong_arg_count():
+    err = sema_rejected('func main() { char_at("a"); }')
+    assert "expects two arguments" in err
+
+
+def test_sema_rejects_contains_wrong_arg_count():
+    err = sema_rejected('func main() { contains("a"); }')
+    assert "expects two arguments" in err
+
+
+def test_sema_accepts_valid_builtin_usage():
+    sema_accepted(
+        'func main() {\n'
+        '    let s = "hello";\n'
+        '    print len(s);\n'
+        '    print trim(s);\n'
+        '    print upper(s);\n'
+        '    print lower(s);\n'
+        '    print contains(s, "ell");\n'
+        '    print startswith(s, "he");\n'
+        '    print endswith(s, "lo");\n'
+        '    print replace(s, "hello", "world");\n'
+        '    print char_at(s, 0);\n'
+        '    let parts = split(s, "e");\n'
+        '    print join(parts, ",");\n'
+        '    print rand(10);\n'
+        '    assert(1);\n'
+        '    let n = abs(-5);\n'
+        '    print min(n, 3);\n'
+        '    print max(n, 3);\n'
+        '    print to_str(n);\n'
+        '    print substr(s, 1, 3);\n'
+        '    print read("test.txt");\n'
+        '    write("out.txt", s);\n'
+        '    let x = input();\n'
+        '    print argc();\n'
+        '    print arg(0);\n'
+        '}')

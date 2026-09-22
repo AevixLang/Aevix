@@ -160,6 +160,7 @@ private:
     std::map<std::string, int> scope_depth_of_;
 
     const std::string* current_fn_ = nullptr;
+    int loop_depth_ = 0; // tracks nesting inside for/while/for-in loops
 
     static bool is_primitive(const std::string& t) {
         return t == "bool" || t == "string" || is_numeric(t);
@@ -285,6 +286,7 @@ private:
     bool assignable_expr(const std::string& dest, Expr* e);
 
     void error(const char* msg, int line, int col);
+    void error(const std::string& msg, int line, int col) { error(msg.c_str(), line, col); }
     std::string lookup_var(const std::string& name, int line, int col);
     void declare_var(const std::string& name, const std::string& type, int line, int col);
 
@@ -676,6 +678,74 @@ std::string Checker::check_call(Call* c) {
     // Known runtime builtins — accept without declaration.
     auto bi = builtins().find(c->callee);
     if (bi != builtins().end()) {
+        // Validate argument counts and types for builtins.
+        const std::string& name = c->callee;
+        if (name == "len" && c->args.size() != 1)
+            error("len() expects one argument", c->line, c->col);
+        else if ((name == "argc" || name == "input") && c->args.size() != 0)
+            error(name + "() expects no arguments", c->line, c->col);
+        else if (name == "arg" && c->args.size() != 1)
+            error("arg() expects one argument", c->line, c->col);
+        else if (name == "exit" && c->args.size() != 1)
+            error("exit() expects one argument", c->line, c->col);
+        else if (name == "assert" && c->args.size() != 1)
+            error("assert() expects one argument", c->line, c->col);
+        else if (name == "rand" && c->args.size() != 1)
+            error("rand() expects one argument", c->line, c->col);
+        else if (name == "abs" && c->args.size() != 1)
+            error("abs() expects one argument", c->line, c->col);
+        else if (name == "trim" && c->args.size() != 1)
+            error("trim() expects one argument", c->line, c->col);
+        else if (name == "upper" && c->args.size() != 1)
+            error("upper() expects one argument", c->line, c->col);
+        else if (name == "lower" && c->args.size() != 1)
+            error("lower() expects one argument", c->line, c->col);
+        else if (name == "char_at" && c->args.size() != 2)
+            error("char_at() expects two arguments", c->line, c->col);
+        else if ((name == "min" || name == "max") && c->args.size() != 2)
+            error(name + "() expects two arguments", c->line, c->col);
+        else if (name == "write" && c->args.size() != 2)
+            error("write() expects two arguments", c->line, c->col);
+        else if (name == "read" && c->args.size() != 1)
+            error("read() expects one argument", c->line, c->col);
+        else if (name == "to_str" && c->args.size() != 1)
+            error("to_str() expects one argument", c->line, c->col);
+        else if (name == "substr" && c->args.size() != 3)
+            error("substr() expects three arguments", c->line, c->col);
+        else if (name == "split" && c->args.size() != 2)
+            error("split() expects two arguments", c->line, c->col);
+        else if (name == "join" && c->args.size() != 2)
+            error("join() expects two arguments", c->line, c->col);
+        else if (name == "contains" && c->args.size() != 2)
+            error("contains() expects two arguments", c->line, c->col);
+        else if (name == "replace" && c->args.size() != 3)
+            error("replace() expects three arguments", c->line, c->col);
+        else if (name == "startswith" && c->args.size() != 2)
+            error("startswith() expects two arguments", c->line, c->col);
+        else if (name == "endswith" && c->args.size() != 2)
+            error("endswith() expects two arguments", c->line, c->col);
+        // Type checks for specific builtins.
+        if (c->args.size() >= 1) {
+            if ((name == "rand" || name == "assert" || name == "exit") && !is_int_type(infer(c->args[0].get())))
+                error(name + "() expects an integer argument", c->line, c->col);
+            if ((name == "trim" || name == "upper" || name == "lower" || name == "read") && infer(c->args[0].get()) != "string")
+                error(name + "() expects a string argument", c->line, c->col);
+            if (name == "len" && !is_slice(infer(c->args[0].get())) && !is_fixed_array(infer(c->args[0].get())) && infer(c->args[0].get()) != "string")
+                error("len() expects an array or string", c->line, c->col);
+        }
+        if (c->args.size() >= 2) {
+            if ((name == "write" || name == "split" || name == "contains"
+                 || name == "startswith" || name == "endswith" || name == "replace")
+                && infer(c->args[0].get()) != "string")
+                error(name + "() first argument must be a string", c->line, c->col);
+            if (name == "join" && !is_slice(infer(c->args[0].get()))
+                && !is_fixed_array(infer(c->args[0].get())))
+                error("join() first argument must be a string array", c->line, c->col);
+            if (name == "join" && infer(c->args[1].get()) != "string")
+                error("join() second argument must be a string", c->line, c->col);
+            if ((name == "min" || name == "max") && (!is_numeric(infer(c->args[0].get())) || !is_numeric(infer(c->args[1].get()))))
+                error(name + "() expects numeric arguments", c->line, c->col);
+        }
         return bi->second;
     }
     auto it = funcs_.find(c->callee);
@@ -712,6 +782,9 @@ std::string Checker::check_call(Call* c) {
     }
     // Param escape check: if an arena-linked argument is passed to a parameter
     // that escapes, the value would dangle after the calling scope ends.
+    // For ref params the same risk applies: the callee can store the address,
+    // so we must also reject arena-linked ref arguments when the callee escapes
+    // them.
     for (size_t i = 0; i < fn.params.size(); ++i) {
         if (fn.escaping_params.count((int)i) && is_arena_linked_expr(c->args[i].get())) {
             int origin = arena_origin(c->args[i].get());
@@ -775,18 +848,23 @@ void Checker::check_stmt(Stmt& s) {
         if (s.if_stmt->else_block) check_block(s.if_stmt->else_block->body);
         break;
     case Stmt::Kind::While:
+        loop_depth_++;
         infer(s.while_stmt->condition.get());
         check_block(s.while_stmt->body->body);
+        loop_depth_--;
         break;
     case Stmt::Kind::For:
+        loop_depth_++;
         scopes_.push_back({});
         if (s.for_stmt->init) check_stmt(*s.for_stmt->init);
         infer(s.for_stmt->condition.get());
         if (s.for_stmt->step) check_stmt(*s.for_stmt->step);
         check_block(s.for_stmt->body->body);
         scopes_.pop_back();
+        loop_depth_--;
         break;
     case Stmt::Kind::ForIn: {
+        loop_depth_++;
         scopes_.push_back({});
         std::string it = infer(s.for_in_stmt->iterable.get());
         if (it.empty() || (!is_slice(it) && !is_fixed_array(it)))
@@ -794,6 +872,7 @@ void Checker::check_stmt(Stmt& s) {
         declare_var(s.for_in_stmt->var, element_type(it), s.line, s.col);
         check_block(s.for_in_stmt->body->body);
         scopes_.pop_back();
+        loop_depth_--;
         break;
     }
     case Stmt::Kind::Return: {
@@ -867,6 +946,8 @@ void Checker::check_stmt(Stmt& s) {
         break; // collected in pass 1, which registers the enum variants
     case Stmt::Kind::Break:
     case Stmt::Kind::Continue:
+        if (loop_depth_ == 0)
+            error("break/continue outside of loop", s.line, s.col);
         break;
     }
 }
