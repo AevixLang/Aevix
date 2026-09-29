@@ -78,7 +78,8 @@ When adding a new language feature:
 ## Roadmap & Technical Debt
 
 - [ ] **Full escape analysis**: Param-level escape checking for epochs.
-- [ ] **Hot region optimization**: L1 cache/register pinning via LLVM metadata.
+- [x] **Hot region optimization**: `hot` function attribute, loop vectorize/unroll
+  metadata, 64-byte aligned slots, next-element prefetch; `epoch` rejected inside.
 - [ ] **SOS transformations**: Automatic stack promotion and SIMD conversion.
 - [ ] **Context polymorphism**: Per-call-site function variant generation.
 - [ ] **Proof-carrying safety**: Compile-time invariant verification.

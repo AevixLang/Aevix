@@ -405,15 +405,31 @@ hot {
 ---
 
 ## 13. The `hot` Region
-The `hot` block marks a section as a critical hot path. It is a valid block
-scope today (variables, statements and epochs work inside it); the L1-cache /
-register pinning optimization that it will drive is on the roadmap and not yet
-implemented.
+The `hot` block marks a section as a critical hot path. It is a normal block
+scope (variables, statements and loops work inside it), and the compiler
+applies cache-oriented optimizations to everything it covers:
+
+- the enclosing function gets LLVM's `hot` attribute (aggressive inlining,
+  unrolling, vectorization);
+- every loop back edge inside the block carries `llvm.loop` metadata enabling
+  vectorization (width 4) and unrolling (count 4);
+- local slots are 64-byte (cache line) aligned;
+- array reads/writes through a `for` counter that steps by `+1`, and every
+  `for-in` iteration, prefetch the next element into L1 so the following
+  iteration finds it there;
+- arena allocations made inside the block (concat, literals, `new`) are
+  prefetched as well.
+
+`epoch` blocks are rejected inside `hot`: rolling the arena back would evict
+the very lines the region pins, so sema reports `epoch inside hot region
+defeats L1 cache pinning`.
 
 ```aev
 hot {
-    for (let i = 0; i < 1000000; i += 1) {
-        process(i);
+    let total = 0;
+    for (let i = 0; i < len(data); i += 1) {
+        total = total + data[i];
     }
+    print total;
 }
 ```

@@ -21,7 +21,7 @@
 #include <sys/mman.h>
 #endif
 
-#define ARENA_ALIGN 16u
+#define ARENA_ALIGN 64u  /* cache-line alignment for L1 hot path */
 #define ARENA_CHUNK (64u * 1024u * 1024u) /* commit granularity: 64 MiB */
 #define ARENA_MAX_EPOCHS 4096
 

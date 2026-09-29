@@ -12,6 +12,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/TargetSelect.h"
+#include <algorithm>
 #include <iostream>
 #include <map>
 #include <stack>
@@ -369,6 +370,7 @@ llvm::Value* CodeGenerator::gen_string_concat(llvm::Value* left, llvm::Value* ri
     auto total32 = builder->CreateAdd(llen, rlen, "cat.total");
     auto bytes32 = builder->CreateTrunc(builder->CreateZExt(total32, builder->getInt64Ty()), builder->getInt32Ty(), "cat.bytes");
     auto dst = builder->CreateCall(alloc_func, {bytes32}, "cat.ptr");
+    emit_prefetch(dst);
 
     llvm::Function* memcpy_fn = llvm::Intrinsic::getOrInsertDeclaration(
         module.get(), llvm::Intrinsic::memcpy, llvm::Type::getVoidTy(*context),
@@ -660,7 +662,7 @@ llvm::Value* CodeGenerator::build_struct_literal(const StructLiteral& sl) {
     auto it = struct_types.find(sl.name);
     if (it == struct_types.end()) error("Unknown struct: " + sl.name);
     llvm::StructType* st = it->second;
-    auto alloc = builder->CreateAlloca(st, nullptr, sl.name + ".lit");
+    auto alloc = create_alloca(st, nullptr, sl.name + ".lit");
     std::size_t n = st->getNumElements();
     if (sl.args.size() != n) error("Struct '" + sl.name + "' expects " + std::to_string(n) + " fields, got " + std::to_string(sl.args.size()));
     for (std::size_t i = 0; i < n; ++i) {
@@ -982,6 +984,7 @@ llvm::Value* CodeGenerator::make_slice_from_lit(const ArrayLit& al, const std::s
     llvm::Value* bytes64 = llvm::ConstantInt::get(builder->getInt64Ty(), elem_bytes * al.elements.size());
     llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes");
     llvm::Value* ptr = builder->CreateCall(alloc_func, {bytes32}, "lit.ptr");
+    emit_prefetch(ptr);
     for (std::size_t i = 0; i < al.elements.size(); ++i) {
         const std::string en = expr_type_name(al.elements[i]);
         if (!en.empty() && en != base && !can_implicit_coerce(en, base))
@@ -1034,7 +1037,7 @@ llvm::Value* CodeGenerator::coerce_expr_to(const std::shared_ptr<Expr>& e, const
         llvm::Type* arr_ty = llvm::ArrayType::get(elem_ty, darr);
         if (auto al = std::dynamic_pointer_cast<ArrayLit>(e)) {
             if (al->elements.size() != (std::size_t)darr) error("Array literal size mismatch");
-            llvm::Value* tmp = builder->CreateAlloca(arr_ty, nullptr, "arr.coerce");
+            llvm::Value* tmp = create_alloca(arr_ty, nullptr, "arr.coerce");
             for (int i = 0; i < darr; ++i) {
                 const std::string en = expr_type_name(al->elements[i]);
                 if (!en.empty() && en != db && !can_implicit_coerce(en, db))
@@ -1282,9 +1285,12 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
         builder->SetInsertPoint(ok);
         if (is_open) {
             ptr = builder->CreateInBoundsGEP(open_elem, ptr, {idx}, "idx");
+            prefetch_next_if_hot((*it)->index, ptr, open_elem);
         } else {
+            llvm::Type* el = cur_arr->getArrayElementType();
             ptr = builder->CreateInBoundsGEP(cur_arr, ptr, {builder->getInt32(0), idx}, "idx");
-            cur_arr = cur_arr->getArrayElementType();
+            prefetch_next_if_hot((*it)->index, ptr, el);
+            cur_arr = el;
         }
     }
     elem_ty = is_open ? open_elem : cur_arr;
@@ -1330,6 +1336,8 @@ llvm::Value* CodeGenerator::gen_new(const New& n) {
          builder->getInt64Ty(), builder->getInt1Ty()});
     builder->CreateCall(memset_fn, {ptr, builder->getInt8(0), bytes64, builder->getInt1(false)});
 
+    emit_prefetch(ptr);
+
     return make_slice(ptr, n.base == "string" ? "string[]" : n.base, elem, size);
 }
 
@@ -1342,6 +1350,7 @@ llvm::Value* CodeGenerator::copy_array_to_slice(llvm::Value* arr_val, llvm::Stru
     llvm::Value* bytes64 = llvm::ConstantInt::get(builder->getInt64Ty(), elem_bytes * at->getNumElements());
     llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes");
     llvm::Value* arena_ptr = builder->CreateCall(alloc_func, {bytes32}, "ret.ptr");
+    emit_prefetch(arena_ptr);
     for (uint64_t i = 0; i < at->getNumElements(); ++i) {
         llvm::Value* ep = builder->CreateInBoundsGEP(elem, arena_ptr, {builder->getInt32((uint32_t)i)}, "ret.elem");
         llvm::Value* ev = builder->CreateExtractValue(arr_val, i, "elem");
@@ -1388,7 +1397,7 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) 
     auto body = llvm::BasicBlock::Create(*context, "sp.body", func);
     auto merge = llvm::BasicBlock::Create(*context, "sp.end");
 
-    auto idx = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sp.i");
+    auto idx = create_alloca(builder->getInt32Ty(), nullptr, "sp.i");
     builder->CreateStore(builder->getInt32(0), idx);
     builder->CreateBr(head);
     builder->SetInsertPoint(head);
@@ -1467,7 +1476,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     if (auto al = std::dynamic_pointer_cast<ArrayLit>(expr)) {
         std::string en = array_elem_type_name(*al);
         llvm::Type* arr_ty = build_array_type(*al);
-        llvm::Value* tmp = builder->CreateAlloca(arr_ty, nullptr, "arr.tmp");
+        llvm::Value* tmp = create_alloca(arr_ty, nullptr, "arr.tmp");
         for (std::size_t i = 0; i < al->elements.size(); ++i) {
             llvm::Value* ev = coerce_expr_to(al->elements[i], en);
             if (!ev) return nullptr;
@@ -1545,6 +1554,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto clen = builder->CreateCall(strlen_func, {cstr}, "arg.clen");
             auto b32 = builder->CreateTrunc(builder->CreateZExt(clen, builder->getInt64Ty()), builder->getInt32Ty(), "arg.b32");
             auto buf = builder->CreateCall(alloc_func, {b32}, "arg.buf");
+            emit_prefetch(buf);
             llvm::Function* memcpy_fn = llvm::Intrinsic::getOrInsertDeclaration(
                 module.get(), llvm::Intrinsic::memcpy, llvm::Type::getVoidTy(*context),
                 {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context),
@@ -1600,8 +1610,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!is_string_slice(sv->getType())) error("trim() requires a string");
             auto sp = builder->CreateExtractValue(sv, 0, "trim.sp");
             auto sl = builder->CreateExtractValue(sv, 1, "trim.sl");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "trim.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "trim.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "trim.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "trim.l");
             builder->CreateCall(trim_func, {sp, sl, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "trim.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "trim.rl");
@@ -1637,8 +1647,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto ol = builder->CreateExtractValue(ov, 1, "r.ol");
             auto np = builder->CreateExtractValue(nv, 0, "r.np");
             auto nl = builder->CreateExtractValue(nv, 1, "r.nl");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "r.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "r.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "r.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "r.l");
             builder->CreateCall(replace_func, {sp, sl, op, ol, np, nl, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "r.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "r.rl");
@@ -1652,8 +1662,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!is_string_slice(sv->getType())) error("upper() requires a string");
             auto sp = builder->CreateExtractValue(sv, 0, "u.sp");
             auto sl = builder->CreateExtractValue(sv, 1, "u.sl");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "u.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "u.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "u.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "u.l");
             builder->CreateCall(upper_func, {sp, sl, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "u.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "u.rl");
@@ -1667,8 +1677,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!is_string_slice(sv->getType())) error("lower() requires a string");
             auto sp = builder->CreateExtractValue(sv, 0, "lo.sp");
             auto sl = builder->CreateExtractValue(sv, 1, "lo.sl");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "lo.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "lo.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "lo.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "lo.l");
             builder->CreateCall(lower_func, {sp, sl, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "lo.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "lo.rl");
@@ -1712,8 +1722,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!iv->getType()->isIntegerTy(32)) error("char_at() arg2 must be an int");
             auto sp = builder->CreateExtractValue(sv, 0, "ca.sp");
             auto sl = builder->CreateExtractValue(sv, 1, "ca.sl");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "ca.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "ca.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "ca.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "ca.l");
             builder->CreateCall(char_at_func, {sp, sl, iv, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "ca.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "ca.rl");
@@ -1730,8 +1740,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto sl = builder->CreateExtractValue(sv, 1, "j.sl");
             auto ap = builder->CreateExtractValue(av, 0, "j.ap");
             auto al = builder->CreateExtractValue(av, 1, "j.al");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "j.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "j.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "j.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "j.l");
             builder->CreateCall(join_func, {sp, sl, ap, al, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "j.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "j.rl");
@@ -1744,8 +1754,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!av) return nullptr;
             if (!is_string_slice(av->getType())) error("read() requires a string path");
             auto path = builder->CreateExtractValue(av, 0, "read.path");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "read.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "read.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "read.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "read.l");
             builder->CreateCall(read_file_func, {path, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "read.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "read.rl");
@@ -1768,8 +1778,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
 
         // input() -> string: one line from stdin (no trailing newline); "" on EOF.
         if (call->callee == "input" && call->args.empty()) {
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "in.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "in.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "in.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "in.l");
             builder->CreateCall(read_line_func, {p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "in.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "in.rl");
@@ -1812,8 +1822,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto nv = generate_expr(call->args[0]);
             if (!nv) return nullptr;
             std::string sn = expr_type_name(call->args[0]);
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "ts.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "ts.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "ts.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "ts.l");
             if (sn == "int" || sn == "i32") {
                 builder->CreateCall(int_to_str_func, {nv, p_out, l_out});
             } else if (sn == "i8" || sn == "i16") {
@@ -1848,8 +1858,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!is_string_slice(sv->getType())) error("substr() requires a string");
             if (!stv->getType()->isIntegerTy(32)) error("substr() requires integer start");
             if (!cnv->getType()->isIntegerTy(32)) error("substr() requires integer count");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "sb.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sb.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "sb.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "sb.l");
             builder->CreateCall(substr_func,
                 {builder->CreateExtractValue(sv, 0, "sb.ptr"),
                  builder->CreateExtractValue(sv, 1, "sb.len"), stv, cnv, p_out, l_out});
@@ -1866,8 +1876,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!sv || !spv) return nullptr;
             if (!is_string_slice(sv->getType())) error("split() requires a string");
             if (!is_string_slice(spv->getType())) error("split() separator must be a string");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "sp.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sp.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "sp.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "sp.l");
             builder->CreateCall(split_func,
                 {builder->CreateExtractValue(sv, 0, "sp.ptr"),
                  builder->CreateExtractValue(sv, 1, "sp.len"),
@@ -2185,7 +2195,7 @@ void CodeGenerator::generate_let(const Let& let) {
             llvm::StructType* st = llvm::cast<llvm::StructType>(llvm_type_from_name(let.var_type));
             llvm::Value* val = coerce_expr_to(let.value, let.var_type);
             if (!val) return;
-            auto alloc = builder->CreateAlloca(st, nullptr, let.name);
+            auto alloc = create_alloca(st, nullptr, let.name);
             builder->CreateStore(val, alloc);
             named_values.back()[let.name] = alloc;
             named_types.back()[let.name] = st;
@@ -2408,7 +2418,7 @@ void CodeGenerator::generate_assign(const Assign& a) {
 }
 
 void CodeGenerator::emit_prefetch(llvm::Value* ptr) {
-    if (!prefetch_func || !ptr) return;
+    if (!prefetch_func || !ptr || hot_depth_ == 0) return;
     // @llvm.prefetch(ptr, rw=0(read), locality=3(L1), cache_type=1(data))
     builder->CreateCall(prefetch_func, {
         ptr,
@@ -2418,13 +2428,47 @@ void CodeGenerator::emit_prefetch(llvm::Value* ptr) {
     });
 }
 
-llvm::Value* CodeGenerator::hot_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name) {
-    auto* ai = builder->CreateAlloca(ty, array_size, name);
-    if (hot_depth_ > 0) {
-        // 64-byte alignment = cache line boundary
-        ai->setAlignment(llvm::Align(64));
+/**
+ * Create a stack slot for a local. Static slots are moved to the function
+ * entry block: a slot left inside a loop body would be reserved again on every
+ * iteration (slots live until the function returns), so a long-running loop
+ * would grow the stack without bound.
+ */
+llvm::Value* CodeGenerator::create_alloca(llvm::Type* ty, llvm::Value* array_size,
+                                          const llvm::Twine& name) {
+    llvm::AllocaInst* ai = builder->CreateAlloca(ty, array_size, name);
+    // A dynamic size would have to stay at its original position, but every
+    // call site passes a constant (null) size today.
+    if (!array_size) {
+        llvm::BasicBlock& entry = ai->getFunction()->getEntryBlock();
+        if (ai->getParent() != &entry && !entry.empty())
+            ai->moveBefore(entry, entry.begin());
     }
     return ai;
+}
+
+llvm::Value* CodeGenerator::hot_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name) {
+    llvm::Value* ai = create_alloca(ty, array_size, name);
+    if (hot_depth_ > 0) {
+        // 64-byte alignment = cache line boundary
+        llvm::cast<llvm::AllocaInst>(ai)->setAlignment(llvm::Align(64));
+    }
+    return ai;
+}
+
+void CodeGenerator::prefetch_next_if_hot(const std::shared_ptr<Expr>& index,
+                                         llvm::Value* elem_ptr, llvm::Type* elem_ty) {
+    if (hot_depth_ == 0 || loop_counters_.empty() || !elem_ptr || !elem_ty) return;
+    auto var = dynamic_cast<Variable*>(index.get());
+    if (!var) return;
+    if (std::find(loop_counters_.begin(), loop_counters_.end(), var->name) == loop_counters_.end())
+        return;
+    // elem_ptr is the bounds-checked element of the current iteration; the next
+    // iteration reads the element after it. One-past-end is a legal address, so
+    // no extra range check is needed even on the last iteration.
+    llvm::Value* next_ptr = builder->CreateInBoundsGEP(
+        elem_ty, elem_ptr, {builder->getInt32(1)}, "hot.pref");
+    emit_prefetch(next_ptr);
 }
 
 void CodeGenerator::attach_hot_loop_metadata(llvm::Instruction* br) {
@@ -2605,7 +2649,7 @@ void CodeGenerator::emit_print_value(const std::shared_ptr<Expr>& value) {
         auto at = llvm::cast<llvm::ArrayType>(val->getType());
         int n = (int)at->getNumElements();
         llvm::Type* elem = at->getElementType();
-        auto tmp = builder->CreateAlloca(at, nullptr, "print.arr");
+        auto tmp = create_alloca(at, nullptr, "print.arr");
         builder->CreateStore(val, tmp);
         auto open_br = builder->CreateGlobalString("[", "open_br");
         builder->CreateCall(printf_func, {open_br});
@@ -2669,7 +2713,7 @@ void CodeGenerator::emit_print_struct_inline(llvm::Value* val, const std::string
     int n = (int)st->getNumElements();
     llvm::FunctionType* printf_ft = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
     auto printf_func = module->getOrInsertFunction("printf", printf_ft);
-    auto tmp = builder->CreateAlloca(st, nullptr, "print.struct");
+    auto tmp = create_alloca(st, nullptr, "print.struct");
     builder->CreateStore(val, tmp);
     auto open_br = builder->CreateGlobalString("{", "open_br");
     builder->CreateCall(printf_func, {open_br});
@@ -2761,6 +2805,28 @@ void CodeGenerator::generate_for(const For& f) {
     auto func = builder->GetInsertBlock()->getParent();
     if (f.init) generate_stmt(f.init);
 
+    // Register the counter of a counted loop (init declares/assigns it, step is
+    // `counter += 1`). Inside a hot region every bounds-checked arr[counter]
+    // then prefetches arr[counter + 1]: exactly the next iteration's element.
+    bool counted = false;
+    if (f.init && f.step && f.step->kind == Stmt::Kind::Assign && f.step->assign_stmt &&
+        f.step->assign_stmt->op == "+=") {
+        auto one = dynamic_cast<Number*>(f.step->assign_stmt->value.get());
+        if (one && one->value == 1) {
+            std::string name;
+            if (f.init->kind == Stmt::Kind::Let) {
+                name = f.init->let.name;
+            } else if (f.init->kind == Stmt::Kind::Assign && f.init->assign_stmt) {
+                if (auto* v = dynamic_cast<Variable*>(f.init->assign_stmt->name.get()))
+                    name = v->name;
+            }
+            if (!name.empty()) {
+                loop_counters_.push_back(name);
+                counted = true;
+            }
+        }
+    }
+
     auto cond_block = llvm::BasicBlock::Create(*context, "for.cond", func);
     auto body_block = llvm::BasicBlock::Create(*context, "for.body", func);
     auto step_block = llvm::BasicBlock::Create(*context, "for.step", func);
@@ -2770,7 +2836,10 @@ void CodeGenerator::generate_for(const For& f) {
     builder->SetInsertPoint(cond_block);
     if (f.condition) {
         auto cond = generate_expr(f.condition);
-        if (!cond) return;
+        if (!cond) {
+            if (counted) loop_counters_.pop_back();
+            return;
+        }
         require_bool(cond, "for condition");
         builder->CreateCondBr(cond, body_block, merge_block);
     } else {
@@ -2792,6 +2861,7 @@ void CodeGenerator::generate_for(const For& f) {
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
+    if (counted) loop_counters_.pop_back();
 }
 
 void CodeGenerator::generate_for_in(const ForIn& fi) {
@@ -2813,6 +2883,14 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
         elem = at->getElementType();
     }
     int N = is_slice ? -1 : (int)llvm::cast<llvm::ArrayType>(arr->getType())->getNumElements();
+
+    // A fixed-size array arrives as a value: spill it once, before the loop,
+    // so the body only does a single element load per iteration.
+    llvm::Value* arr_slot = nullptr;
+    if (!is_slice) {
+        arr_slot = hot_alloca(arr->getType(), nullptr, "forin.arr");
+        builder->CreateStore(arr, arr_slot);
+    }
 
     push_scope();
     auto xalloc = hot_alloca(elem, nullptr, fi.var);
@@ -2842,24 +2920,15 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     if (is_slice) {
         eptr = builder->CreateInBoundsGEP(elem, data_ptr, {icur}, "forin.elem");
     } else {
-        auto tmp = hot_alloca(arr->getType(), nullptr, "forin.arr");
-        builder->CreateStore(arr, tmp);
-        eptr = builder->CreateInBoundsGEP(arr->getType(), tmp, {builder->getInt32(0), icur}, "forin.elem");
+        eptr = builder->CreateInBoundsGEP(arr->getType(), arr_slot, {builder->getInt32(0), icur}, "forin.elem");
     }
     auto ev = builder->CreateLoad(elem, eptr, "forin.val");
     builder->CreateStore(ev, xalloc);
     // Inside hot regions: prefetch the next element so L1 has it ready
-    // when the next iteration begins.
+    // when the next iteration begins. icur < bound holds (the condition just
+    // passed), so eptr + 1 is at most one past the end — a legal address.
     if (hot_depth_ > 0) {
-        auto inext = builder->CreateAdd(icur, builder->getInt32(1), "forin.prefetch.idx");
-        llvm::Value* next_ptr;
-        if (is_slice) {
-            next_ptr = builder->CreateInBoundsGEP(elem, data_ptr, {inext}, "forin.next");
-        } else {
-            next_ptr = builder->CreateInBoundsGEP(arr->getType(), eptr,
-                {builder->getInt32(0), builder->getInt32(1)}, "forin.next");
-        }
-        emit_prefetch(next_ptr);
+        emit_prefetch(builder->CreateInBoundsGEP(elem, eptr, {builder->getInt32(1)}, "forin.next"));
     }
     loop_ctx.push_back({merge_block, step_block});
     generate_block(fi.body);
@@ -3002,7 +3071,7 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
             llvm::Argument& arg = *arg_it++;
             llvm::Type* val_ty = signature_type_for(p.var_type, "parameter '" + p.name + "'");
             if (!val_ty) val_ty = builder->getInt32Ty();
-            auto slot = builder->CreateAlloca(builder->getPtrTy(), nullptr, p.name);
+            auto slot = create_alloca(builder->getPtrTy(), nullptr, p.name);
             builder->CreateStore(&arg, slot);
             named_values.back()[p.name] = slot;
             named_types.back()[p.name] = val_ty;
@@ -3012,7 +3081,7 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
             // Open array: one slice { base*, i32 } argument, stored as a whole
             llvm::Argument& arg = *arg_it++;
             llvm::Type* st = llvm_type_from_name(p.var_type);
-            auto alloca = builder->CreateAlloca(st, nullptr, p.name);
+            auto alloca = create_alloca(st, nullptr, p.name);
             builder->CreateStore(&arg, alloca);
             named_values.back()[p.name] = alloca;
             named_types.back()[p.name] = st;
@@ -3023,7 +3092,7 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
             llvm::Argument& arg = *arg_it++;
             llvm::Type* pt = signature_type_for(p.var_type, "parameter '" + p.name + "'");
             if (!pt) pt = builder->getInt32Ty();
-            auto alloca = builder->CreateAlloca(pt, nullptr, p.name);
+            auto alloca = create_alloca(pt, nullptr, p.name);
             builder->CreateStore(&arg, alloca);
             define_var(p.name, alloca, pt, p.var_type);
         }

@@ -18,13 +18,14 @@ Aevix aims to push beyond existing languages by combining:
 - **Reference parameters** — `ref` with aliasing and escape safety checks
 - **Arrays & slices** — fixed-size arrays (by value) and open slices (arena-allocated)
 - **String builtins** — split, join, trim, upper, lower, contains, replace, startswith, endswith, char_at
-- **Hot regions** — `hot { }` scope marker (L1 cache pinning on roadmap)
+- **Hot regions** — `hot { }` marks a critical path: `hot` function attribute,
+  loop vectorize/unroll metadata, cache-line aligned locals, next-element
+  prefetch (`epoch` is rejected inside)
 - **Multi-file imports** — with cycle detection and package support
 - **C++ frontend** — 20x faster than the legacy Python frontend
 
 ### Roadmap
 - **Self-Optimizing Semantics (SOS)** — Compiler-driven SIMD and stack promotion
-- **Cache-Oblivious Hot Path** — Deterministic L1 cache optimization via `hot` regions
 - **Context Polymorphism** — Function codegen adapts to calling context
 - **Proof-Carrying Safety** — Compile-time invariant proofs to strip runtime checks
 
@@ -172,7 +173,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - `import` is top-level only; no namespaces — imported declarations merge globally.
 - Package imports (`name:module`) require a project `aevix.lock` — the package manager is under development.
 - The arena grows on demand but is never freed individually; epoch blocks roll the allocation point back.
-- `hot` regions are scope markers only; L1 cache/register pinning is not yet implemented.
+- `hot` accelerates loops (next-element prefetch, cache-line aligned slots,
+  vectorization metadata) but register allocation inside it is still left to LLVM.
 - No SOS (Self-Optimizing Semantics) or context polymorphism yet.
 
 ## Acknowledgments
