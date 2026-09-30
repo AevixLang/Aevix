@@ -54,10 +54,10 @@ private:
     // attributes and loop optimization metadata.
     int hot_depth_ = 0;
 
-    // Loop counters of the enclosing C-style for loops that step by +1.
-    // Inside a hot region an access arr[i] with such an i prefetches arr[i+1],
-    // which is exactly the element the next iteration will touch.
-    std::vector<std::string> loop_counters_;
+    // Open loop bodies (for/while/for-in) while statements are generated.
+    // Software prefetch emission is suppressed inside them: the call would
+    // stop LLVM's vectorizer from touching the enclosing loop.
+    int loop_depth_ = 0;
 
     // Slice { ptr, len }: the single representation of open arrays (int[]).
     // Keyed by the base type string ("int", "float", "bool", struct name).
@@ -103,7 +103,7 @@ private:
     llvm::Function* assert_func;
     void build_conv_runtime();
 
-    // LLVM prefetch intrinsic — emitted inside hot regions before array loops.
+    // LLVM prefetch intrinsic — hints fresh hot allocations into L1 cache.
     llvm::Function* prefetch_func;
 
     // Escape-checking for epochs: every open-array variable remembers the
@@ -287,7 +287,9 @@ public:
     // Attach loop optimization metadata (vectorize, unroll) to a back-edge
     // branch when inside a hot region.
     void attach_hot_loop_metadata(llvm::Instruction* br);
-    // Emit @llvm.prefetch(ptr, 0, 3, 1) to bring data into L1 cache.
+    // Emit @llvm.prefetch(ptr, 0, 3, 1) to bring data into L1 cache. Only in
+    // hot straight-line code: a prefetch inside a loop body is a call, and any
+    // call blocks vectorization of that loop.
     void emit_prefetch(llvm::Value* ptr);
     /**
      * Create a stack slot for a local. Static slots are moved to the function
@@ -296,12 +298,5 @@ public:
     llvm::Value* create_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name);
     // Like create_alloca but uses 64-byte (cache-line) alignment when inside hot.
     llvm::Value* hot_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name);
-    /**
-     * Inside a hot region, when `index` is a registered +1 loop counter, emit a
-     * prefetch for the element right after `elem_ptr` (the next iteration's
-     * element). `elem_ptr` must already have passed the bounds check.
-     */
-    void prefetch_next_if_hot(const std::shared_ptr<Expr>& index,
-                              llvm::Value* elem_ptr, llvm::Type* elem_ty);
     void finalize();
 };

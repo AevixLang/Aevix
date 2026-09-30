@@ -414,11 +414,17 @@ applies cache-oriented optimizations to everything it covers:
 - every loop back edge inside the block carries `llvm.loop` metadata enabling
   vectorization (width 4) and unrolling (count 4);
 - local slots are 64-byte (cache line) aligned;
-- array reads/writes through a `for` counter that steps by `+1`, and every
-  `for-in` iteration, prefetch the next element into L1 so the following
-  iteration finds it there;
-- arena allocations made inside the block (concat, literals, `new`) are
-  prefetched as well.
+- arena allocations made in straight-line code inside the block (concat,
+  literals, `new`) are prefetched into L1 before their first use.
+
+Loop bodies deliberately get **no** software prefetch: any call inside a loop
+makes LLVM's vectorizer reject that loop, and a vectorized loop streams
+through L1 far faster than a prefetch hint could help — sequential access is
+already covered by the hardware prefetcher.
+
+The build pipeline runs `opt -O2` between codegen and `llc`, which is what
+actually consumes the `hot` attribute and the `llvm.loop` metadata; without
+that stage the hints would never reach an optimizer.
 
 `epoch` blocks are rejected inside `hot`: rolling the arena back would evict
 the very lines the region pins, so sema reports `epoch inside hot region

@@ -29,6 +29,7 @@ FRONTEND_DIR = os.path.join(ROOT, "frontend")
 BACKEND_BIN = os.path.join(ROOT, "backend", "build", "aevix-backend")
 RUNTIME_OBJ = os.path.join(ROOT, "backend", "build", "runtime.o")
 LLC = "/opt/homebrew/opt/llvm/bin/llc"
+OPT = "/opt/homebrew/opt/llvm/bin/opt"
 CORPUS = os.path.join(os.path.dirname(__file__), "corpus")
 
 
@@ -84,8 +85,13 @@ def compile_and_run(code):
         ir = os.path.join(workdir, "out.ll")
         with open(ir, "w") as fh:
             fh.write(be.stdout)
+        opt_ll = os.path.join(workdir, "out.opt.ll")
+        oc = subprocess.run([OPT, "-passes=default<O2>", "-S", ir, "-o", opt_ll],
+                            capture_output=True, text=True)
+        if oc.returncode != 0:
+            return oc.returncode, [], oc.stderr
         obj = os.path.join(workdir, "out.o")
-        lc = subprocess.run([LLC, "-filetype=obj", ir, "-o", obj],
+        lc = subprocess.run([LLC, "-filetype=obj", opt_ll, "-o", obj],
                             capture_output=True, text=True)
         if lc.returncode != 0:
             return lc.returncode, [], lc.stderr

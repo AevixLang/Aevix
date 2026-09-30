@@ -207,7 +207,7 @@ func timingLine(res []stageResult) string {
 // saveBenchRow appends one dated row of build timings to notes/benchmarks.md.
 func saveBenchRow(src string, res []stageResult) {
 	path := filepath.Join(rootDir, "notes", "benchmarks.md")
-	header := "# Aevix build benchmarks\n\nBaseline recorded by `aevix bench`.\n\n| date | source | parse | sema | backend | llc | link |\n|---|---|---|---|---|---|---|\n"
+	header := "# Aevix build benchmarks\n\nBaseline recorded by `aevix bench`.\n\n| date | source | parse | sema | backend | opt | llc | link |\n|---|---|---|---|---|---|---|---|\n"
 	var existing string
 	if data, err := os.ReadFile(path); err == nil {
 		existing = string(data)
@@ -278,6 +278,9 @@ func bench() {
 // makeStages returns the build pipeline stages for a source file.
 // `quiet` silences chatty stage output (used by bench).
 func makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, semaExe string, quiet bool) []stage {
+	// Optimized IR sits next to the backend output so `aevix clean` removes it.
+	optPath := filepath.Join(filepath.Dir(irPath),
+		strings.TrimSuffix(filepath.Base(irPath), ".ll")+".opt.ll")
 	return []stage{
 		{"parse", func() error {
 			// Python: .aev -> ast.json (written straight into the build dir)
@@ -291,9 +294,15 @@ func makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, s
 			// Backend: ast.json -> LLVM IR on stdout, captured to a file
 			return runBackend(backendExe, astPath, irPath)
 		}},
+		{"opt", func() error {
+			// opt: mid-end -O2 passes. This is what actually consumes the hot
+			// region's loop vectorize/unroll metadata and function attribute;
+			// llc alone never runs them.
+			return runLLVMTool("opt", "-passes=default<O2>", "-S", irPath, "-o", optPath)
+		}},
 		{"llc", func() error {
-			// llc: IR -> object file
-			return runLLVMTool("llc", "-filetype=obj", irPath, "-o", objPath)
+			// llc: optimized IR -> object file
+			return runLLVMTool("llc", "-filetype=obj", optPath, "-o", objPath)
 		}},
 		{"link", func() error {
 			// clang: object + arena runtime -> executable

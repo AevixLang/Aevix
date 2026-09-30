@@ -12,10 +12,24 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
 #include <algorithm>
 #include <iostream>
 #include <map>
 #include <stack>
+
+namespace {
+// Tracks how many loop bodies are open while statements are generated.
+// A software prefetch inside a loop body is a call, and any call makes LLVM's
+// vectorizer reject the whole loop. The vectorized form is far faster than a
+// prefetch hint, so prefetch emission is suppressed while a loop is open.
+struct LoopDepthGuard {
+    int& depth;
+    explicit LoopDepthGuard(int& d) : depth(d) { ++depth; }
+    ~LoopDepthGuard() { --depth; }
+};
+}  // namespace
 
 // ============================================================================
 // Lifecycle: Module Setup & Variable Scope Management
@@ -27,6 +41,9 @@ CodeGenerator::CodeGenerator()
     , builder(std::make_unique<llvm::IRBuilder<>>(*context))
 {
     module->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
+    // A target triple feeds the optimizer's cost model: without one, `opt`
+    // treats the module as an unknown target and never vectorizes.
+    module->setTargetTriple(llvm::Triple(llvm::sys::getDefaultTargetTriple()));
     auto ptr_ty = llvm::PointerType::getUnqual(*context);
     auto func_type = llvm::FunctionType::get(builder->getInt32Ty(), {builder->getInt32Ty(), ptr_ty->getPointerTo()}, false);
     main_func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, "main", module.get());
@@ -1285,11 +1302,9 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
         builder->SetInsertPoint(ok);
         if (is_open) {
             ptr = builder->CreateInBoundsGEP(open_elem, ptr, {idx}, "idx");
-            prefetch_next_if_hot((*it)->index, ptr, open_elem);
         } else {
             llvm::Type* el = cur_arr->getArrayElementType();
             ptr = builder->CreateInBoundsGEP(cur_arr, ptr, {builder->getInt32(0), idx}, "idx");
-            prefetch_next_if_hot((*it)->index, ptr, el);
             cur_arr = el;
         }
     }
@@ -2418,7 +2433,9 @@ void CodeGenerator::generate_assign(const Assign& a) {
 }
 
 void CodeGenerator::emit_prefetch(llvm::Value* ptr) {
-    if (!prefetch_func || !ptr || hot_depth_ == 0) return;
+    // Never inside a loop body: the call would block vectorization, and a
+    // sequential stream is already covered by the hardware prefetcher.
+    if (!prefetch_func || !ptr || hot_depth_ == 0 || loop_depth_ > 0) return;
     // @llvm.prefetch(ptr, rw=0(read), locality=3(L1), cache_type=1(data))
     builder->CreateCall(prefetch_func, {
         ptr,
@@ -2454,21 +2471,6 @@ llvm::Value* CodeGenerator::hot_alloca(llvm::Type* ty, llvm::Value* array_size, 
         llvm::cast<llvm::AllocaInst>(ai)->setAlignment(llvm::Align(64));
     }
     return ai;
-}
-
-void CodeGenerator::prefetch_next_if_hot(const std::shared_ptr<Expr>& index,
-                                         llvm::Value* elem_ptr, llvm::Type* elem_ty) {
-    if (hot_depth_ == 0 || loop_counters_.empty() || !elem_ptr || !elem_ty) return;
-    auto var = dynamic_cast<Variable*>(index.get());
-    if (!var) return;
-    if (std::find(loop_counters_.begin(), loop_counters_.end(), var->name) == loop_counters_.end())
-        return;
-    // elem_ptr is the bounds-checked element of the current iteration; the next
-    // iteration reads the element after it. One-past-end is a legal address, so
-    // no extra range check is needed even on the last iteration.
-    llvm::Value* next_ptr = builder->CreateInBoundsGEP(
-        elem_ty, elem_ptr, {builder->getInt32(1)}, "hot.pref");
-    emit_prefetch(next_ptr);
 }
 
 void CodeGenerator::attach_hot_loop_metadata(llvm::Instruction* br) {
@@ -2777,6 +2779,7 @@ void CodeGenerator::generate_if(const If& if_stmt) {
 
 void CodeGenerator::generate_while(const While& w) {
     auto func = builder->GetInsertBlock()->getParent();
+    LoopDepthGuard loop_depth(loop_depth_);
     auto cond_block = llvm::BasicBlock::Create(*context, "while.cond", func);
     auto body_block = llvm::BasicBlock::Create(*context, "while.body", func);
     auto merge_block = llvm::BasicBlock::Create(*context, "while.end");
@@ -2803,29 +2806,8 @@ void CodeGenerator::generate_while(const While& w) {
 
 void CodeGenerator::generate_for(const For& f) {
     auto func = builder->GetInsertBlock()->getParent();
+    LoopDepthGuard loop_depth(loop_depth_);
     if (f.init) generate_stmt(f.init);
-
-    // Register the counter of a counted loop (init declares/assigns it, step is
-    // `counter += 1`). Inside a hot region every bounds-checked arr[counter]
-    // then prefetches arr[counter + 1]: exactly the next iteration's element.
-    bool counted = false;
-    if (f.init && f.step && f.step->kind == Stmt::Kind::Assign && f.step->assign_stmt &&
-        f.step->assign_stmt->op == "+=") {
-        auto one = dynamic_cast<Number*>(f.step->assign_stmt->value.get());
-        if (one && one->value == 1) {
-            std::string name;
-            if (f.init->kind == Stmt::Kind::Let) {
-                name = f.init->let.name;
-            } else if (f.init->kind == Stmt::Kind::Assign && f.init->assign_stmt) {
-                if (auto* v = dynamic_cast<Variable*>(f.init->assign_stmt->name.get()))
-                    name = v->name;
-            }
-            if (!name.empty()) {
-                loop_counters_.push_back(name);
-                counted = true;
-            }
-        }
-    }
 
     auto cond_block = llvm::BasicBlock::Create(*context, "for.cond", func);
     auto body_block = llvm::BasicBlock::Create(*context, "for.body", func);
@@ -2837,7 +2819,6 @@ void CodeGenerator::generate_for(const For& f) {
     if (f.condition) {
         auto cond = generate_expr(f.condition);
         if (!cond) {
-            if (counted) loop_counters_.pop_back();
             return;
         }
         require_bool(cond, "for condition");
@@ -2861,11 +2842,11 @@ void CodeGenerator::generate_for(const For& f) {
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
-    if (counted) loop_counters_.pop_back();
 }
 
 void CodeGenerator::generate_for_in(const ForIn& fi) {
     auto func = builder->GetInsertBlock()->getParent();
+    LoopDepthGuard loop_depth(loop_depth_);
     llvm::Value* arr = generate_expr(fi.iterable);
     if (!arr) return;
 
@@ -2924,12 +2905,6 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     }
     auto ev = builder->CreateLoad(elem, eptr, "forin.val");
     builder->CreateStore(ev, xalloc);
-    // Inside hot regions: prefetch the next element so L1 has it ready
-    // when the next iteration begins. icur < bound holds (the condition just
-    // passed), so eptr + 1 is at most one past the end — a legal address.
-    if (hot_depth_ > 0) {
-        emit_prefetch(builder->CreateInBoundsGEP(elem, eptr, {builder->getInt32(1)}, "forin.next"));
-    }
     loop_ctx.push_back({merge_block, step_block});
     generate_block(fi.body);
     loop_ctx.pop_back();

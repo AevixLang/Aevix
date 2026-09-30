@@ -54,7 +54,7 @@ The backend transforms the validated AST into LLVM IR.
 
 A high-level orchestration layer managing the developer experience.
 
-- **CLI**: Single binary (`aevix`) wrapping the full pipeline: frontend → sema → codegen → llc → clang.
+- **CLI**: Single binary (`aevix`) wrapping the full pipeline: frontend → sema → codegen → opt -O2 → llc → clang.
 - **Test runner**: Executes the integration test suite with parallel execution and pretty output.
 - **Build pipeline**: Manages invocation of the C++ frontend, sema, backend, and linker.
 
@@ -66,8 +66,9 @@ A high-level orchestration layer managing the developer experience.
 1. **Parsing**: `aevix-frontend input.aev` → `ast.json`
 2. **Analysis**: `aevix-sema ast.json` → validated AST
 3. **Generation**: `aevix-backend ast.json` → `output.ll`
-4. **Assembly**: `llc output.ll -o output.o`
-5. **Linking**: `clang output.o runtime.o -o program`
+4. **Optimization**: `opt -passes=default<O2> output.ll -o output.opt.ll`
+5. **Assembly**: `llc output.opt.ll -o output.o`
+6. **Linking**: `clang output.o runtime.o -o program`
 
 ### Rapid Prototyping Flow
 When adding a new language feature:
@@ -79,7 +80,8 @@ When adding a new language feature:
 
 - [ ] **Full escape analysis**: Param-level escape checking for epochs.
 - [x] **Hot region optimization**: `hot` function attribute, loop vectorize/unroll
-  metadata, 64-byte aligned slots, next-element prefetch; `epoch` rejected inside.
+  metadata, 64-byte aligned slots, hot allocation prefetch, `opt -O2` pipeline
+  stage that consumes them (loops vectorize); `epoch` rejected inside.
 - [ ] **SOS transformations**: Automatic stack promotion and SIMD conversion.
 - [ ] **Context polymorphism**: Per-call-site function variant generation.
 - [ ] **Proof-carrying safety**: Compile-time invariant verification.
