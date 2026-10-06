@@ -185,6 +185,13 @@ private:
     bool is_arena_linked_expr(Expr* e) {
         if (auto* n = dynamic_cast<New*>(e)) return true;
         if (auto* al = dynamic_cast<ArrayLit*>(e)) return true;
+        // A struct literal is arena-linked when any of its fields is: the
+        // struct value copies the field pointers, so it carries them with it.
+        if (auto* sl = dynamic_cast<StructLiteral*>(e)) {
+            for (const auto& el : sl->args)
+                if (is_arena_linked_expr(el.get())) return true;
+            return false;
+        }
         if (auto* v = dynamic_cast<Variable*>(e)) {
             std::string t = lookup_var(v->name, e->line, e->col);
             return is_arena_linked_type(t);
@@ -573,19 +580,41 @@ int Checker::arena_origin(Expr* e) {
             m = std::max(m, arena_origin(el.get()));
         return m;
     }
+    // A struct literal allocates no arena memory itself, but its fields may
+    // already point into the arena — the value is only as safe as its
+    // arena-linked fields, so track their origin rather than the literal's.
+    if (auto* sl = dynamic_cast<StructLiteral*>(e)) {
+        int m = -1;
+        for (const auto& el : sl->args)
+            m = std::max(m, arena_origin(el.get()));
+        return m;
+    }
+    // The origin question is "may this value reference arena memory, and at
+    // which depth did that memory get bound". It must use the struct-aware
+    // predicate: a slice wrapped in a struct field is still arena memory and
+    // would otherwise slip through as a plain composite value.
     if (auto* v = dynamic_cast<Variable*>(e)) {
         std::string t = lookup_var(v->name, e->line, e->col);
-        if (!is_slice(t) && !is_fixed_array(t)) return -1;
+        if (!is_arena_linked_type(t)) return -1;
         auto it = epoch_of_.find(v->name);
         return it != epoch_of_.end() ? it->second : -1;
     }
     if (auto* ma = dynamic_cast<MemberAccess*>(e)) {
-        if (!is_slice(infer(ma)) && !is_fixed_array(infer(ma))) return -1;
+        if (!is_arena_linked_type(infer(ma))) return -1;
         return arena_origin(ma->object.get());
     }
     if (auto* ix = dynamic_cast<Index*>(e)) {
-        if (!is_slice(infer(ix)) && !is_fixed_array(infer(ix))) return -1;
+        if (!is_arena_linked_type(infer(ix))) return -1;
         return arena_origin(ix->object.get());
+    }
+    // A callee may allocate in the epoch we are currently in; assume it does
+    // so that a returned value cannot be bound to an outer scope. Unknown
+    // callees (builtins) are not tracked here — they stay codegen's business.
+    if (auto* c = dynamic_cast<Call*>(e)) {
+        auto it = funcs_.find(c->callee);
+        if (it == funcs_.end() || !is_arena_linked_type(it->second.return_type))
+            return -1;
+        return epoch_depth_ > 0 ? epoch_depth_ : -1;
     }
     return -1;
 }

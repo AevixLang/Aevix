@@ -236,6 +236,91 @@ def test_sema_accepts_primitive_epoch_locals():
         "}")
 
 
+def test_sema_rejects_struct_value_epoch_escape():
+    # The struct itself carries the slice pointer out of the epoch, not just
+    # a single field write. Regression for the struct-wrapped use-after-free:
+    # the rolled-back bytes were later reused by the next epoch.
+    err = sema_rejected(
+        "struct B { data: int[] }\n"
+        "func main() {\n"
+        "    let o = B { new int[1] };\n"
+        "    epoch {\n"
+        "        let inner = new int[3];\n"
+        "        let b = B { inner };\n"
+        "        o = b;\n"
+        "    }\n"
+        "    print o.data[0];\n"
+        "}")
+    assert "may be freed while referenced" in err
+
+
+def test_sema_rejects_struct_literal_epoch_escape():
+    # Same hole through a struct literal built directly inside the epoch.
+    err = sema_rejected(
+        "struct B { data: int[] }\n"
+        "func main() {\n"
+        "    let o = B { new int[1] };\n"
+        "    epoch {\n"
+        "        o = B { new int[3] };\n"
+        "    }\n"
+        "    print o.data[0];\n"
+        "}")
+    assert "may be freed while referenced" in err
+
+
+def test_sema_rejects_returning_struct_literal_from_epoch():
+    # A struct literal carrying arena fields must obey the same return rule
+    # as a plain arena value.
+    err = sema_rejected(
+        "struct B { data: int[] }\n"
+        "func f(): B {\n"
+        "    epoch { return B { new int[3] }; }\n"
+        "}")
+    assert "arena-allocated" in err or "epoch" in err
+
+
+def test_sema_rejects_escaping_call_result_epoch():
+    # A callee returning arena memory may not be bound to an outer scope.
+    err = sema_rejected(
+        "func mk(): int[] { return new int[4]; }\n"
+        "func main() {\n"
+        "    let o: int[] = [];\n"
+        "    epoch { o = mk(); }\n"
+        "}")
+    assert "may be freed while referenced" in err
+
+
+def test_sema_accepts_arena_free_struct_across_epoch():
+    # A struct with no arena-linked field is a plain value copy: nothing in
+    # it points into the arena, so crossing the epoch boundary is safe.
+    sema_accepted(
+        "struct Pt { x: int, y: int }\n"
+        "func main() {\n"
+        "    let o = Pt { 0, 0 };\n"
+        "    epoch {\n"
+        "        let p = Pt { 1, 2 };\n"
+        "        o = p;\n"
+        "    }\n"
+        "    print o.x;\n"
+        "}")
+
+
+def test_sema_accepts_arena_struct_into_deeper_epoch():
+    # Moving an arena-linked value inwards (to a deeper epoch) is always
+    # safe: the allocating epoch is still alive at the target.
+    sema_accepted(
+        "struct B { data: int[] }\n"
+        "func main() {\n"
+        "    epoch {\n"
+        "        let inner = new int[3];\n"
+        "        epoch {\n"
+        "            let b = B { inner };\n"
+        "            print b.data[0];\n"
+        "        }\n"
+        "    }\n"
+        "}")
+
+
 # ---------------------------------------------------------------------------
 # 1.5 — fixed-width types, conversions and enum (sema stage)
 #
