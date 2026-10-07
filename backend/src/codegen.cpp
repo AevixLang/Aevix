@@ -2312,6 +2312,32 @@ llvm::Value* CodeGenerator::apply_compound(llvm::Value* old, llvm::Value* rhs,
     error("Unknown assignment operator '" + op + "'");
 }
 
+/**
+ * Epoch depth at which the arena memory behind a slice or string value was
+ * bound, or -1 when the value can never be freed.
+ *
+ * A string literal is a module-level constant, so its origin is -1. For a
+ * variable, index or field access the origin is the depth the root variable
+ * was declared at: sema already forbids storing memory from a deeper epoch
+ * into it, so what it holds is safe at that depth. Everything else (new,
+ * array literals, concat, calls) allocates right now, at the current depth.
+ */
+int CodeGenerator::slice_value_origin(const std::shared_ptr<Expr>& e) {
+    if (!e) return epoch_depth;
+    if (dynamic_cast<String*>(e.get())) return -1;
+    const Expr* root = e.get();
+    while (true) {
+        if (auto* v = dynamic_cast<const Variable*>(root)) {
+            auto it = open_epochs.find(v->name);
+            return it != open_epochs.end() ? it->second : 0;
+        }
+        if (auto* ix = dynamic_cast<const Index*>(root)) { root = ix->object.get(); continue; }
+        if (auto* ma = dynamic_cast<const MemberAccess*>(root)) { root = ma->object.get(); continue; }
+        break;
+    }
+    return epoch_depth;
+}
+
 void CodeGenerator::generate_assign(const Assign& a) {
     if (auto ix = std::dynamic_pointer_cast<Index>(a.name)) {
         llvm::Type* elem_ty = nullptr;
@@ -2407,9 +2433,14 @@ void CodeGenerator::generate_assign(const Assign& a) {
 
     llvm::Type* val_ty = val->getType();
     if (is_slice_ty(ty)) {
-        // Assigning a slice: the target must live at or below the current epoch
-        // depth, otherwise the arena rollback would leave it dangling.
-        if (open_epochs[var->name] < epoch_depth) {
+        // Assigning a slice: the value's memory must not be freed while the
+        // target still points at it, so the target has to live at least as
+        // deep as the epoch the value was bound in. Keyed on the value's
+        // origin rather than the current depth: a string literal is a global
+        // constant and needs no epoch at all, so storing one into an outer
+        // variable from inside an epoch is fine.
+        int origin = slice_value_origin(a.value);
+        if (origin > open_epochs[var->name]) {
             error("Cannot move an arena slice out of its epoch: assignment to '" + var->name + "'");
         }
         if (val_ty != ty) {

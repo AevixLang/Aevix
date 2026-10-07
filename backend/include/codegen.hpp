@@ -301,5 +301,8 @@ public:
     // Storage for a `let`: a module-level global at file scope, a stack slot
     // everywhere else (see codegen.cpp).
     llvm::Value* let_slot(llvm::Type* ty, const llvm::Twine& name);
+    // Epoch depth the arena memory behind a slice/string value is bound to
+    // (see codegen.cpp).
+    int slice_value_origin(const std::shared_ptr<Expr>& e);
     void finalize();
 };

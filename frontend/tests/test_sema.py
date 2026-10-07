@@ -321,6 +321,70 @@ def test_sema_accepts_arena_struct_into_deeper_epoch():
         "}")
 
 
+def test_sema_accepts_string_literal_into_outer_var_inside_epoch():
+    # A literal is a module-level constant: it outlives every epoch.
+    sema_accepted(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    epoch { out = \"hello\"; }\n"
+        "    print out;\n"
+        "}")
+
+
+def test_sema_accepts_outer_string_copy_inside_epoch():
+    sema_accepted(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    let base = \"y\";\n"
+        "    epoch { out = base; }\n"
+        "}")
+
+
+def test_sema_rejects_string_concat_into_outer_var_inside_epoch():
+    err = sema_rejected(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    epoch { out = \"a\" + \"b\"; }\n"
+        "}")
+    assert "epoch" in err
+
+
+def test_sema_rejects_builtin_string_into_outer_var_inside_epoch():
+    err = sema_rejected(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    epoch { out = upper(\"ab\"); }\n"
+        "}")
+    assert "epoch" in err
+
+
+def test_sema_rejects_arg_into_outer_var_inside_epoch():
+    err = sema_rejected(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    epoch { out = arg(0); }\n"
+        "}")
+    assert "epoch" in err
+
+
+def test_sema_rejects_to_str_into_outer_var_inside_epoch():
+    err = sema_rejected(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    epoch { out = to_str(1); }\n"
+        "}")
+    assert "epoch" in err
+
+
+def test_sema_rejects_builtin_string_return_from_epoch():
+    err = sema_rejected(
+        "func mk(): string {\n"
+        "    epoch { return upper(\"ab\"); }\n"
+        "    return \"\";\n"
+        "}")
+    assert "arena" in err
+
+
 # ---------------------------------------------------------------------------
 # 1.5 — fixed-width types, conversions and enum (sema stage)
 #

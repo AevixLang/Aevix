@@ -9,14 +9,15 @@ Currently ENFORCED and asserted:
   - no-escape: a slice allocated in an epoch cannot be assigned to an
     outer variable; returning from inside an epoch is rejected;
     using/passing the slice to inner functions is fine.
+  - string provenance: a literal is a module-level constant and may cross
+    an epoch boundary, while a concat or builtin result is arena memory
+    and may not (sema rejects both the assignment and the return).
   - no-uaf: arena rollback reuses memory and re-zeros it (deterministic
     stale reads instead of UB).
   - no-uninit: new T[n] is zeroed by the arena allocator.
   - no-oob: fixed-array and slice index checks abort on out-of-range.
 
-KNOWN GAPS (NOT tested yet, negative tests land with sema 1.3):
-  - writing an epoch slice into an outer struct field compiles today
-    (memory_safety.md rule no-escape-4);
+KNOWN GAPS (NOT tested yet):
   - returning a copy of epoch data cannot yet be expressed (blanket ban).
 """
 import os
@@ -153,6 +154,70 @@ def test_no_escape_legal_use_inside_epoch():
     )
     assert code == 0, err
     assert out == ["12"], out
+
+
+# --- no-escape: string provenance across an epoch boundary ---
+
+def test_string_literal_survives_epoch():
+    # A literal lives in a module-level constant, so storing one into an
+    # outer variable from inside an epoch must compile and run.
+    code, out, err = compile_and_run(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    epoch { out = \"hello\"; }\n"
+        "    print out;\n"
+        "}\n"
+        "main();\n"
+    )
+    assert code == 0, err
+    assert out == ["hello"], out
+
+
+def test_outer_string_copy_inside_epoch_runs():
+    code, out, err = compile_and_run(
+        "func main() {\n"
+        "    let out: string = \"\";\n"
+        "    let base = \"y\";\n"
+        "    epoch { out = base; }\n"
+        "    print out;\n"
+        "}\n"
+        "main();\n"
+    )
+    assert code == 0, err
+    assert out == ["y"], out
+
+
+def test_epoch_local_string_assignment_runs():
+    code, out, err = compile_and_run(
+        "func main() {\n"
+        "    epoch {\n"
+        "        let s: string = \"\";\n"
+        "        s = upper(\"ab\");\n"
+        "        print s;\n"
+        "    }\n"
+        "}\n"
+        "main();\n"
+    )
+    assert code == 0, err
+    assert out == ["AB"], out
+
+
+def test_no_escape_string_concat_into_outer_var_rejected():
+    ec, err = compile_only(
+        "let out: string = \"\";\n"
+        "epoch { out = \"a\" + \"b\"; }\n"
+    )
+    assert ec != 0, "a concat result must not outlive its epoch"
+    assert "epoch" in err.lower()
+
+
+def test_no_escape_builtin_string_into_outer_var_rejected():
+    ec, err = compile_only(
+        "let out: string = \"\";\n"
+        "epoch { out = upper(\"ab\"); }\n"
+    )
+    assert ec != 0, "a builtin result must not outlive its epoch"
+    assert "epoch" in err.lower()
 
 
 # --- no-uaf: rollback reuses memory and re-zeros it ---

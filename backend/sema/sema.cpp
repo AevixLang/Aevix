@@ -185,6 +185,8 @@ private:
     bool is_arena_linked_expr(Expr* e) {
         if (auto* n = dynamic_cast<New*>(e)) return true;
         if (auto* al = dynamic_cast<ArrayLit*>(e)) return true;
+        // A string concat allocates its result in the arena; a literal does not.
+        if (auto* ad = dynamic_cast<Add*>(e)) return infer(ad) == "string";
         // A struct literal is arena-linked when any of its fields is: the
         // struct value copies the field pointers, so it carries them with it.
         if (auto* sl = dynamic_cast<StructLiteral*>(e)) {
@@ -200,13 +202,23 @@ private:
             auto fn = funcs_.find(c->callee);
             if (fn != funcs_.end())
                 return is_arena_linked_type(fn->second.return_type);
-            return false;
+            return is_arena_string_builtin(c->callee);
         }
         if (auto* ma = dynamic_cast<MemberAccess*>(e))
             return is_arena_linked_type(infer(ma));
         if (auto* ix = dynamic_cast<Index*>(e))
             return is_arena_linked_type(infer(ix));
         return false;
+    }
+
+    // True for a builtin whose result is arena memory. Every string-returning
+    // builtin (to_str, substr, upper, arg, ...) builds a fresh arena buffer;
+    // int/bool/void builtins never do. Builtins are not declared through `func`,
+    // so they are invisible to the funcs_ lookup above.
+    bool is_arena_string_builtin(const std::string& name) {
+        auto it = builtins().find(name);
+        if (it == builtins().end()) return false;
+        return is_arena_linked_type(it->second);
     }
 
     // Builtin explicit conversions (narrowing is only reachable through these).
@@ -574,6 +586,12 @@ std::string Checker::bin_arith(Expr* l, Expr* r, int line, int col) {
 int Checker::arena_origin(Expr* e) {
     if (auto* n = dynamic_cast<New*>(e))
         return epoch_depth_ > 0 ? epoch_depth_ : -1;
+    if (auto* ad = dynamic_cast<Add*>(e)) {
+        // A string concat builds a fresh arena buffer. A literal operand is
+        // a module-level constant, but the concatenation itself is not.
+        if (infer(ad) != "string") return -1;
+        return epoch_depth_ > 0 ? epoch_depth_ : -1;
+    }
     if (auto* al = dynamic_cast<ArrayLit*>(e)) {
         int m = epoch_depth_ > 0 ? epoch_depth_ : -1;
         for (const auto& el : al->elements)
@@ -608,12 +626,15 @@ int Checker::arena_origin(Expr* e) {
         return arena_origin(ix->object.get());
     }
     // A callee may allocate in the epoch we are currently in; assume it does
-    // so that a returned value cannot be bound to an outer scope. Unknown
-    // callees (builtins) are not tracked here — they stay codegen's business.
+    // so that a returned value cannot be bound to an outer scope. Builtins are
+    // not in funcs_, but the string-returning ones allocate all the same.
     if (auto* c = dynamic_cast<Call*>(e)) {
         auto it = funcs_.find(c->callee);
-        if (it == funcs_.end() || !is_arena_linked_type(it->second.return_type))
+        if (it != funcs_.end()) {
+            if (!is_arena_linked_type(it->second.return_type)) return -1;
+        } else if (!is_arena_string_builtin(c->callee)) {
             return -1;
+        }
         return epoch_depth_ > 0 ? epoch_depth_ : -1;
     }
     return -1;
