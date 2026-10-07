@@ -2210,7 +2210,7 @@ void CodeGenerator::generate_let(const Let& let) {
             llvm::StructType* st = llvm::cast<llvm::StructType>(llvm_type_from_name(let.var_type));
             llvm::Value* val = coerce_expr_to(let.value, let.var_type);
             if (!val) return;
-            auto alloc = create_alloca(st, nullptr, let.name);
+            auto alloc = let_slot(st, let.name);
             builder->CreateStore(val, alloc);
             named_values.back()[let.name] = alloc;
             named_types.back()[let.name] = st;
@@ -2229,7 +2229,7 @@ void CodeGenerator::generate_let(const Let& let) {
         llvm::Type* declared = arr_size == -1
             ? llvm_type_from_name(base)
             : llvm_type_from_name(let.var_type);
-        auto alloc = hot_alloca(declared, nullptr, let.name);
+        auto alloc = let_slot(declared, let.name);
         builder->CreateStore(val, alloc);
         if (arr_size > 0) {
             // Declared fixed arrays are not open arrays.
@@ -2250,7 +2250,7 @@ void CodeGenerator::generate_let(const Let& let) {
 
     if (is_slice_ty(ty)) {
         // Inference: let a = <slice expr>  (new / int[] call) → open array var
-        auto alloc = hot_alloca(ty, nullptr, let.name);
+        auto alloc = let_slot(ty, let.name);
         builder->CreateStore(val, alloc);
         named_values.back()[let.name] = alloc;
         named_types.back()[let.name] = ty;
@@ -2265,7 +2265,7 @@ void CodeGenerator::generate_let(const Let& let) {
         return;
     }
 
-    auto alloc = hot_alloca(ty, nullptr, let.name);
+    auto alloc = let_slot(ty, let.name);
     builder->CreateStore(val, alloc);
     define_var(let.name, alloc, ty, tname);
 }
@@ -2471,6 +2471,27 @@ llvm::Value* CodeGenerator::hot_alloca(llvm::Type* ty, llvm::Value* array_size, 
         llvm::cast<llvm::AllocaInst>(ai)->setAlignment(llvm::Align(64));
     }
     return ai;
+}
+
+/**
+ * Storage for a `let`. A declaration at file scope is visible from every
+ * function body, so it must be a module-level global: an alloca created while
+ * emitting main would be referenced from other functions, and LLVM rejects a
+ * value that is defined in one function and used in another. The initializer
+ * is still stored at the declaration's position in main, so declaration order
+ * and side effects of the initializer expression are preserved.
+ */
+llvm::Value* CodeGenerator::let_slot(llvm::Type* ty, const llvm::Twine& name) {
+    auto* cur = builder->GetInsertBlock();
+    bool file_scope = cur && cur->getParent() == main_func && named_values.size() == 1;
+    if (file_scope) {
+        auto* gv = new llvm::GlobalVariable(*module, ty, false,
+                                            llvm::GlobalValue::InternalLinkage,
+                                            llvm::Constant::getNullValue(ty), name);
+        if (hot_depth_ > 0) gv->setAlignment(llvm::Align(64));
+        return gv;
+    }
+    return hot_alloca(ty, nullptr, name);
 }
 
 void CodeGenerator::attach_hot_loop_metadata(llvm::Instruction* br) {
@@ -3145,14 +3166,26 @@ void CodeGenerator::generate_program(const Program& program) {
     for (const auto& stmt : program.body) {
         if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) declare_func(*stmt->func_decl);
     }
-    for (const auto& stmt : program.body) {
-        if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) generate_func_decl(*stmt->func_decl);
-    }
     builder->SetInsertPoint(main_entry_block);
     // Persist argc/argv for argc()/arg() anywhere in the program.
     builder->CreateStore(main_func->getArg(0), argc_global);
     builder->CreateStore(main_func->getArg(1), argv_global);
     for (const auto& stmt : program.body) {
         if (stmt->kind != Stmt::Kind::FuncDecl && stmt->kind != Stmt::Kind::StructDecl) generate_stmt(stmt);
+    }
+    // Close main while the builder still points at its trailing block. The
+    // function bodies below move the insert point into their own blocks, so
+    // finalize() would no longer be able to terminate main and the verifier
+    // would reject the module with "does not have terminator".
+    if (auto cur = builder->GetInsertBlock()) {
+        if (!cur->getTerminatorOrNull()) builder->CreateRet(builder->getInt32(0));
+    }
+    // Function bodies come last: their signatures already exist (declare_func),
+    // and every top-level `let` has by now created its slot and registered it
+    // in named_values, so a body may read and write globals declared anywhere
+    // at file scope. Generating them before the top-level statements would
+    // leave the globals unregistered and fail on "unknown variable".
+    for (const auto& stmt : program.body) {
+        if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) generate_func_decl(*stmt->func_decl);
     }
 }

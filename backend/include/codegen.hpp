@@ -298,5 +298,8 @@ public:
     llvm::Value* create_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name);
     // Like create_alloca but uses 64-byte (cache-line) alignment when inside hot.
     llvm::Value* hot_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name);
+    // Storage for a `let`: a module-level global at file scope, a stack slot
+    // everywhere else (see codegen.cpp).
+    llvm::Value* let_slot(llvm::Type* ty, const llvm::Twine& name);
     void finalize();
 };
