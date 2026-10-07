@@ -149,7 +149,7 @@ func power(base: float, exp: float) : float {
 ```
 
 ### Reference parameters
-Prefix a parameter with `ref` to pass it by reference (read-write). The argument must be an lvalue (variable or assignable expression); temporaries, enum variants, and two `ref` params bound to the same variable are compile errors.
+Prefix a parameter with `ref` to pass it by reference (read-write). The argument must be an lvalue (variable or assignable expression); temporaries, enum variants, and two `ref` params bound to the same variable are compile errors. `ref` is written on the parameter declaration only — a call site passes the plain argument.
 
 ```aev
 func swap(a: ref int, b: ref int) {
@@ -160,7 +160,7 @@ func swap(a: ref int, b: ref int) {
 
 let x = 1;
 let y = 2;
-swap(ref x, ref y);
+swap(x, y);
 print x;  // 2
 print y;  // 1
 ```
