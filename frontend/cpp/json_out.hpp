@@ -54,11 +54,28 @@ private:
     }
 
     static void write_stmt(std::ostringstream& os, const Stmt& s, int depth) {
-        std::visit([&](const auto& node) { write_stmt_node(os, node, depth); }, s.node);
+        std::ostringstream node;
+        std::visit([&](const auto& n) { write_stmt_node(node, n, depth); }, s.node);
+        os << with_pos(node.str(), s.line, s.col);
     }
 
     static void write_expr(std::ostringstream& os, const Expr& e, int depth) {
-        std::visit([&](const auto& node) { write_expr_node(os, node, depth); }, e.node);
+        std::ostringstream node;
+        std::visit([&](const auto& n) { write_expr_node(node, n, depth); }, e.node);
+        os << with_pos(node.str(), e.line, e.col);
+    }
+
+    // Positions are part of schema v4 — the Python frontend already emits
+    // them. Without them json_reader leaves line/col at 0 and every
+    // downstream diagnostic loses its source location.
+    static std::string with_pos(const std::string& obj, int line, int col) {
+        size_t brace = obj.find('{');
+        if (brace == std::string::npos) return obj;
+        std::ostringstream os;
+        os << obj.substr(0, brace + 1) << "\"line\": " << line << ", \"col\": " << col;
+        if (brace + 1 < obj.size() && obj[brace + 1] != '}') os << ", ";
+        os << obj.substr(brace + 1);
+        return os.str();
     }
 
     // ---- Statement writers ----
@@ -180,9 +197,9 @@ private:
         os << "]}";
     }
 
-    // Expression statement: just emit the expression
+    // Expression statement: write the bare node, write_stmt adds its position
     static void write_stmt_node(std::ostringstream& os, const Expr& e, int d) {
-        write_expr(os, e, d);
+        std::visit([&](const auto& node) { write_expr_node(os, node, d); }, e.node);
     }
 
     // Catch-all for variant
