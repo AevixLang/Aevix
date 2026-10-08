@@ -769,3 +769,64 @@ def test_sema_accepts_epoch_outside_hot():
         "        print tmp[0];\n"
         "    }\n"
         "}")
+
+
+# ---------------------------------------------------------------------------
+# 1.9 — func declarations are top-level only
+# ---------------------------------------------------------------------------
+
+def test_sema_rejects_nested_func():
+    err = sema_rejected(
+        "func outer(): int {\n"
+        "    func inner(): int { return 1; }\n"
+        "    return inner();\n"
+        "}\n"
+        "print outer();")
+    assert "only allowed at the top level" in err
+    # the placement error must not be masked by the cascade it used to cause
+    assert "return value does not match" not in err
+
+
+def test_sema_rejects_func_inside_hot():
+    err = sema_rejected(
+        "hot {\n"
+        "    func f(): int { return 1; }\n"
+        "}\n"
+        "print f();")
+    assert "only allowed at the top level" in err
+
+
+def test_sema_rejects_func_inside_if():
+    err = sema_rejected(
+        "if (true) {\n"
+        "    func f(): int { return 1; }\n"
+        "}\n"
+        "print f();")
+    assert "only allowed at the top level" in err
+
+
+def test_sema_rejects_func_inside_loop_body():
+    err = sema_rejected(
+        "func outer(): int {\n"
+        "    for (let i = 0; i < 1; i += 1) {\n"
+        "        func inner(): int { return i; }\n"
+        "    }\n"
+        "    return 0;\n"
+        "}")
+    assert "only allowed at the top level" in err
+
+
+def test_sema_rejects_func_inside_epoch():
+    err = sema_rejected(
+        "epoch {\n"
+        "    func f(): int { return 1; }\n"
+        "}\n"
+        "print f();")
+    assert "only allowed at the top level" in err
+
+
+def test_sema_accepts_several_top_level_funcs():
+    sema_accepted(
+        "func a(): int { return 1; }\n"
+        "func b(): int { return a(); }\n"
+        "print b();")

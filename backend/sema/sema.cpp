@@ -329,6 +329,8 @@ private:
     void check_stmt(Stmt& s);
     void check_block(const std::vector<std::shared_ptr<Stmt>>& body);
     void check_epoch(Epoch& e);
+    bool check_func_placement(const std::vector<std::shared_ptr<Stmt>>& body, bool top_level);
+    bool check_func_placement(const Stmt& s, bool top_level);
 };
 
 // ---------------------------------------------------------------------------
@@ -1009,7 +1011,54 @@ void Checker::check_stmt(Stmt& s) {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Reports the first `func` declaration that is not a direct child of the
+ * program. Only such functions are registered below, so a nested one would
+ * be missing from funcs_ and every call to it would fail later with a
+ * message that blames the wrong line.
+ */
+bool Checker::check_func_placement(const std::vector<std::shared_ptr<Stmt>>& body, bool top_level) {
+    for (auto& s : body)
+        if (!check_func_placement(*s, top_level)) return false;
+    return true;
+}
+
+bool Checker::check_func_placement(const Stmt& s, bool top_level) {
+    if (s.kind == Stmt::Kind::FuncDecl) {
+        if (!top_level) {
+            error("function declarations are only allowed at the top level", s.line, s.col);
+            return false;
+        }
+        return check_func_placement(s.func_decl->body->body, false);
+    }
+    switch (s.kind) {
+    case Stmt::Kind::Hot:
+        return check_func_placement(s.hot.body, false);
+    case Stmt::Kind::Epoch:
+        return check_func_placement(s.epoch.body, false);
+    case Stmt::Kind::If:
+        if (!check_func_placement(s.if_stmt->then_block->body, false)) return false;
+        if (s.if_stmt->else_block)
+            return check_func_placement(s.if_stmt->else_block->body, false);
+        return true;
+    case Stmt::Kind::While:
+        return check_func_placement(s.while_stmt->body->body, false);
+    case Stmt::Kind::For:
+        if (s.for_stmt->init && !check_func_placement(*s.for_stmt->init, false)) return false;
+        if (s.for_stmt->step && !check_func_placement(*s.for_stmt->step, false)) return false;
+        return check_func_placement(s.for_stmt->body->body, false);
+    case Stmt::Kind::ForIn:
+        return check_func_placement(s.for_in_stmt->body->body, false);
+    default:
+        return true;
+    }
+}
+
 bool Checker::run() {
+    if (!check_func_placement(program_.body, true)) {
+        diags_.emit();
+        return false;
+    }
     for (auto& s : program_.body) {
         switch (s->kind) {
         case Stmt::Kind::FuncDecl:
