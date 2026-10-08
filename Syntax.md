@@ -337,9 +337,8 @@ space-separated and a single newline is emitted once at the end:
 print 1, "two", 3.5;         // 1 two 3.500000
 ```
 Booleans print as the words `true` / `false` (also inside arrays and structs).
-
-Note: printing an open array (slice) of structs is not supported yet; fixed
-arrays of structs and slices of strings print fine.
+Fixed arrays and open arrays (slices) print in the same bracketed form, for
+scalars, strings and structs alike: `[{1, 2}, {3, 4}]`.
 
 Built-in functions:
 

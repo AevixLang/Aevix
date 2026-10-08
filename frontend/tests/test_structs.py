@@ -231,7 +231,7 @@ def test_for_in_over_struct_array():
     assert out == ["{1, 2}", "{3, 4}"]
 
 
-# --- struct slices (typed literal) ---
+# --- struct slices (typed literal, printing) ---
 
 def test_typed_open_array_of_struct_literal():
     ec, out, err = run_and_capture(
@@ -252,6 +252,20 @@ def test_typed_open_array_of_structs_empty():
     )
     assert ec == 0, err
     assert out == ["0"]
+
+
+def test_print_open_array_of_structs():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let literal: Point[] = [Point { 1, 2 }, Point { 3, 4 }];\n"
+        "let heap = new Point[2];\n"
+        "heap[0] = Point { 5, 6 };\n"
+        "heap[1] = Point { 7, 8 };\n"
+        "print literal;\n"
+        "print heap;\n"
+    )
+    assert ec == 0, err
+    assert out == ["[{1, 2}, {3, 4}]", "[{5, 6}, {7, 8}]"]
 
 
 # --- struct literals with mixed types ---

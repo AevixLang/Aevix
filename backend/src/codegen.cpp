@@ -1402,7 +1402,6 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice) {
 
 void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) {
     llvm::Type* elem = slice_elem_type(llvm::cast<llvm::StructType>(slice->getType()));
-    if (elem->isStructTy() && !is_string_slice(elem)) error("Cannot print an open array of structs yet");
 
     auto ptr_val = builder->CreateExtractValue(slice, 0, "sp.ptr");
     auto len_val = builder->CreateExtractValue(slice, 1, "sp.len");
