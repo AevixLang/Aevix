@@ -231,6 +231,29 @@ def test_for_in_over_struct_array():
     assert out == ["{1, 2}", "{3, 4}"]
 
 
+# --- struct slices (typed literal) ---
+
+def test_typed_open_array_of_struct_literal():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let pts: Point[] = [Point { 1, 2 }, Point { 3, 4 }];\n"
+        "print pts[0].x;\n"
+        "print pts[1].y;\n"
+    )
+    assert ec == 0, err
+    assert out == ["1", "4"]
+
+
+def test_typed_open_array_of_structs_empty():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let pts: Point[] = [];\n"
+        "print len(pts);\n"
+    )
+    assert ec == 0, err
+    assert out == ["0"]
+
+
 # --- struct literals with mixed types ---
 
 def test_struct_literal_int_to_float_cast():

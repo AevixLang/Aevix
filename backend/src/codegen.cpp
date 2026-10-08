@@ -990,6 +990,11 @@ llvm::Value* CodeGenerator::make_slice_from_lit(const ArrayLit& al, const std::s
     llvm::Type* elem = (base == "string")
         ? static_cast<llvm::Type*>(slice_type_for("string"))
         : scalar_type_for(base);
+    // A struct element is as valid as a scalar one; only an unknown name is an error.
+    if (!elem) {
+        auto sit = struct_types.find(base);
+        if (sit != struct_types.end()) elem = sit->second;
+    }
     if (!elem) error("Unknown element type in array literal: " + base);
     // A slice *of strings* is wrapped by string[]Slice, not the string slice.
     const std::string wrap = (base == "string") ? "string[]" : base;
