@@ -519,15 +519,25 @@ private:
             Token name = advance();
             expect(TokType::LBRACE, "expected '{'");
             std::vector<ExprPtr> args;
+            std::vector<std::string> field_names;
             if (!check(TokType::RBRACE)) {
-                args.push_back(parse_expr());
-                while (match(TokType::COMMA)) {
+                while (true) {
+                    if (check(TokType::IDENT) && pos + 1 < tokens.size()
+                        && tokens[pos + 1].type == TokType::COLON) {
+                        Token fld = advance();
+                        expect(TokType::COLON, "expected ':'");
+                        args.push_back(parse_expr());
+                        field_names.push_back(fld.value);
+                    } else {
+                        args.push_back(parse_expr());
+                        field_names.push_back("");
+                    }
+                    if (!match(TokType::COMMA)) break;
                     if (check(TokType::RBRACE)) break;
-                    args.push_back(parse_expr());
                 }
             }
             expect(TokType::RBRACE, "expected '}'");
-            return std::make_shared<Expr>(Expr{StructLiteral{name.value, args}, sl, sc});
+            return std::make_shared<Expr>(Expr{StructLiteral{name.value, args, field_names}, sl, sc});
         }
         return parse_primary();
     }

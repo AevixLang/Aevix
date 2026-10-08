@@ -65,6 +65,9 @@ struct Index {
 struct StructLiteral {
     std::string name;
     std::vector<ExprPtr> args;
+    // Parallel to args: the field each argument initializes, or "" when the
+    // argument is positional. Named and positional fields cannot be mixed.
+    std::vector<std::string> field_names;
 };
 
 struct UnaryMinus { ExprPtr operand; };

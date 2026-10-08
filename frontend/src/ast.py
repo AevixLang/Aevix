@@ -5,14 +5,14 @@
 # construct is represented by a dataclass. The `to_dict` utility converts
 # the AST into a JSON schema consumed by the backend's json_reader.
 # ============================================================================
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Union, Optional
 
 # Version of the frontend -> backend AST JSON schema. Bump whenever the
 # exported JSON shape changes; the backend refuses files with a different
 # version, so a mismatch is caught at load time instead of crashing deep
 # inside the parser.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 def to_dict(obj):
     """
@@ -138,6 +138,9 @@ class MemberAccess:
 class StructLiteral:
     name: str
     args: list
+    # Parallel to args: the field each argument initializes, or "" when the
+    # argument is positional. Named and positional fields cannot be mixed.
+    field_names: list = field(default_factory=list)
     type: str = "StructLiteral"
 
 @dataclass

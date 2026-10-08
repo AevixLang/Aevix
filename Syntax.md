@@ -277,15 +277,25 @@ int/float values back into strings, so numbers and text compose freely:
 struct Point { x: int, y: int }
 struct Bag { items: int[], tag: string }
 
-let p = Point { 1, 2 };             // positional literal
-print p.x + p.y;                    // 3
+let p = Point { 1, 2 };                    // positional literal
+print p.x + p.y;                           // 3
 
-let b = Bag { new int[3], "box" };  // open-array fields allowed
+let q = Point { y: 2, x: 1 };              // named fields, any order
+print q;                                   // {1, 2}
+
+let b = Bag { new int[3], "box" };         // open-array fields allowed
 b.items[1] = 55;
-print b;                            // {[0, 55, 0], box}
+print b;                                   // {[0, 55, 0], box}
+
+let c = Bag { tag: "bag", items: new int[3] };
 ```
 
-Struct fields are accessed with `.`; member access chains and arrays of structs work. Struct literals are positional (named fields are not supported yet).
+Struct fields are accessed with `.`; member access chains and arrays of structs work.
+
+Struct literals may be fully positional or fully named — the two styles cannot be
+mixed inside one literal. Named fields may appear in any order, but every field
+must be given exactly once; there are no defaults. A name that is unknown,
+duplicated or left out is a compile error.
 
 ---
 

@@ -10,7 +10,7 @@
 
 // Version of the frontend -> backend AST JSON schema. The frontend stamps
 // every ast.json with this value; anything else is rejected up front.
-constexpr int SCHEMA_VERSION = 4;
+constexpr int SCHEMA_VERSION = 5;
 
 static std::shared_ptr<Expr> parse_expr(const json& j);
 
@@ -132,6 +132,18 @@ static std::shared_ptr<Expr> parse_expr_inner(const json& j) {
         s->name = j["name"];
         for (const auto& arg : j["args"]) {
             s->args.push_back(parse_expr(arg));
+        }
+        if (!j.contains("field_names")) {
+            std::cerr << "❌ StructLiteral is missing field_names" << std::endl;
+            exit(1);
+        }
+        for (const auto& fn : j["field_names"]) {
+            s->field_names.push_back(fn.get<std::string>());
+        }
+        if (s->field_names.size() != s->args.size()) {
+            std::cerr << "❌ StructLiteral has " << s->field_names.size()
+                      << " field_names for " << s->args.size() << " args" << std::endl;
+            exit(1);
         }
         return s;
     }

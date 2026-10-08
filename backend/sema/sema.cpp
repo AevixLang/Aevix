@@ -703,12 +703,55 @@ void Checker::check_struct_lit(StructLiteral* sl) {
         return;
     }
     const SemaStruct& st = it->second;
-    if (st.fields.size() != sl->args.size()) {
-        error("wrong number of arguments for struct literal", sl->line, sl->col);
+    const size_t nargs = sl->args.size();
+    size_t named = 0;
+    for (const auto& fn : sl->field_names)
+        if (!fn.empty()) ++named;
+
+    // Named fields may appear in any order; positional ones must follow the
+    // declaration. Mixing the two styles is rejected so a reader never has to
+    // guess which slot a given argument lands in.
+    if (named > 0 && named != sl->field_names.size()) {
+        error("cannot mix named and positional struct fields", sl->line, sl->col);
         return;
     }
-    for (size_t i = 0; i < st.fields.size(); ++i) {
-        if (!assignable_expr(st.fields[i].var_type, sl->args[i].get()))
+
+    // Field index -> argument index.
+    std::vector<size_t> order(st.fields.size(), sl->args.size());
+    if (named == 0) {
+        if (st.fields.size() != nargs) {
+            error("wrong number of arguments for struct literal", sl->line, sl->col);
+            return;
+        }
+        for (size_t i = 0; i < nargs; ++i) order[i] = i;
+    } else {
+        std::vector<bool> seen(st.fields.size(), false);
+        for (size_t i = 0; i < nargs; ++i) {
+            const std::string& fname = sl->field_names[i];
+            size_t j = 0;
+            for (; j < st.fields.size(); ++j)
+                if (st.fields[j].name == fname) break;
+            if (j == st.fields.size()) {
+                error("struct '" + sl->name + "' has no field '" + fname + "'", sl->line, sl->col);
+                return;
+            }
+            if (seen[j]) {
+                error("duplicate field '" + fname + "' in struct literal", sl->line, sl->col);
+                return;
+            }
+            seen[j] = true;
+            order[j] = i;
+        }
+        for (size_t j = 0; j < st.fields.size(); ++j) {
+            if (!seen[j]) {
+                error("missing field '" + st.fields[j].name + "' in struct literal", sl->line, sl->col);
+                return;
+            }
+        }
+    }
+
+    for (size_t j = 0; j < st.fields.size(); ++j) {
+        if (!assignable_expr(st.fields[j].var_type, sl->args[order[j]].get()))
             error("struct literal field type mismatch", sl->line, sl->col);
     }
 }

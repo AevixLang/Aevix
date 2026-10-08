@@ -167,7 +167,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 🚧 Alpha — Under active development. Not yet production-ready. Frontend and backend pipeline currently working end-to-end.
 
 ### Known limitations
-- Struct literals are positional (`Point { 1, 2 }`), not named.
 - `func` declarations are allowed only at the top level of a file.
 - `import` is top-level only; no namespaces — imported declarations merge globally.
 - Package imports (`name:module`) require a project `aevix.lock` — the package manager is under development.

@@ -112,14 +112,21 @@ class AevixTransformer(Transformer):
         return list(items)
 
     def struct_lit(self, items):
-        name, args = str(items[0]), items[1] if len(items) > 1 else []
-        return StructLiteral(name=name, args=args)
+        name = str(items[0])
+        raw = items[1] if len(items) > 1 else []
+        args, field_names = [], []
+        for fld, value in raw:
+            args.append(value)
+            field_names.append(fld)
+        return StructLiteral(name=name, args=args, field_names=field_names)
 
     def struct_lit_items(self, items):
         return list(items)
 
     def struct_lit_item(self, items):
-        return items[0]
+        if len(items) == 2:
+            return (str(items[0]), items[1])
+        return ("", items[0])
 
     def new_expr(self, items):
         return New(base=str(items[0]), size=items[1])

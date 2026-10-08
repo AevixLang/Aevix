@@ -99,6 +99,9 @@ struct MemberAccess : public Expr {
 struct StructLiteral : public Expr {
     std::string name;
     std::vector<std::shared_ptr<Expr>> args;
+    // Parallel to args: the field each argument initializes, or "" when the
+    // argument is positional. Named and positional fields cannot be mixed.
+    std::vector<std::string> field_names;
 };
 
 struct New : public Expr {

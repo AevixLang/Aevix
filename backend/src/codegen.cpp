@@ -682,19 +682,46 @@ llvm::Value* CodeGenerator::build_struct_literal(const StructLiteral& sl) {
     auto alloc = create_alloca(st, nullptr, sl.name + ".lit");
     std::size_t n = st->getNumElements();
     if (sl.args.size() != n) error("Struct '" + sl.name + "' expects " + std::to_string(n) + " fields, got " + std::to_string(sl.args.size()));
-    for (std::size_t i = 0; i < n; ++i) {
-        llvm::Value* v = generate_expr(sl.args[i]);
+
+    // Field index -> argument index. Sema rejects unknown, duplicate and
+    // missing names before codegen runs; the guard in the store loop keeps a
+    // literal that arrives without that check from indexing past args.
+    std::vector<std::size_t> order(n, n);
+    std::size_t named = 0;
+    for (const auto& fn : sl.field_names)
+        if (!fn.empty()) ++named;
+    if (named == 0) {
+        for (std::size_t j = 0; j < n; ++j) order[j] = j;
+    } else {
+        auto decl = struct_decls.find(sl.name);
+        if (decl == struct_decls.end()) error("Unknown struct: " + sl.name);
+        const auto& fields = decl->second->fields;
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = 0; j < fields.size(); ++j) {
+                if (fields[j].name == sl.field_names[i]) {
+                    order[j] = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (std::size_t j = 0; j < n; ++j) {
+        // Sema rejects unknown, duplicate and missing names; this guard keeps a
+        // literal that reaches codegen without sema from indexing past args.
+        if (order[j] >= n) error("Struct '" + sl.name + "' is missing a value for field " + std::to_string(j));
+        llvm::Value* v = generate_expr(sl.args[order[j]]);
         if (!v) return nullptr;
-        llvm::Type* fty = st->getElementType(i);
+        llvm::Type* fty = st->getElementType(j);
         if (fty->isDoubleTy() && v->getType()->isIntegerTy(32)) {
             v = builder->CreateSIToFP(v, builder->getDoubleTy(), "cast");
         } else if (is_slice_ty(fty)) {
             v = coerce_to_slice(v, llvm::cast<llvm::StructType>(fty),
-                "Type mismatch for field " + std::to_string(i) + " of struct '" + sl.name + "'");
+                "Type mismatch for field " + std::to_string(j) + " of struct '" + sl.name + "'");
         } else if (fty != v->getType()) {
-            error("Type mismatch for field " + std::to_string(i) + " of struct '" + sl.name + "'");
+            error("Type mismatch for field " + std::to_string(j) + " of struct '" + sl.name + "'");
         }
-        llvm::Value* fptr = builder->CreateInBoundsGEP(st, alloc, {builder->getInt32(0), builder->getInt32((int)i)}, "f");
+        llvm::Value* fptr = builder->CreateInBoundsGEP(st, alloc, {builder->getInt32(0), builder->getInt32((int)j)}, "f");
         builder->CreateStore(v, fptr);
     }
     return builder->CreateLoad(st, alloc, sl.name + ".val");

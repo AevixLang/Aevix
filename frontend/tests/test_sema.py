@@ -102,6 +102,41 @@ def test_sema_rejects_struct_literal_arg_count():
     assert "wrong number of arguments" in err
 
 
+def test_sema_accepts_named_struct_fields_in_any_order():
+    sema_accepted("struct P { x: int, y: int }\n"
+                  "func main() { let p = P { y: 2, x: 1 }; print p.x; }")
+
+
+def test_sema_rejects_unknown_named_struct_field():
+    err = sema_rejected("struct P { x: int, y: int }\n"
+                        "func main() { let p = P { x: 1, z: 2 }; }")
+    assert "has no field 'z'" in err
+
+
+def test_sema_rejects_duplicate_named_struct_field():
+    err = sema_rejected("struct P { x: int, y: int }\n"
+                        "func main() { let p = P { x: 1, x: 2 }; }")
+    assert "duplicate field 'x'" in err
+
+
+def test_sema_rejects_missing_named_struct_field():
+    err = sema_rejected("struct P { x: int, y: int }\n"
+                        "func main() { let p = P { x: 1 }; }")
+    assert "missing field 'y'" in err
+
+
+def test_sema_rejects_mixed_named_and_positional_struct_fields():
+    err = sema_rejected("struct P { x: int, y: int }\n"
+                        "func main() { let p = P { 1, y: 2 }; }")
+    assert "cannot mix named and positional" in err
+
+
+def test_sema_rejects_named_struct_field_type_mismatch():
+    err = sema_rejected("struct P { x: int, y: int }\n"
+                        "func main() { let p = P { y: 1.5, x: 2 }; }")
+    assert "field type mismatch" in err
+
+
 def test_sema_rejects_return_type_mismatch():
     err = sema_rejected("func f(): int { return true; }")
     assert "return type" in err

@@ -16,7 +16,7 @@ public:
     }
 
 private:
-    static constexpr int SCHEMA_VERSION = 4;
+    static constexpr int SCHEMA_VERSION = 5;
 
     static void indent(std::ostringstream& os, int depth) {
         os << std::string(depth, ' ');
@@ -256,7 +256,13 @@ private:
 
     static void write_expr_node(std::ostringstream& os, const StructLiteral& n, int d) {
         os << "{\"type\": \"StructLiteral\", \"name\": \"" << escape(n.name) << "\"";
-        os << ", \"args\": "; write_exprs(os, n.args, d); os << "}";
+        os << ", \"args\": "; write_exprs(os, n.args, d);
+        os << ", \"field_names\": [";
+        for (size_t i = 0; i < n.field_names.size(); i++) {
+            if (i > 0) os << ", ";
+            os << "\"" << escape(n.field_names[i]) << "\"";
+        }
+        os << "]}";
     }
 
     static void write_unary(std::ostringstream& os, const char* type, const ExprPtr& op, int d) {

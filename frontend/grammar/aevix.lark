@@ -76,7 +76,7 @@ array_lit: "[" array_items? "]"
 array_items: expr ("," expr)*
 struct_lit: CNAME "{" struct_lit_items? "}"
 struct_lit_items: struct_lit_item ("," struct_lit_item)* ","?
-struct_lit_item: expr
+struct_lit_item: CNAME ":" expr | expr
 
 OROP: "||"
 ANDOP: "&&"

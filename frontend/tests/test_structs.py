@@ -279,6 +279,70 @@ def test_struct_literal_int_to_float_cast():
     assert out == ["{3.000000, 4.000000}"]
 
 
+# --- named struct literal fields ---
+
+def test_struct_literal_named_fields_in_order():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "print Point { x: 1, y: 2 };\n"
+    )
+    assert ec == 0, err
+    assert out == ["{1, 2}"]
+
+
+def test_struct_literal_named_fields_reordered():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let p = Point { y: 4, x: 3 };\n"
+        "print p.x;\n"
+        "print p.y;\n"
+        "print p;\n"
+    )
+    assert ec == 0, err
+    assert out == ["3", "4", "{3, 4}"]
+
+
+def test_struct_literal_named_fields_with_expressions():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let n = 7;\n"
+        "print Point { y: n + 1, x: n };\n"
+    )
+    assert ec == 0, err
+    assert out == ["{7, 8}"]
+
+
+def test_struct_literal_named_fields_nested_and_mixed_types():
+    ec, out, err = run_and_capture(
+        "struct Inner { a: int, b: int }\n"
+        "struct Outer { val: Inner, label: string }\n"
+        "print Outer { label: \"t\", val: Inner { b: 2, a: 1 } };\n"
+    )
+    assert ec == 0, err
+    assert out == ['{{1, 2}, t}']
+
+
+def test_struct_literal_named_fields_with_slice_field():
+    ec, out, err = run_and_capture(
+        "struct Box { items: int[], label: string }\n"
+        "let boxes: Box[] = [Box { label: \"a\", items: [1, 2] }];\n"
+        "print boxes[0].label;\n"
+        "print boxes[0].items;\n"
+    )
+    assert ec == 0, err
+    assert out == ["a", "[1, 2]"]
+
+
+def test_struct_literal_positional_fields_still_work():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let pts = [Point { 1, 2 }, Point { 3, 4 }];\n"
+        "print pts[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["{3, 4}"]
+
+
 def test_struct_array_param():
     ec, out, err = run_and_capture(
         "struct Point { x: int, y: int }\n"
