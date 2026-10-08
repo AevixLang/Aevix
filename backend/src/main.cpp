@@ -11,7 +11,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: aevix-backend <ast.json>" << std::endl;
+        std::cerr << "Usage: aevix-backend <ast.json> [source.aev]" << std::endl;
         return 1;
     }
 
@@ -21,6 +21,8 @@ int main(int argc, char** argv) {
     try {
         // Step 2: Generate LLVM IR
         CodeGenerator generator;
+        if (argc >= 3)
+            generator.set_file(argv[2]);
         generator.generate_program(program);
         generator.finalize();
     } catch (const std::runtime_error& e) {

@@ -288,11 +288,12 @@ func makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, s
 		}},
 		{"sema", func() error {
 			// Sema: ast.json -> type/scope/escape diagnostics (validates in place)
-			return runTool(semaExe, astPath)
+			// absSrc labels them with the real filename, not "input.aev".
+			return runTool(semaExe, astPath, absSrc)
 		}},
 		{"backend", func() error {
 			// Backend: ast.json -> LLVM IR on stdout, captured to a file
-			return runBackend(backendExe, astPath, irPath)
+			return runBackend(backendExe, astPath, irPath, absSrc)
 		}},
 		{"opt", func() error {
 			// opt: mid-end -O2 passes. This is what actually consumes the hot
@@ -347,8 +348,14 @@ func runFrontend(python, src, out string, quiet bool) error {
 	return cmd.Run()
 }
 
-func runBackend(backendExe, astPath, irPath string) error {
-	cmd := exec.Command(backendExe, astPath)
+// runBackend emits LLVM IR for astPath. src, when non-empty, is what codegen
+// prints as the source file in its diagnostics.
+func runBackend(backendExe, astPath, irPath, src string) error {
+	args := []string{astPath}
+	if src != "" {
+		args = append(args, src)
+	}
+	cmd := exec.Command(backendExe, args...)
 	cmd.Dir = rootDir
 	var ir []byte
 	cmd.Stdout = decodeOut(&ir)

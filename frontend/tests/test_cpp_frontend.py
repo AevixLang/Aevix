@@ -9,7 +9,6 @@ source location.
 """
 import json
 import os
-import re
 import subprocess
 import tempfile
 
@@ -18,6 +17,7 @@ import pytest
 ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 CPP_FE = os.path.join(ROOT, "backend", "build", "aevix-frontend")
 SEMA_BIN = os.path.join(ROOT, "backend", "build", "aevix-sema")
+CLI = os.path.join(ROOT, "aevix")
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(CPP_FE), reason="c++ frontend binary is not built"
@@ -72,8 +72,26 @@ def test_diagnostic_carries_a_source_location():
         fe = subprocess.run([CPP_FE, src, "-o", out], cwd=ROOT,
                             capture_output=True, text=True)
         assert fe.returncode == 0, fe.stderr
-        sema = subprocess.run([SEMA_BIN, out], cwd=ROOT,
+        sema = subprocess.run([SEMA_BIN, out, src], cwd=ROOT,
                               capture_output=True, text=True)
         assert sema.returncode != 0, "fixture must fail sema"
         assert "undefined variable" in sema.stderr
-        assert re.search(r"--> .*:2:7", sema.stderr), sema.stderr
+        assert "--> " + src + ":2:7" in sema.stderr, sema.stderr
+
+
+@pytest.mark.skipif(not os.path.exists(CLI), reason="aevix cli is not built")
+def test_cli_reports_the_real_source_filename():
+    """The driver must forward the source path, or diagnostics say input.aev."""
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "prog.aev")
+        with open(src, "w") as f:
+            f.write("let a = 1;\nprint undefined_thing;\n")
+        subprocess.run([CLI, "build", src, "--stage", "parse"],
+                       cwd=ROOT, capture_output=True, text=True)
+        sema = subprocess.run([CLI, "build", src, "--stage", "sema"],
+                              cwd=ROOT, capture_output=True, text=True)
+        err = sema.stdout + sema.stderr
+        assert sema.returncode != 0, err
+        assert "undefined variable" in err
+        assert "--> " + src + ":2:7" in err, err
+        assert "input.aev" not in err, err

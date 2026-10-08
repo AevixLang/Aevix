@@ -256,6 +256,10 @@ private:
 public:
     CodeGenerator();
 
+    // Driver-supplied source name for error(); without it every diagnostic
+    // points at the "input.aev" placeholder.
+    void set_file(const std::string& f) { current_file = f; }
+
     void generate_program(const Program& program);
     llvm::Value* generate_expr(const std::shared_ptr<Expr>& expr);
     llvm::Value* generate_icmp(const std::string& op, llvm::Value* left, llvm::Value* right);
