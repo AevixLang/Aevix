@@ -264,7 +264,128 @@ func cmdInit(args []string) error {
 }
 
 func cmdAdd(args []string) error {
-	return fmt.Errorf("add is not implemented yet")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: aevix-pm add <name> --path <dir> [--version <v>]")
+	}
+	name := args[0]
+	var path, version string
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--path":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--path requires a directory")
+			}
+			path = args[i+1]
+			i++
+		case "--version":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--version requires a value")
+			}
+			version = args[i+1]
+			i++
+		default:
+			return fmt.Errorf("unexpected argument %q", args[i])
+		}
+	}
+	if path == "" {
+		return fmt.Errorf("add requires --path <dir> (P0 supports local path dependencies)")
+	}
+
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	m, err := readManifest(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", manifestName, err)
+	}
+
+	abs, err := resolveDepDir(root, path)
+	if err != nil {
+		return err
+	}
+	if version == "" {
+		version = detectVersion(abs)
+	}
+
+	// Store paths relative to the project root so the lock stays relocatable;
+	// the compiler joins a relative path against the lock's own directory.
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		rel = abs
+	}
+	m.Deps[name] = Dep{Path: rel, Version: version}
+	if err := writeManifest(root, m); err != nil {
+		return err
+	}
+	if err := recomputeLock(root, m); err != nil {
+		return err
+	}
+	fmt.Printf("Added %s (%s) -> %s\n", name, version, rel)
+	return nil
+}
+
+// resolveDepDir validates a dependency directory and returns its absolute path.
+func resolveDepDir(root, path string) (string, error) {
+	abs := path
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(root, path)
+	}
+	st, err := os.Stat(abs)
+	if err != nil || !st.IsDir() {
+		return "", fmt.Errorf("dependency directory not found: %s", path)
+	}
+	if !hasAevSource(abs) {
+		return "", fmt.Errorf("no .aev source found in %s", path)
+	}
+	return filepath.Abs(abs)
+}
+
+// hasAevSource reports whether a package directory has an entry point (lib.aev)
+// or any top-level .aev file — the minimum for the compiler to import it.
+func hasAevSource(dir string) bool {
+	if fileExists(filepath.Join(dir, "lib.aev")) {
+		return true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".aev") {
+			return true
+		}
+	}
+	return false
+}
+
+// detectVersion reads a dependency's own aevix.toml for its declared version,
+// falling back to 0.0.0 so a path dep is always pinned to something.
+func detectVersion(dir string) string {
+	if m, err := readManifest(dir); err == nil && m.Version != "" {
+		return m.Version
+	}
+	return "0.0.0"
+}
+
+// recomputeLock rebuilds aevix.lock from the manifest. Every dependency is
+// resolved to a pinned entry, so the lock is always a pure function of the
+// manifest plus the paths on disk — reproducible and diff-stable.
+func recomputeLock(root string, m *Manifest) error {
+	l := &Lock{Name: m.Name, Version: m.Version, Dependencies: map[string]LockDep{}}
+	for _, name := range sortedKeys(m.Deps) {
+		d := m.Deps[name]
+		p := d.Path
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(root, p)
+		}
+		v := d.Version
+		if v == "" {
+			v = detectVersion(p)
+		}
+		l.Dependencies[name] = LockDep{Version: v, Path: d.Path}
+	}
+	return writeLock(root, l)
 }
 
 func cmdRemove(args []string) error {
@@ -272,7 +393,27 @@ func cmdRemove(args []string) error {
 }
 
 func cmdList(args []string) error {
-	return fmt.Errorf("list is not implemented yet")
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	m, err := readManifest(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", manifestName, err)
+	}
+	if len(m.Deps) == 0 {
+		fmt.Printf("%s (%s) has no dependencies\n", m.Name, m.Version)
+		return nil
+	}
+	for _, name := range sortedKeys(m.Deps) {
+		d := m.Deps[name]
+		if d.Version != "" {
+			fmt.Printf("%s %s -> %s\n", name, d.Version, d.Path)
+		} else {
+			fmt.Printf("%s -> %s\n", name, d.Path)
+		}
+	}
+	return nil
 }
 
 func sortedKeys(m map[string]Dep) []string {
