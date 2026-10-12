@@ -389,7 +389,30 @@ func recomputeLock(root string, m *Manifest) error {
 }
 
 func cmdRemove(args []string) error {
-	return fmt.Errorf("remove is not implemented yet")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: aevix-pm remove <name>")
+	}
+	name := args[0]
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	m, err := readManifest(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", manifestName, err)
+	}
+	if _, ok := m.Deps[name]; !ok {
+		return fmt.Errorf("dependency %q is not declared in %s", name, manifestName)
+	}
+	delete(m.Deps, name)
+	if err := writeManifest(root, m); err != nil {
+		return err
+	}
+	if err := recomputeLock(root, m); err != nil {
+		return err
+	}
+	fmt.Printf("Removed %s\n", name)
+	return nil
 }
 
 func cmdList(args []string) error {
