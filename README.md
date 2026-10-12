@@ -68,9 +68,10 @@ aevix/
 ## Compiler Pipeline
 
 ```text
-main.aev ──► [frontend: C++ (or Python fallback)] ──► ast.json (schema v4)
+main.aev ──► [frontend: C++ (or Python fallback)] ──► ast.json (schema v5)
      ──► [sema: C++] ──► static analysis (types, scopes, epoch safety)
      ──► [backend: C++ + LLVM] ──► output.ll (LLVM IR)
+     ──► [opt -O2] ──► output.opt.ll (optimized IR, consumes `hot` metadata)
      ──► [llc] ──► output.o
      ──► [clang + runtime.o] ──► program (executable)
 ```

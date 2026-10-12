@@ -22,7 +22,7 @@ The frontend transforms human-readable source into a typed JSON AST.
 - **Lexer**: Hand-written tokenizer (`frontend/cpp/src/lexer.hpp`) supporting all keywords, operators, and literals.
 - **Parser**: Recursive descent parser (`frontend/cpp/src/parser.hpp`) producing a variant-based AST (`ast.hpp`).
 - **Import resolver**: Recursive module loading with cycle detection, `AEVIX_PATH` support, and `aevix.lock` package resolution (`importer.hpp`).
-- **JSON serializer**: Outputs `ast.json` with `SCHEMA_VERSION = 4` (`json_out.hpp`).
+- **JSON serializer**: Outputs `ast.json` with `SCHEMA_VERSION = 5` (`json_out.hpp`).
 
 **Rationale for C++:**
 20x faster than the Python frontend. Eliminates the Python dependency for the common build path.
@@ -97,7 +97,7 @@ When adding a new language feature:
 | :--- | :--- | :--- |
 | Grammar | Lark (EBNF) | Syntax reference |
 | Frontend | C++17 (primary), Python (fallback) | Lexing, parsing, AST generation |
-| Intermediate | JSON (schema v4) | Frontend ↔ Backend bridge |
+| Intermediate | JSON (schema v5) | Frontend ↔ Backend bridge |
 | Static Analysis | C++17 | Type/scope/escape validation |
 | Code Generation | C++17 + LLVM | IR generation |
 | Runtime | C | Arena, epochs, builtins, I/O |
