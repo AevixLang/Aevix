@@ -46,5 +46,8 @@ examples/
 # Runtime artifacts written by example programs (write("out.txt", ...))
 out.txt
 
+# Personal notes / planning (never committed)
+notes/
+
 # temp harness sources (run_and_capture leaves tmpXXXX.aev if the run is aborted)
 frontend/tmp*.aev
