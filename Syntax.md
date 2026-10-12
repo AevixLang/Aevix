@@ -191,8 +191,6 @@ Rules:
   namespaces yet; everything merges globally.
 - `import` is a reserved word (it cannot be used as an identifier).
 
-See `notes/package-manager.md` for the compiler ↔ package-manager contract.
-
 ---
 
 ## 7. Arrays and Slices
