@@ -10,13 +10,24 @@ Aevix aims to push beyond existing languages by combining:
 - **Memory safety** — Without garbage collection or borrow checker complexity
 - **Developer control** — Explicit memory management when needed, safety by default
 
-## Key Features (Roadmap)
+## Key Features
 
-- **Self-Optimizing Semantics (SOS)** — Compiler rewrites code for optimal execution
-- **Cache-Oblivious Hot Path** — Deterministic L1 cache optimization (`hot` regions)
-- **Time-Travel Memory (Epochs)** — Arena-based memory with zero overhead
-- **Context Polymorphism** — Code adapts to calling context
-- **Proof-Carrying Safety** — Compiler-verified invariants
+### Implemented (v0.1)
+- **Static type system** — int, float, bool, string, fixed-width types (i8–u64, f32/f64), structs, enums
+- **Arena-based memory (Epochs)** — O(1) rollback, no GC, no borrow checker
+- **Reference parameters** — `ref` with aliasing and escape safety checks
+- **Arrays & slices** — fixed-size arrays (by value) and open slices (arena-allocated)
+- **String builtins** — split, join, trim, upper, lower, contains, replace, startswith, endswith, char_at
+- **Hot regions** — `hot { }` marks a critical path: `hot` function attribute,
+  loop vectorize/unroll metadata, cache-line aligned locals, allocation
+  prefetch (`epoch` is rejected inside)
+- **Multi-file imports** — with cycle detection and package support
+- **C++ frontend** — 20x faster than the legacy Python frontend
+
+### Roadmap
+- **Self-Optimizing Semantics (SOS)** — Compiler-driven SIMD and stack promotion
+- **Context Polymorphism** — Function codegen adapts to calling context
+- **Proof-Carrying Safety** — Compile-time invariant proofs to strip runtime checks
 
 ## Documentation
 
@@ -27,39 +38,51 @@ Aevix aims to push beyond existing languages by combining:
 
 ### 🛠 Compiler Documentation
 *For those contributing to the Aevix toolchain.*
-- [System Architecture](Aevix-Architecture.md) — Technical breakdown of the Python/C++/Go pipeline.
+- [System Architecture](Aevix-Architecture.md) — Technical breakdown of the C++/Go pipeline.
 
 ## Project Architecture
 
 ```text
 aevix/
-├── frontend/            # Python parser (Lark) -> typed JSON AST
-│   ├── grammar/aevix.lark
-│   └── src/             # parser.py, transformer.py, ast.py, main.py
-├── backend/             # C++ code generator (LLVM)
-│   ├── include/         # json_reader.hpp, codegen.hpp
-│   └── src/             # json_reader.cpp, codegen.cpp, main.cpp
-├── tools/               # Go CLI orchestrating the whole pipeline
-│   └── cmd/aevix/main.go
-└── examples/            # Sample programs (.aev)
+├── frontend/
+│   ├── cpp/             # C++ lexer/parser → typed JSON AST (primary)
+│   │   ├── src/         # lexer.hpp, parser.hpp, ast.hpp, importer.hpp, json_out.hpp
+│   │   └── build/       # aevix-frontend binary
+│   ├── src/             # Python frontend (legacy fallback)
+│   │   └── parser.py, transformer.py, ast.py, importer.py, main.py
+│   └── grammar/
+│       └── aevix.lark   # Lark EBNF grammar (reference)
+├── backend/
+│   ├── sema/
+│   │   └── sema.cpp     # Static analysis (types, scopes, epoch escape)
+│   ├── src/
+│   │   ├── codegen.cpp  # LLVM IR generation
+│   │   ├── json_reader.cpp  # AST deserialization
+│   │   └── aevix_runtime.c  # Arena allocator, I/O, builtins
+│   └── build/           # aevix-backend, aevix-sema, runtime.o
+├── tools/
+│   └── cmd/aevix/main.go   # Go CLI orchestrating the pipeline
+└── examples/            # 29 sample programs (.aev)
 ```
 
 ## Compiler Pipeline
 
 ```text
-main.aev ──► [frontend: Python + Lark] ──► ast.json
-     ──► [backend: C++] ──► output.ll (LLVM IR)
+main.aev ──► [frontend: C++ (or Python fallback)] ──► ast.json (schema v5)
+     ──► [sema: C++] ──► static analysis (types, scopes, epoch safety)
+     ──► [backend: C++ + LLVM] ──► output.ll (LLVM IR)
+     ──► [opt -O2] ──► output.opt.ll (optimized IR, consumes `hot` metadata)
      ──► [llc] ──► output.o
-     ──► [clang] ──► program (executable)
+     ──► [clang + runtime.o] ──► program (executable)
 ```
 
 ## Getting Started
 
 ### Prerequisites
-- Python 3.8+
-- C++ compiler with C++17 support
+- C++ compiler with C++17 support (clang++ or g++)
 - **LLVM** (Must be in your system PATH)
 - Go 1.25+
+- Python 3.8+ (only needed for the legacy frontend fallback)
 
 ### Setup
 Instead of manual configuration, use the bootstrap script. It will set up the Python virtual environment, build the C++ backend, and compile the Go CLI.
@@ -82,7 +105,7 @@ Once bootstrapped, you can use the `aevix` CLI to build and run your programs:
 ./aevix run examples/test.aev alpha beta
 
 # Run the full integration test suite
-./aevix test
+./aevix selftest
 
 # Clean artifacts
 ./aevix clean
@@ -145,20 +168,17 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 🚧 Alpha — Under active development. Not yet production-ready. Frontend and backend pipeline currently working end-to-end.
 
 ### Known limitations
-- Struct literals are positional (`Point { 1, 2 }`), not named.
-- Printing an open array (slice) of structs is not supported (fixed arrays of
-  structs and slices of strings work).
-- `read()` on a missing file returns `""`; `write()` reports failure as `false`.
-- `input()` returns `""` at end of input (EOF); lines are returned without the trailing newline.
-- `func` declarations may not be nested inside other functions.
-- `import` is top-level only; there are no namespaces yet, so imported
-  declarations merge globally and a duplicate name across files is an error.
-- Package imports (`name:module`) require a project `aevix.lock` — the package
-  manager that writes it is still under development.
-- The arena grows on demand (chunked virtual memory) up to what the OS will map; it is never freed individually, and epoch blocks roll the allocation point back.
+- `func` declarations are allowed only at the top level of a file.
+- `import` is top-level only; no namespaces — imported declarations merge globally.
+- Package imports (`name:module`) require a project `aevix.lock` — the package manager is under development.
+- The arena grows on demand but is never freed individually; epoch blocks roll the allocation point back.
+- `hot` accelerates loops (cache-line aligned slots, vectorize/unroll
+  metadata consumed by the pipeline's `opt -O2` stage, allocation prefetch)
+  but register allocation inside it is still left to LLVM.
+- No SOS (Self-Optimizing Semantics) or context polymorphism yet.
 
 ## Acknowledgments
 
 - LLVM for the powerful backend infrastructure
-- Lark for the elegant parsing toolkit
+- Lark for the elegant parsing toolkit (grammar reference)
 - The open-source community for inspiration

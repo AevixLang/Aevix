@@ -21,7 +21,7 @@
 #include <sys/mman.h>
 #endif
 
-#define ARENA_ALIGN 16u
+#define ARENA_ALIGN 64u  /* cache-line alignment for L1 hot path */
 #define ARENA_CHUNK (64u * 1024u * 1024u) /* commit granularity: 64 MiB */
 #define ARENA_MAX_EPOCHS 4096
 
@@ -220,6 +220,22 @@ void __aevix_double_to_str(double d, uint8_t** out_ptr, int32_t* out_len) {
     *out_len = m < 0 ? 0 : (m >= CAP ? CAP - 1 : (int32_t)m);
 }
 
+/* to_str(i64) / to_str(u64): renders a 64-bit integer in signed or unsigned
+ * form. The buffer is sized at 32 bytes (20 digits + sign + nul). */
+void __aevix_i64_to_str(int64_t n, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(32);
+    int m = snprintf((char*)buf, 32, "%lld", (long long)n);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (int32_t)m;
+}
+
+void __aevix_u64_to_str(uint64_t n, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(32);
+    int m = snprintf((char*)buf, 32, "%llu", (unsigned long long)n);
+    *out_ptr = buf;
+    *out_len = m < 0 ? 0 : (int32_t)m;
+}
+
 /* substr(s, start, count): clamps the range to the slice and copies the chosen
  * segment into the arena. Out-of-range start yields an empty string. */
 void __aevix_substr(const uint8_t* s, int32_t len, int32_t start, int32_t count,
@@ -286,4 +302,162 @@ void __aevix_split(const uint8_t* s, int32_t slen, const uint8_t* sep, int32_t s
     arr[idx].len = tail;
     *out_ptr = (uint8_t*)arr;
     *out_len = count;
+}
+
+/* ------------------------------------------------------------------ */
+/* rand(max) -> int: random int in [0, max)                          */
+/* ------------------------------------------------------------------ */
+int32_t aevix_rand(int32_t max) {
+    if (max <= 0) return 0;
+    return (int32_t)(rand() % (unsigned)max);
+}
+
+/* ------------------------------------------------------------------ */
+/* String builtins                                                    */
+/* ------------------------------------------------------------------ */
+
+/* trim(s): strip leading/trailing whitespace */
+void __aevix_trim(const uint8_t* s, int32_t slen, uint8_t** out_ptr, int32_t* out_len) {
+    int32_t start = 0;
+    while (start < slen && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r')) ++start;
+    int32_t end = slen - 1;
+    while (end >= start && (s[end] == ' ' || s[end] == '\t' || s[end] == '\n' || s[end] == '\r')) --end;
+    int32_t len = end - start + 1;
+    if (len <= 0) { *out_ptr = NULL; *out_len = 0; return; }
+    uint8_t* buf = (uint8_t*)__aevix_alloc(len);
+    memcpy(buf, s + start, (size_t)len);
+    *out_ptr = buf;
+    *out_len = len;
+}
+
+/* contains(haystack, needle): returns 1 if needle is found */
+int32_t __aevix_contains(const uint8_t* hay, int32_t hlen, const uint8_t* ndl, int32_t nlen) {
+    if (nlen == 0) return 1;
+    if (nlen > hlen) return 0;
+    for (int32_t i = 0; i <= hlen - nlen; ++i) {
+        if (memcmp(hay + i, ndl, (size_t)nlen) == 0) return 1;
+    }
+    return 0;
+}
+
+/* replace(s, old, new): replace all occurrences of old with new */
+void __aevix_replace(const uint8_t* s, int32_t slen,
+                     const uint8_t* old, int32_t oldlen,
+                     const uint8_t* nw, int32_t newlen,
+                     uint8_t** out_ptr, int32_t* out_len) {
+    if (oldlen == 0 || slen == 0) {
+        uint8_t* buf = (uint8_t*)__aevix_alloc(slen);
+        if (slen > 0) memcpy(buf, s, (size_t)slen);
+        *out_ptr = buf;
+        *out_len = slen;
+        return;
+    }
+    /* count occurrences */
+    int32_t count = 0;
+    int32_t i = 0;
+    while (i <= slen - oldlen) {
+        if (memcmp(s + i, old, (size_t)oldlen) == 0) {
+            ++count;
+            i += oldlen;
+        } else {
+            ++i;
+        }
+    }
+    if (count == 0) {
+        uint8_t* buf = (uint8_t*)__aevix_alloc(slen);
+        memcpy(buf, s, (size_t)slen);
+        *out_ptr = buf;
+        *out_len = slen;
+        return;
+    }
+    int32_t result_len = slen + count * (newlen - oldlen);
+    uint8_t* buf = (uint8_t*)__aevix_alloc(result_len);
+    int32_t out = 0;
+    i = 0;
+    while (i < slen) {
+        if (i <= slen - oldlen && memcmp(s + i, old, (size_t)oldlen) == 0) {
+            if (newlen > 0) memcpy(buf + out, nw, (size_t)newlen);
+            out += newlen;
+            i += oldlen;
+        } else {
+            buf[out] = s[i];
+            ++out;
+            ++i;
+        }
+    }
+    *out_ptr = buf;
+    *out_len = result_len;
+}
+
+/* upper(s): convert to uppercase */
+void __aevix_upper(const uint8_t* s, int32_t slen, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(slen);
+    for (int32_t i = 0; i < slen; ++i) {
+        buf[i] = (s[i] >= 'a' && s[i] <= 'z') ? s[i] - 32 : s[i];
+    }
+    *out_ptr = buf;
+    *out_len = slen;
+}
+
+/* lower(s): convert to lowercase */
+void __aevix_lower(const uint8_t* s, int32_t slen, uint8_t** out_ptr, int32_t* out_len) {
+    uint8_t* buf = (uint8_t*)__aevix_alloc(slen);
+    for (int32_t i = 0; i < slen; ++i) {
+        buf[i] = (s[i] >= 'A' && s[i] <= 'Z') ? s[i] + 32 : s[i];
+    }
+    *out_ptr = buf;
+    *out_len = slen;
+}
+
+/* startswith(s, prefix): returns 1 if s starts with prefix */
+int32_t __aevix_startswith(const uint8_t* s, int32_t slen, const uint8_t* pre, int32_t plen) {
+    if (plen > slen) return 0;
+    return memcmp(s, pre, (size_t)plen) == 0;
+}
+
+/* endswith(s, suffix): returns 1 if s ends with suffix */
+int32_t __aevix_endswith(const uint8_t* s, int32_t slen, const uint8_t* suf, int32_t slen2) {
+    if (slen2 > slen) return 0;
+    return memcmp(s + slen - slen2, suf, (size_t)slen2) == 0;
+}
+
+/* char_at(s, index, out_ptr, out_len): extract single character as string */
+void __aevix_char_at(const uint8_t* s, int32_t slen, int32_t idx, uint8_t** out_ptr, int32_t* out_len) {
+    if (idx < 0 || idx >= slen) { *out_ptr = NULL; *out_len = 0; return; }
+    uint8_t* buf = (uint8_t*)__aevix_alloc(1);
+    buf[0] = s[idx];
+    *out_ptr = buf;
+    *out_len = 1;
+}
+
+/* join(sep, arr, count, out_ptr, out_len): join string array with separator */
+/* arr is a pointer to aevix_str structs { uint8_t* ptr; int32_t len; } */
+typedef struct { uint8_t* ptr; int32_t len; } aevix_str_ref;
+void __aevix_join(const uint8_t* sep, int32_t seplen,
+                  const aevix_str_ref* arr, int32_t count,
+                  uint8_t** out_ptr, int32_t* out_len) {
+    if (count == 0) { *out_ptr = NULL; *out_len = 0; return; }
+    int32_t total = 0;
+    for (int32_t i = 0; i < count; ++i) total += arr[i].len;
+    if (count > 1) total += seplen * (count - 1);
+    uint8_t* buf = (uint8_t*)__aevix_alloc(total);
+    int32_t pos = 0;
+    for (int32_t i = 0; i < count; ++i) {
+        if (arr[i].len > 0) memcpy(buf + pos, arr[i].ptr, (size_t)arr[i].len);
+        pos += arr[i].len;
+        if (i < count - 1 && seplen > 0) {
+            memcpy(buf + pos, sep, (size_t)seplen);
+            pos += seplen;
+        }
+    }
+    *out_ptr = buf;
+    *out_len = total;
+}
+
+/* assert(cond): if cond is 0, print error and exit(1) */
+void aevix_assert(int32_t cond) {
+    if (!cond) {
+        fprintf(stderr, "Assertion failed\n");
+        exit(1);
+    }
 }

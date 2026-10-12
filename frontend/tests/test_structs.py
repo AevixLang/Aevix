@@ -15,6 +15,7 @@ FRONTEND_DIR = os.path.join(ROOT, "frontend")
 BACKEND_BIN = os.path.join(ROOT, "backend", "build", "aevix-backend")
 RUNTIME_OBJ = os.path.join(ROOT, "backend", "build", "runtime.o")
 LLC = shutil.which("llc") or "/opt/homebrew/opt/llvm/bin/llc"
+OPT = shutil.which("opt") or "/opt/homebrew/opt/llvm/bin/opt"
 
 
 def compile_only(code):
@@ -66,8 +67,13 @@ def run_and_capture(code):
         ir = os.path.join(workdir, "out.ll")
         with open(ir, "w") as fh:
             fh.write(be.stdout)
+        opt_ll = os.path.join(workdir, "out.opt.ll")
+        oc = subprocess.run([OPT, "-passes=default<O2>", "-S", ir, "-o", opt_ll],
+                            capture_output=True, text=True)
+        if oc.returncode != 0:
+            return oc.returncode, [], oc.stderr
         obj = os.path.join(workdir, "out.o")
-        lc = subprocess.run([LLC, "-filetype=obj", ir, "-o", obj],
+        lc = subprocess.run([LLC, "-filetype=obj", opt_ll, "-o", obj],
                             capture_output=True, text=True)
         if lc.returncode != 0:
             return lc.returncode, [], lc.stderr
@@ -225,6 +231,43 @@ def test_for_in_over_struct_array():
     assert out == ["{1, 2}", "{3, 4}"]
 
 
+# --- struct slices (typed literal, printing) ---
+
+def test_typed_open_array_of_struct_literal():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let pts: Point[] = [Point { 1, 2 }, Point { 3, 4 }];\n"
+        "print pts[0].x;\n"
+        "print pts[1].y;\n"
+    )
+    assert ec == 0, err
+    assert out == ["1", "4"]
+
+
+def test_typed_open_array_of_structs_empty():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let pts: Point[] = [];\n"
+        "print len(pts);\n"
+    )
+    assert ec == 0, err
+    assert out == ["0"]
+
+
+def test_print_open_array_of_structs():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let literal: Point[] = [Point { 1, 2 }, Point { 3, 4 }];\n"
+        "let heap = new Point[2];\n"
+        "heap[0] = Point { 5, 6 };\n"
+        "heap[1] = Point { 7, 8 };\n"
+        "print literal;\n"
+        "print heap;\n"
+    )
+    assert ec == 0, err
+    assert out == ["[{1, 2}, {3, 4}]", "[{5, 6}, {7, 8}]"]
+
+
 # --- struct literals with mixed types ---
 
 def test_struct_literal_int_to_float_cast():
@@ -234,6 +277,70 @@ def test_struct_literal_int_to_float_cast():
     )
     assert ec == 0, err
     assert out == ["{3.000000, 4.000000}"]
+
+
+# --- named struct literal fields ---
+
+def test_struct_literal_named_fields_in_order():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "print Point { x: 1, y: 2 };\n"
+    )
+    assert ec == 0, err
+    assert out == ["{1, 2}"]
+
+
+def test_struct_literal_named_fields_reordered():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let p = Point { y: 4, x: 3 };\n"
+        "print p.x;\n"
+        "print p.y;\n"
+        "print p;\n"
+    )
+    assert ec == 0, err
+    assert out == ["3", "4", "{3, 4}"]
+
+
+def test_struct_literal_named_fields_with_expressions():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let n = 7;\n"
+        "print Point { y: n + 1, x: n };\n"
+    )
+    assert ec == 0, err
+    assert out == ["{7, 8}"]
+
+
+def test_struct_literal_named_fields_nested_and_mixed_types():
+    ec, out, err = run_and_capture(
+        "struct Inner { a: int, b: int }\n"
+        "struct Outer { val: Inner, label: string }\n"
+        "print Outer { label: \"t\", val: Inner { b: 2, a: 1 } };\n"
+    )
+    assert ec == 0, err
+    assert out == ['{{1, 2}, t}']
+
+
+def test_struct_literal_named_fields_with_slice_field():
+    ec, out, err = run_and_capture(
+        "struct Box { items: int[], label: string }\n"
+        "let boxes: Box[] = [Box { label: \"a\", items: [1, 2] }];\n"
+        "print boxes[0].label;\n"
+        "print boxes[0].items;\n"
+    )
+    assert ec == 0, err
+    assert out == ["a", "[1, 2]"]
+
+
+def test_struct_literal_positional_fields_still_work():
+    ec, out, err = run_and_capture(
+        "struct Point { x: int, y: int }\n"
+        "let pts = [Point { 1, 2 }, Point { 3, 4 }];\n"
+        "print pts[1];\n"
+    )
+    assert ec == 0, err
+    assert out == ["{3, 4}"]
 
 
 def test_struct_array_param():

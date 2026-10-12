@@ -8,6 +8,10 @@
 #include <fstream>
 #include <iostream>
 
+// Version of the frontend -> backend AST JSON schema. The frontend stamps
+// every ast.json with this value; anything else is rejected up front.
+constexpr int SCHEMA_VERSION = 5;
+
 static std::shared_ptr<Expr> parse_expr(const json& j);
 
 /**
@@ -128,6 +132,18 @@ static std::shared_ptr<Expr> parse_expr_inner(const json& j) {
         s->name = j["name"];
         for (const auto& arg : j["args"]) {
             s->args.push_back(parse_expr(arg));
+        }
+        if (!j.contains("field_names")) {
+            std::cerr << "❌ StructLiteral is missing field_names" << std::endl;
+            exit(1);
+        }
+        for (const auto& fn : j["field_names"]) {
+            s->field_names.push_back(fn.get<std::string>());
+        }
+        if (s->field_names.size() != s->args.size()) {
+            std::cerr << "❌ StructLiteral has " << s->field_names.size()
+                      << " field_names for " << s->args.size() << " args" << std::endl;
+            exit(1);
         }
         return s;
     }
@@ -278,6 +294,9 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
             if (p.contains("var_type") && !p["var_type"].is_null()) {
                 param.var_type = p["var_type"];
             }
+            if (p.contains("is_ref") && p["is_ref"].is_boolean()) {
+                param.is_ref = p["is_ref"];
+            }
             fd->params.push_back(param);
         }
         if (j.contains("return_type") && !j["return_type"].is_null()) {
@@ -304,6 +323,15 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         }
         stmt->struct_decl = sd;
     }
+    else if (type == "EnumDecl") {
+        stmt->kind = Stmt::Kind::EnumDecl;
+        auto ed = std::make_shared<EnumDecl>();
+        ed->name = j["name"];
+        for (const auto& v : j["variants"]) {
+            ed->variants.push_back(v.get<std::string>());
+        }
+        stmt->enum_decl = ed;
+    }
     else {
         return nullptr;
     }
@@ -324,6 +352,19 @@ Program parse_json(const std::string& filename) {
 
     json data;
     file >> data;
+
+    // Refuse ASTs exported by a different frontend version rather than
+    // failing on the first incompatible node.
+    if (!data.contains("schemaVersion") ||
+        data["schemaVersion"].get<int>() != SCHEMA_VERSION) {
+        std::string got = "(missing)";
+        if (data.contains("schemaVersion") && data["schemaVersion"].is_number_integer()) {
+            got = std::to_string(data["schemaVersion"].get<int>());
+        }
+        std::cerr << "❌ Unsupported AST schema version " << got
+                  << " (expected " << SCHEMA_VERSION << ")" << std::endl;
+        exit(1);
+    }
 
     Program program;
     for (const auto& stmt : data["body"]) {

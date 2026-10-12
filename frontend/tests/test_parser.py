@@ -290,3 +290,77 @@ def test_array_indexed_assign_ast():
 def test_array_empty_literal_ast():
     ast = parse_dict("let a = [];\n")
     assert ast["body"][0]["value"] == {"type": "ArrayLit", "elements": []}
+
+
+# --- fixed-width types ------------------------------------------
+
+def test_fixed_width_scalar_types():
+    ast = parse_dict(
+        "let a: i8 = 1; let b: i16 = 2; let c: i32 = 3; let d: i64 = 4;\n"
+        "let e: u8 = 5; let f: u16 = 6; let g: u32 = 7; let h: u64 = 8;\n"
+        "let i: f32 = 9.5; let j: f64 = 10.5;\n")
+    types = [s["var_type"] for s in ast["body"]]
+    assert types == ["i8", "i16", "i32", "i64",
+                     "u8", "u16", "u32", "u64", "f32", "f64"]
+
+
+def test_fixed_width_legacy_aliases_still_parse():
+    ast = parse_dict("let a: int = 1; let b: float = 2.5;\n")
+    assert ast["body"][0]["var_type"] == "int"
+    assert ast["body"][1]["var_type"] == "float"
+
+
+def test_fixed_width_arrays():
+    ast = parse_dict("let a: i64[3] = [1, 2, 3]; let b: u32[] = [1, 2];\n")
+    assert ast["body"][0]["var_type"] == "i64[3]"
+    assert ast["body"][1]["var_type"] == "u32[]"
+
+
+def test_fixed_width_ref_param():
+    ast = parse_dict("func f(x: ref u64) {}\n")
+    p = ast["body"][0]["params"][0]
+    assert p["var_type"] == "u64"
+    assert p["is_ref"] is True
+
+
+def test_fixed_width_new_expr():
+    ast = parse_dict("let a = new i32[4];\n")
+    assert ast["body"][0]["value"]["type"] == "New"
+    assert ast["body"][0]["value"]["base"] == "i32"
+
+
+# --- enum declarations -------------------------------------------
+
+def test_enum_decl_ast():
+    ast = parse_dict("enum Color { red, green, blue }\n")
+    ed = ast["body"][0]
+    assert ed["type"] == "EnumDecl"
+    assert ed["name"] == "Color"
+    assert ed["variants"] == ["red", "green", "blue"]
+
+
+def test_enum_decl_trailing_comma():
+    ast = parse_dict("enum Flag { a, b, }\n")
+    assert ast["body"][0]["variants"] == ["a", "b"]
+
+
+def test_enum_decl_empty_body():
+    ast = parse_dict("enum Empty {}\n")
+    assert ast["body"][0]["variants"] == []
+
+
+def test_enum_keyword_is_reserved():
+    msg = _parse_error_text("let enum = 1;\n")
+    assert msg is not None
+
+
+def test_width_keywords_are_reserved_as_identifiers():
+    assert _parse_error_text("let i64 = 1;\n") is not None
+    assert _parse_error_text("let f32 = 1;\n") is not None
+    assert _parse_error_text("func u8() {}\n") is not None
+
+
+def test_width_words_with_suffix_stay_identifiers():
+    ast = parse_dict("let i64x = 1; let u8s = 2; let f32_var = 3;\n")
+    names = [s["name"] for s in ast["body"]]
+    assert names == ["i64x", "u8s", "f32_var"]

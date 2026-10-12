@@ -1,0 +1,25 @@
+// arrays.aev — fixed and dynamic arrays, len, index read/write, funcs.
+func sum(arr: int[]) : int {
+    let total = 0;
+    let i = 0;
+    while (i < len(arr)) {
+        total = total + arr[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+hot {
+    let data: int[5] = [10, 20, 30, 40, 50];
+    print sum(data);
+    print len(data);
+
+    let arr: int[] = [1, 2, 3];
+    arr[0] = 99;
+    print arr[0];
+    print len(arr);
+
+    let f = [1.5, 2.5];
+    print f[0] + f[1];
+    print f;
+}

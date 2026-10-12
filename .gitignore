@@ -22,9 +22,9 @@ CMakeCache.txt
 CMakeFiles/
 
 # Go
-aevix
+/aevix
 aevix.exe
-tools/aevix
+/tools/aevix
 *.exe
 *.test
 
@@ -34,11 +34,20 @@ tools/aevix
 *.swp
 *.swo
 
+# Agent config
+.obsidian/
+AGENTS.md
+
 # JSON
 *.json
 ast.json
 examples/
-notes/
 
 # Runtime artifacts written by example programs (write("out.txt", ...))
 out.txt
+
+# Personal notes / planning (never committed)
+notes/
+
+# temp harness sources (run_and_capture leaves tmpXXXX.aev if the run is aborted)
+frontend/tmp*.aev

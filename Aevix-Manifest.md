@@ -41,3 +41,13 @@ The overarching objective of Aevix is to provide **C/ASM-level speed** and **abs
 - **Paradigm:** A synthesis of Data-Oriented Design (DOD) and Contextual Polymorphism.
 - **Type System:** Dependent Types for invariant verification.
 - **Memory Management:** Epoch-based arenas and linear allocators.
+
+---
+
+## Current Status (v0.1)
+
+**Implemented:** Static type system (int, float, bool, string, fixed-width types, structs, enums), arena-based epochs with escape analysis, reference parameters, arrays/slices, string builtins, hot region scope markers, multi-file imports, C++ frontend.
+
+**In progress:** Full escape analysis for parameters, hot region L1 optimization.
+
+**Roadmap:** SOS transformations, context polymorphism, proof-carrying safety.

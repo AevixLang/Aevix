@@ -1,0 +1,31 @@
+// loops.aev — nested loops, in-place swap on fixed arrays, accumulation.
+func sort5(arr: int[6]) : int[6] {
+    let i = 0;
+    while (i < 5) {
+        let j = i + 1;
+        while (j < 6) {
+            if (arr[j] < arr[i]) {
+                let tmp = arr[i];
+                arr[i] = arr[j];
+                arr[j] = tmp;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return arr;
+}
+
+hot {
+    let a: int[6] = [5, 3, 8, 1, 9, 2];
+    let s = sort5(a);
+    print s;
+
+    let total = 0;
+    let k = 0;
+    while (k < len(s)) {
+        total = total + s[k];
+        k = k + 1;
+    }
+    print total;
+}

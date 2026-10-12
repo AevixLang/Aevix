@@ -8,7 +8,7 @@ from lark import Transformer, Token, v_args
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
-    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, Import,
+    CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, EnumDecl, Import,
     New, Epoch, Break, Continue
 )
 
@@ -112,14 +112,21 @@ class AevixTransformer(Transformer):
         return list(items)
 
     def struct_lit(self, items):
-        name, args = str(items[0]), items[1] if len(items) > 1 else []
-        return StructLiteral(name=name, args=args)
+        name = str(items[0])
+        raw = items[1] if len(items) > 1 else []
+        args, field_names = [], []
+        for fld, value in raw:
+            args.append(value)
+            field_names.append(fld)
+        return StructLiteral(name=name, args=args, field_names=field_names)
 
     def struct_lit_items(self, items):
         return list(items)
 
     def struct_lit_item(self, items):
-        return items[0]
+        if len(items) == 2:
+            return (str(items[0]), items[1])
+        return ("", items[0])
 
     def new_expr(self, items):
         return New(base=str(items[0]), size=items[1])
@@ -182,6 +189,14 @@ class AevixTransformer(Transformer):
         base = items[0]
         size = str(items[1]) if len(items) > 1 else ""
         return f"{base}[{size}]"
+
+    def param_type(self, items):
+        is_ref = False
+        if items and isinstance(items[0], Token) and items[0].type == "REF":
+            is_ref = True
+            items = items[1:]
+        t = items[0]
+        return (is_ref, str(t) if not isinstance(t, str) else t)
 
     # ---- Statements ----
     def stmt(self, items):
@@ -292,8 +307,11 @@ class AevixTransformer(Transformer):
 
     def param(self, items):
         name = str(items[0])
-        var_type = items[1] if len(items) > 1 else None
-        return Param(name=name, var_type=var_type)
+        is_ref = False
+        var_type = None
+        if len(items) > 1:
+            is_ref, var_type = items[1]
+        return Param(name=name, var_type=var_type, is_ref=is_ref)
 
     # ---- Structs ----
     def struct_decl(self, items):
@@ -305,6 +323,14 @@ class AevixTransformer(Transformer):
 
     def struct_field(self, items):
         return StructField(name=str(items[0]), var_type=items[1])
+
+    # ---- Enums ----
+    def enum_decl(self, items):
+        name, variants = str(items[0]), items[1] if len(items) > 1 else []
+        return EnumDecl(name=name, variants=variants)
+
+    def enum_variants(self, items):
+        return [str(i) for i in items]
 
     # ---- Program ----
     def start(self, items):

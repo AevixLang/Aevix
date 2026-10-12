@@ -15,6 +15,7 @@ FRONTEND_DIR = os.path.join(ROOT, "frontend")
 BACKEND_BIN = os.path.join(ROOT, "backend", "build", "aevix-backend")
 RUNTIME_OBJ = os.path.join(ROOT, "backend", "build", "runtime.o")
 LLC = shutil.which("llc") or "/opt/homebrew/opt/llvm/bin/llc"
+OPT = shutil.which("opt") or "/opt/homebrew/opt/llvm/bin/opt"
 
 
 def compile_only(code):
@@ -74,8 +75,13 @@ def run_and_capture(code, args=(), files=None, stdin=None, env=None):
         ir = os.path.join(workdir, "out.ll")
         with open(ir, "w") as fh:
             fh.write(be.stdout)
+        opt_ll = os.path.join(workdir, "out.opt.ll")
+        oc = subprocess.run([OPT, "-passes=default<O2>", "-S", ir, "-o", opt_ll],
+                            capture_output=True, text=True)
+        if oc.returncode != 0:
+            return oc.returncode, [], oc.stderr
         obj = os.path.join(workdir, "out.o")
-        lc = subprocess.run([LLC, "-filetype=obj", ir, "-o", obj],
+        lc = subprocess.run([LLC, "-filetype=obj", opt_ll, "-o", obj],
                             capture_output=True, text=True)
         if lc.returncode != 0:
             return lc.returncode, [], lc.stderr
@@ -735,15 +741,30 @@ def test_epoch_escape_assignment_rejected():
 
 def test_epoch_return_rejected():
     ec, err = compile_only(
+        "func f() : int[] {\n"
+        "    epoch {\n"
+        "        let s = new int[3];\n"
+        "        return s;\n"
+        "    }\n"
+        "    return [];\n"
+        "}\n"
+    )
+    assert ec != 0, "returning arena-allocated value from epoch should be rejected"
+    assert "epoch" in err.lower()
+
+
+def test_epoch_return_primitive_allowed():
+    ec, out, err = run_and_capture(
         "func f() : int {\n"
         "    epoch {\n"
-        "        return 1;\n"
+        "        return 42;\n"
         "    }\n"
         "    return 0;\n"
         "}\n"
+        "print f();\n"
     )
-    assert ec != 0, "returning from inside an epoch should be rejected"
-    assert "epoch" in err.lower()
+    assert ec == 0, f"returning primitive from epoch should be allowed, got error: {err}"
+    assert out == ["42"]
 
 
 # --- runtime bounds checking ---

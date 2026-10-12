@@ -1,0 +1,18 @@
+// strings.aev — string concat, compare, len, index, structs with strings.
+struct Greeting { target: string, count: int }
+
+func shout(s: string) : string {
+    return s + "!!!";
+}
+
+hot {
+    let a: string = "hello";
+    let b = " world";
+    let joined = a + b;
+    print joined;
+    print len(joined);
+    print joined[0];
+    if (joined == "hello world") { print "equal"; }
+    if (joined != "goodbye") { print "different"; }
+    print shout("hi");
+}

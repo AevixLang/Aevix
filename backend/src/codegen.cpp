@@ -12,9 +12,24 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
+#include <algorithm>
 #include <iostream>
 #include <map>
 #include <stack>
+
+namespace {
+// Tracks how many loop bodies are open while statements are generated.
+// A software prefetch inside a loop body is a call, and any call makes LLVM's
+// vectorizer reject the whole loop. The vectorized form is far faster than a
+// prefetch hint, so prefetch emission is suppressed while a loop is open.
+struct LoopDepthGuard {
+    int& depth;
+    explicit LoopDepthGuard(int& d) : depth(d) { ++depth; }
+    ~LoopDepthGuard() { --depth; }
+};
+}  // namespace
 
 // ============================================================================
 // Lifecycle: Module Setup & Variable Scope Management
@@ -26,6 +41,9 @@ CodeGenerator::CodeGenerator()
     , builder(std::make_unique<llvm::IRBuilder<>>(*context))
 {
     module->setDataLayout("e-m:e-p:64:64-i64:64-n32:64-S128");
+    // A target triple feeds the optimizer's cost model: without one, `opt`
+    // treats the module as an unknown target and never vectorizes.
+    module->setTargetTriple(llvm::Triple(llvm::sys::getDefaultTargetTriple()));
     auto ptr_ty = llvm::PointerType::getUnqual(*context);
     auto func_type = llvm::FunctionType::get(builder->getInt32Ty(), {builder->getInt32Ty(), ptr_ty->getPointerTo()}, false);
     main_func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, "main", module.get());
@@ -41,6 +59,8 @@ CodeGenerator::CodeGenerator()
 
     named_values.emplace_back();
     named_types.emplace_back();
+    var_type_names_.emplace_back();
+    ref_scopes_.emplace_back();
 }
 
 /**
@@ -100,6 +120,16 @@ void CodeGenerator::build_arena_runtime() {
     // __aevix_str_eq(ptr a, i32 alen, ptr b, i32 blen) -> i1  (content compare)
     auto str_eq_ft = llvm::FunctionType::get(builder->getInt1Ty(), {ptr_ty, i32, ptr_ty, i32}, false);
     str_eq_func = llvm::Function::Create(str_eq_ft, llvm::Function::ExternalLinkage, "__aevix_str_eq", module.get());
+
+    // @llvm.prefetch(ptr, rw, locality, cache_type) — used inside hot regions
+    // to bring array data into L1 before the loop body reads it.
+    // rw=0 (read), locality=3 (L1), cache_type=1 (data cache).
+    auto prefetch_ft = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(*context),
+        {ptr_ty, builder->getInt32Ty(), builder->getInt32Ty(), builder->getInt32Ty()},
+        false);
+    prefetch_func = llvm::Function::Create(prefetch_ft, llvm::Function::ExternalLinkage,
+                                           "llvm.prefetch", module.get());
 }
 
 /**
@@ -171,6 +201,13 @@ void CodeGenerator::build_conv_runtime() {
     auto dstr_out_ft = llvm::FunctionType::get(void_ty, {dbl_ty, pp_ty, pp_ty}, false);
     double_to_str_func = llvm::Function::Create(dstr_out_ft, llvm::Function::ExternalLinkage, "__aevix_double_to_str", module.get());
 
+    // __aevix_i64_to_str(i64 n, ptr* out_ptr, i32* out_len)
+    // __aevix_u64_to_str(i64 n, ptr* out_ptr, i32* out_len)
+    auto i64_ty = builder->getInt64Ty();
+    auto i64_str_ft = llvm::FunctionType::get(void_ty, {i64_ty, pp_ty, pp_ty}, false);
+    i64_to_str_func = llvm::Function::Create(i64_str_ft, llvm::Function::ExternalLinkage, "__aevix_i64_to_str", module.get());
+    u64_to_str_func = llvm::Function::Create(i64_str_ft, llvm::Function::ExternalLinkage, "__aevix_u64_to_str", module.get());
+
     // __aevix_substr(ptr s, i32 len, i32 start, i32 count, ptr* out_ptr, i32* out_len)
     auto sub_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, i32, i32, pp_ty, pp_ty}, false);
     substr_func = llvm::Function::Create(sub_ft, llvm::Function::ExternalLinkage, "__aevix_substr", module.get());
@@ -179,28 +216,78 @@ void CodeGenerator::build_conv_runtime() {
     // out_ptr receives a string[] slice: { string*, i32 } in arena memory.
     auto split_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
     split_func = llvm::Function::Create(split_ft, llvm::Function::ExternalLinkage, "__aevix_split", module.get());
+
+    // aevix_rand(i32 max) -> i32
+    auto rand_ft = llvm::FunctionType::get(i32, {i32}, false);
+    rand_func = llvm::Function::Create(rand_ft, llvm::Function::ExternalLinkage, "aevix_rand", module.get());
+
+    // String builtins
+    // __aevix_trim(ptr s, i32 len, ptr* out, i32* out_len)
+    auto trim_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, pp_ty, pp_ty}, false);
+    trim_func = llvm::Function::Create(trim_ft, llvm::Function::ExternalLinkage, "__aevix_trim", module.get());
+
+    // __aevix_contains(ptr hay, i32 hlen, ptr ndl, i32 nlen) -> i32
+    auto contains_ft = llvm::FunctionType::get(i32, {ptr_ty, i32, ptr_ty, i32}, false);
+    contains_func = llvm::Function::Create(contains_ft, llvm::Function::ExternalLinkage, "__aevix_contains", module.get());
+
+    // __aevix_replace(ptr s, i32 slen, ptr old, i32 olen, ptr nw, i32 nlen, ptr* out, i32* out_len)
+    auto replace_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
+    replace_func = llvm::Function::Create(replace_ft, llvm::Function::ExternalLinkage, "__aevix_replace", module.get());
+
+    // __aevix_upper(ptr s, i32 len, ptr* out, i32* out_len)
+    auto upper_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, pp_ty, pp_ty}, false);
+    upper_func = llvm::Function::Create(upper_ft, llvm::Function::ExternalLinkage, "__aevix_upper", module.get());
+
+    // __aevix_lower(ptr s, i32 len, ptr* out, i32* out_len)
+    auto lower_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, pp_ty, pp_ty}, false);
+    lower_func = llvm::Function::Create(lower_ft, llvm::Function::ExternalLinkage, "__aevix_lower", module.get());
+
+    // __aevix_startswith(ptr s, i32 slen, ptr pre, i32 plen) -> i32
+    auto startswith_ft = llvm::FunctionType::get(i32, {ptr_ty, i32, ptr_ty, i32}, false);
+    startswith_func = llvm::Function::Create(startswith_ft, llvm::Function::ExternalLinkage, "__aevix_startswith", module.get());
+
+    // __aevix_endswith(ptr s, i32 slen, ptr suf, i32 slen2) -> i32
+    auto endswith_ft = llvm::FunctionType::get(i32, {ptr_ty, i32, ptr_ty, i32}, false);
+    endswith_func = llvm::Function::Create(endswith_ft, llvm::Function::ExternalLinkage, "__aevix_endswith", module.get());
+
+    // __aevix_char_at(ptr s, i32 slen, i32 idx, ptr* out, i32* out_len)
+    auto char_at_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, i32, pp_ty, pp_ty}, false);
+    char_at_func = llvm::Function::Create(char_at_ft, llvm::Function::ExternalLinkage, "__aevix_char_at", module.get());
+
+    // __aevix_join(ptr sep, i32 seplen, ptr arr, i32 count, ptr* out, i32* out_len)
+    auto join_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
+    join_func = llvm::Function::Create(join_ft, llvm::Function::ExternalLinkage, "__aevix_join", module.get());
+
+    // aevix_assert(i32 cond)
+    auto assert_ft = llvm::FunctionType::get(void_ty, {i32}, false);
+    assert_func = llvm::Function::Create(assert_ft, llvm::Function::ExternalLinkage, "aevix_assert", module.get());
 }
 
 /**
  * Throws a runtime error to stop IR emission upon discovering a semantic fault.
  */
 void CodeGenerator::error(const std::string& msg) {
+    std::string formatted = "error: " + msg;
     if (current_line > 0) {
-        throw std::runtime_error(msg + " at line " + std::to_string(current_line) +
-                                 ", column " + std::to_string(current_col));
+        formatted += "\n  --> " + current_file + ":" +
+                     std::to_string(current_line) + ":" + std::to_string(current_col);
     }
-    throw std::runtime_error(msg);
+    throw std::runtime_error(formatted);
 }
 
 void CodeGenerator::push_scope() {
     named_values.emplace_back();
     named_types.emplace_back();
+    var_type_names_.emplace_back();
+    ref_scopes_.emplace_back();
     scope_open_arrays_count.push_back(open_arrays.size());
 }
 
 void CodeGenerator::pop_scope() {
     named_values.pop_back();
     named_types.pop_back();
+    var_type_names_.pop_back();
+    ref_scopes_.pop_back();
     if (!scope_open_arrays_count.empty()) {
         auto target = scope_open_arrays_count.back();
         scope_open_arrays_count.pop_back();
@@ -264,16 +351,7 @@ bool CodeGenerator::is_slice_ty(llvm::Type* ty) {
     return slice_bases.count(llvm::cast<llvm::StructType>(ty)) > 0;
 }
 
-llvm::Value* CodeGenerator::make_slice(llvm::Value* ptr, llvm::Type* elem, llvm::Value* len) {
-    std::string base;
-    int sz = -1;
-    // Recover the base string from the element type to build the slice type.
-    if (elem->isIntegerTy(32)) base = "int";
-    else if (elem->isDoubleTy()) base = "float";
-    else if (elem->isIntegerTy(1)) base = "bool";
-    else if (is_string_slice(elem)) base = "string[]";
-    else if (elem->isStructTy()) base = elem->getStructName().str();
-    else error("Cannot build a slice of element type " + llvm_type_name(elem));
+llvm::Value* CodeGenerator::make_slice(llvm::Value* ptr, const std::string& base, llvm::Type* elem, llvm::Value* len) {
     llvm::StructType* st = slice_type_for(base);
     auto slice = builder->CreateInsertValue(llvm::UndefValue::get(st), ptr, 0, "slice");
     slice = builder->CreateInsertValue(slice, len, 1, "slice.len");
@@ -309,6 +387,7 @@ llvm::Value* CodeGenerator::gen_string_concat(llvm::Value* left, llvm::Value* ri
     auto total32 = builder->CreateAdd(llen, rlen, "cat.total");
     auto bytes32 = builder->CreateTrunc(builder->CreateZExt(total32, builder->getInt64Ty()), builder->getInt32Ty(), "cat.bytes");
     auto dst = builder->CreateCall(alloc_func, {bytes32}, "cat.ptr");
+    emit_prefetch(dst);
 
     llvm::Function* memcpy_fn = llvm::Intrinsic::getOrInsertDeclaration(
         module.get(), llvm::Intrinsic::memcpy, llvm::Type::getVoidTy(*context),
@@ -322,15 +401,34 @@ llvm::Value* CodeGenerator::gen_string_concat(llvm::Value* left, llvm::Value* ri
 }
 
 void CodeGenerator::define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty) {
+    define_var(name, alloc, ty, "");
+}
+
+void CodeGenerator::define_var(const std::string& name, llvm::Value* alloc, llvm::Type* ty, const std::string& type_name) {
     named_values.back()[name] = alloc;
     named_types.back()[name] = ty;
+    var_type_names_.back()[name] = type_name;
+}
+
+// Semantic type name of a variable ("" when unknown). Scans scopes outermost-in.
+std::string CodeGenerator::lookup_var_type_name(const std::string& name) {
+    for (auto it = var_type_names_.rbegin(); it != var_type_names_.rend(); ++it) {
+        auto vit = it->find(name);
+        if (vit != it->end()) return vit->second;
+    }
+    return "";
 }
 
 llvm::Value* CodeGenerator::lookup_var(const std::string& name, llvm::Type*& ty) {
+    std::size_t idx = 0;
+    return lookup_var_indexed(name, ty, idx);
+}
+
+llvm::Value* CodeGenerator::lookup_var_indexed(const std::string& name, llvm::Type*& ty, std::size_t& idx) {
     for (auto it = named_values.rbegin(); it != named_values.rend(); ++it) {
         auto vit = it->find(name);
         if (vit != it->end()) {
-            std::size_t idx = named_values.size() - 1 - std::distance(named_values.rbegin(), it);
+            idx = named_values.size() - 1 - std::distance(named_values.rbegin(), it);
             ty = named_types[idx][name];
             return vit->second;
         }
@@ -338,8 +436,17 @@ llvm::Value* CodeGenerator::lookup_var(const std::string& name, llvm::Type*& ty)
     return nullptr;
 }
 
+bool CodeGenerator::is_ref_var(const std::string& name) {
+    std::size_t idx = 0;
+    llvm::Type* ty = nullptr;
+    if (!lookup_var_indexed(name, ty, idx)) return false;
+    return ref_scopes_[idx].count(name) > 0;
+}
+
 /**
  * Parses an Aevix type string (e.g., "int[5]") into base type and array size.
+ * Accepts the primitive types plus every fixed-width type and registered
+ * struct / enum names (enums are i32 values, so they parse like scalars).
  */
 bool CodeGenerator::parse_type(const std::string& tn, std::string& base, int& arr_size) {
     base = tn;
@@ -351,16 +458,81 @@ bool CodeGenerator::parse_type(const std::string& tn, std::string& base, int& ar
         std::string sz = tn.substr(br + 1, close - br - 1);
         arr_size = sz.empty() ? 0 : std::stoi(sz);
     }
-    if (base == "int" || base == "float" || base == "bool" || base == "string") return true;
-    return struct_types.find(base) != struct_types.end();
+    if (is_numeric_type_name(base) || base == "bool" || base == "string") return true;
+    if (struct_types.find(base) != struct_types.end()) return true;
+    if (enum_names_.find(base) != enum_names_.end()) return true;
+    return false;
 }
 
 llvm::Type* CodeGenerator::scalar_type_for(const std::string& base) {
-    if (base == "int") return builder->getInt32Ty();
-    if (base == "float") return builder->getDoubleTy();
+    if (base == "int" || base == "i32") return builder->getInt32Ty();
+    if (base == "i8" || base == "u8") return builder->getInt8Ty();
+    if (base == "i16" || base == "u16") return builder->getInt16Ty();
+    if (base == "i64" || base == "u64") return builder->getInt64Ty();
+    if (base == "u32") return builder->getInt32Ty();
+    if (base == "float" || base == "f64") return builder->getDoubleTy();
+    if (base == "f32") return builder->getFloatTy();
     if (base == "bool") return builder->getInt1Ty();
-    if (base == "string") return builder->getInt8Ty();
+    if (base == "string") return builder->getInt8Ty(); // legacy; string is normally a slice
+    if (enum_names_.find(base) != enum_names_.end()) return builder->getInt32Ty();
     return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Type-name classification (mirrors the sema rules in sema/sema.cpp)
+// ---------------------------------------------------------------------------
+
+// Base type of a (possibly array/slice) type string.
+static std::string base_type_of(const std::string& tn) {
+    std::size_t br = tn.find('[');
+    return br == std::string::npos ? tn : tn.substr(0, br);
+}
+
+bool CodeGenerator::is_int_type_name(const std::string& tn) {
+    const std::string b = base_type_of(tn);
+    return b == "int" || b == "i8" || b == "i16" || b == "i32" || b == "i64"
+        || b == "u8" || b == "u16" || b == "u32" || b == "u64";
+}
+
+bool CodeGenerator::is_float_type_name(const std::string& tn) {
+    const std::string b = base_type_of(tn);
+    return b == "float" || b == "f32" || b == "f64";
+}
+
+bool CodeGenerator::is_numeric_type_name(const std::string& tn) {
+    return is_int_type_name(tn) || is_float_type_name(tn);
+}
+
+int CodeGenerator::type_width_bits(const std::string& tn) {
+    const std::string b = base_type_of(tn);
+    if (b == "i16" || b == "u16") return 16;
+    if (b == "i32" || b == "u32" || b == "int") return 32;
+    if (b == "i64" || b == "u64") return 64;
+    if (b == "i8" || b == "u8") return 8;
+    return -1;
+}
+
+int CodeGenerator::float_width_bits(const std::string& tn) {
+    return base_type_of(tn) == "f32" ? 32 : 64; // float/f64
+}
+
+bool CodeGenerator::type_is_unsigned(const std::string& tn) {
+    const std::string b = base_type_of(tn);
+    return b == "u8" || b == "u16" || b == "u32" || b == "u64";
+}
+
+// Implicit coercions are widening-only: same type, int to a wider int, int to
+// any float, or float to a wider float. Narrowing and every non-numeric
+// cross-type assignment require an explicit to_* / sema check.
+bool CodeGenerator::can_implicit_coerce(const std::string& src, const std::string& dest) {
+    if (src == dest) return true;
+    if (!is_numeric_type_name(src) || !is_numeric_type_name(dest)) return false;
+    if (is_int_type_name(src) && is_int_type_name(dest))
+        return type_width_bits(dest) > type_width_bits(src);
+    if (is_int_type_name(src) && is_float_type_name(dest)) return true;
+    if (is_float_type_name(src) && is_float_type_name(dest))
+        return float_width_bits(dest) >= float_width_bits(src);
+    return false; // float -> int is narrowing and requires an explicit to_*
 }
 
 llvm::Type* CodeGenerator::llvm_type_for(const std::string& tn) {
@@ -434,10 +606,46 @@ void CodeGenerator::register_struct(const StructDecl& sd) {
     auto st = llvm::StructType::create(*context, field_types, sd.name);
     struct_types[sd.name] = st;
     std::map<std::string, int> idx_map;
+    std::map<std::string, std::string> fname_map;
     for (std::size_t i = 0; i < sd.fields.size(); ++i) {
         idx_map[sd.fields[i].name] = (int)i;
+        fname_map[sd.fields[i].name] = sd.fields[i].var_type;
     }
     struct_field_indices[sd.name] = idx_map;
+    field_type_names_[sd.name] = fname_map;
+}
+
+void CodeGenerator::register_enum(const EnumDecl& ed) {
+    if (enum_names_.find(ed.name) != enum_names_.end()) return;
+    enum_names_.insert(ed.name);
+    enum_variants_[ed.name] = ed.variants;
+    for (std::size_t i = 0; i < ed.variants.size(); ++i) {
+        enum_variant_indices_[ed.name + "." + ed.variants[i]] = (int)i;
+    }
+}
+
+bool CodeGenerator::is_enum(const std::string& name) {
+    return enum_names_.find(name) != enum_names_.end();
+}
+
+bool CodeGenerator::is_enum_variant(const std::string& en, const std::string& variant) {
+    auto it = enum_variants_.find(en);
+    if (it == enum_variants_.end()) return false;
+    for (const auto& v : it->second) if (v == variant) return true;
+    return false;
+}
+
+int CodeGenerator::enum_variant_index(const std::string& en, const std::string& variant) {
+    auto it = enum_variant_indices_.find(en + "." + variant);
+    return it == enum_variant_indices_.end() ? -1 : it->second;
+}
+
+bool CodeGenerator::is_enum_variant_expr(const std::shared_ptr<Expr>& e) {
+    auto ma = std::dynamic_pointer_cast<MemberAccess>(e);
+    if (!ma) return false;
+    auto v = std::dynamic_pointer_cast<Variable>(ma->object);
+    if (!v || !is_enum(v->name)) return false;
+    return is_enum_variant(v->name, ma->member);
 }
 
 // Helper to convert an Aevix type string (scalar/array/struct) to an LLVM type.
@@ -471,22 +679,49 @@ llvm::Value* CodeGenerator::build_struct_literal(const StructLiteral& sl) {
     auto it = struct_types.find(sl.name);
     if (it == struct_types.end()) error("Unknown struct: " + sl.name);
     llvm::StructType* st = it->second;
-    auto alloc = builder->CreateAlloca(st, nullptr, sl.name + ".lit");
+    auto alloc = create_alloca(st, nullptr, sl.name + ".lit");
     std::size_t n = st->getNumElements();
     if (sl.args.size() != n) error("Struct '" + sl.name + "' expects " + std::to_string(n) + " fields, got " + std::to_string(sl.args.size()));
-    for (std::size_t i = 0; i < n; ++i) {
-        llvm::Value* v = generate_expr(sl.args[i]);
+
+    // Field index -> argument index. Sema rejects unknown, duplicate and
+    // missing names before codegen runs; the guard in the store loop keeps a
+    // literal that arrives without that check from indexing past args.
+    std::vector<std::size_t> order(n, n);
+    std::size_t named = 0;
+    for (const auto& fn : sl.field_names)
+        if (!fn.empty()) ++named;
+    if (named == 0) {
+        for (std::size_t j = 0; j < n; ++j) order[j] = j;
+    } else {
+        auto decl = struct_decls.find(sl.name);
+        if (decl == struct_decls.end()) error("Unknown struct: " + sl.name);
+        const auto& fields = decl->second->fields;
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = 0; j < fields.size(); ++j) {
+                if (fields[j].name == sl.field_names[i]) {
+                    order[j] = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (std::size_t j = 0; j < n; ++j) {
+        // Sema rejects unknown, duplicate and missing names; this guard keeps a
+        // literal that reaches codegen without sema from indexing past args.
+        if (order[j] >= n) error("Struct '" + sl.name + "' is missing a value for field " + std::to_string(j));
+        llvm::Value* v = generate_expr(sl.args[order[j]]);
         if (!v) return nullptr;
-        llvm::Type* fty = st->getElementType(i);
+        llvm::Type* fty = st->getElementType(j);
         if (fty->isDoubleTy() && v->getType()->isIntegerTy(32)) {
             v = builder->CreateSIToFP(v, builder->getDoubleTy(), "cast");
         } else if (is_slice_ty(fty)) {
             v = coerce_to_slice(v, llvm::cast<llvm::StructType>(fty),
-                "Type mismatch for field " + std::to_string(i) + " of struct '" + sl.name + "'");
+                "Type mismatch for field " + std::to_string(j) + " of struct '" + sl.name + "'");
         } else if (fty != v->getType()) {
-            error("Type mismatch for field " + std::to_string(i) + " of struct '" + sl.name + "'");
+            error("Type mismatch for field " + std::to_string(j) + " of struct '" + sl.name + "'");
         }
-        llvm::Value* fptr = builder->CreateInBoundsGEP(st, alloc, {builder->getInt32(0), builder->getInt32((int)i)}, "f");
+        llvm::Value* fptr = builder->CreateInBoundsGEP(st, alloc, {builder->getInt32(0), builder->getInt32((int)j)}, "f");
         builder->CreateStore(v, fptr);
     }
     return builder->CreateLoad(st, alloc, sl.name + ".val");
@@ -505,6 +740,9 @@ llvm::Value* CodeGenerator::gen_member_ptr_inner(const MemberAccess& ma, llvm::T
     if (auto var = std::dynamic_pointer_cast<Variable>(ma.object)) {
         base = lookup_var(var->name, st_ty);
         if (!base) error("Variable not found: " + var->name);
+        if (is_ref_var(var->name)) {
+            base = builder->CreateLoad(builder->getPtrTy(), base, var->name + ".ref");
+        }
         if (!st_ty->isStructTy()) error("'." + ma.member + "' on a non-struct value");
     } else if (auto inner = std::dynamic_pointer_cast<MemberAccess>(ma.object)) {
         llvm::Type* inner_ty = nullptr;
@@ -527,7 +765,8 @@ llvm::Value* CodeGenerator::gen_member_ptr_inner(const MemberAccess& ma, llvm::T
 }
 
 bool CodeGenerator::is_numeric(llvm::Type* ty) {
-    return ty->isIntegerTy(8) || ty->isIntegerTy(32) || ty->isDoubleTy();
+    if (ty->isIntegerTy() && !ty->isIntegerTy(1)) return true; // all int widths
+    return ty->isFloatTy() || ty->isDoubleTy();
 }
 
 void CodeGenerator::promote_binop_operands(llvm::Value*& left, llvm::Value*& right) {
@@ -537,6 +776,32 @@ void CodeGenerator::promote_binop_operands(llvm::Value*& left, llvm::Value*& rig
         left = builder->CreateSIToFP(left, builder->getDoubleTy(), "tofloat");
     else if (right->getType()->isIntegerTy(32) && left->getType()->isDoubleTy())
         right = builder->CreateSIToFP(right, builder->getDoubleTy(), "tofloat");
+}
+
+void CodeGenerator::promote_binop_operands(llvm::Value*& left, llvm::Value*& right,
+                                           const std::string& lname, const std::string& rname) {
+    std::string target = common_numeric_name(lname, rname);
+    if (target.empty()) {
+        // Fallback: fall back to old LLVM-based promotion for values whose
+        // type names are unknown (e.g. nested expressions, cached temporaries).
+        if (left->getType()->isIntegerTy(8)) left = builder->CreateZExt(left, builder->getInt32Ty(), "char.up");
+        if (right->getType()->isIntegerTy(8)) right = builder->CreateZExt(right, builder->getInt32Ty(), "char.up");
+        // Mixed-signedness compare/arith with a bare int literal: the small
+        // operand must be widened to i32 before the (signed) instruction.
+        if (left->getType()->isIntegerTy(16) && right->getType()->isIntegerTy(32))
+            left = type_is_unsigned(lname) ? builder->CreateZExt(left, builder->getInt32Ty(), "u16.up")
+                                           : builder->CreateSExt(left, builder->getInt32Ty(), "i16.up");
+        else if (right->getType()->isIntegerTy(16) && left->getType()->isIntegerTy(32))
+            right = type_is_unsigned(rname) ? builder->CreateZExt(right, builder->getInt32Ty(), "u16.up")
+                                            : builder->CreateSExt(right, builder->getInt32Ty(), "i16.up");
+        if (left->getType()->isIntegerTy(32) && right->getType()->isDoubleTy())
+            left = builder->CreateSIToFP(left, builder->getDoubleTy(), "tofloat");
+        else if (right->getType()->isIntegerTy(32) && left->getType()->isDoubleTy())
+            right = builder->CreateSIToFP(right, builder->getDoubleTy(), "tofloat");
+        return;
+    }
+    left  = coerce_numeric(left,  lname, target);
+    right = coerce_numeric(right, rname, target);
 }
 
 void CodeGenerator::require_numeric(llvm::Value* v, const std::string& ctx) {
@@ -557,7 +822,10 @@ void CodeGenerator::require_bool_type(llvm::Type* ty, const std::string& ctx) {
 
 std::string CodeGenerator::llvm_type_name(llvm::Type* ty) {
     if (ty->isIntegerTy(8)) return "string char";
+    if (ty->isIntegerTy(16)) return "i16";
     if (ty->isIntegerTy(32)) return "int";
+    if (ty->isIntegerTy(64)) return "i64";
+    if (ty->isFloatTy()) return "f32";
     if (ty->isDoubleTy()) return "float";
     if (ty->isIntegerTy(1)) return "bool";
     if (is_string_slice(ty)) return "string";
@@ -568,8 +836,347 @@ std::string CodeGenerator::llvm_type_name(llvm::Type* ty) {
 }
 
 // ============================================================================
+// Enum values are represented as i32 indices, computed as the declaration
+// order in the enum type.
+// ============================================================================
+
+// Canonical function type name: declared Aevix type strings are already
+// canonical ("i64", "Color", "i64[]", ...), so this is the identity.
+std::string CodeGenerator::fn_type_name(const std::string& tn) {
+    return tn;
+}
+
+bool CodeGenerator::is_slice_dest(const std::string& tn) {
+    if (tn.empty()) return false;
+    if (tn.find("[]") != std::string::npos) return true;
+    // A plain "string" destination is an i8 slice; a fixed "string[3]" is a
+    // real array of strings and must NOT be treated as a slice destination.
+    return tn == "string";
+}
+
+std::string CodeGenerator::lltype_to_name(llvm::Type* ty) {
+    if (ty->isIntegerTy(1)) return "bool";
+    if (ty->isIntegerTy(8)) return "i8";
+    if (ty->isIntegerTy(16)) return "i16";
+    if (ty->isIntegerTy(32)) return "int";
+    if (ty->isIntegerTy(64)) return "i64";
+    if (ty->isFloatTy()) return "f32";
+    if (ty->isDoubleTy()) return "float";
+    if (is_string_slice(ty)) return "string";
+    if (is_slice_ty(ty)) {
+        auto it = slice_bases.find(llvm::cast<llvm::StructType>(ty));
+        if (it != slice_bases.end()) return it->second + "[]";
+        return "unknown[]";
+    }
+    if (ty->isPointerTy()) return "string";
+    if (ty->isArrayTy()) {
+        auto at = llvm::cast<llvm::ArrayType>(ty);
+        return lltype_to_name(at->getElementType()) + "[" +
+               std::to_string(at->getNumElements()) + "]";
+    }
+    if (ty->isStructTy()) return ty->getStructName().str();
+    return "unknown";
+}
+
+// Mirrors sema's common_numeric (sema/sema.cpp:69): the result type of an
+// arithmetic op, or "" when the operand kinds clash (mixed signedness).
+std::string CodeGenerator::common_numeric_name(const std::string& a, const std::string& b) {
+    if (a == b) return a;
+    if (is_float_type_name(a)) return is_float_type_name(b) ? (float_width_bits(a) >= float_width_bits(b) ? a : b) : a;
+    if (is_float_type_name(b)) return b;
+    if (is_int_type_name(a) && is_int_type_name(b)) {
+        if (type_is_unsigned(a) != type_is_unsigned(b)) return ""; // mixed signedness
+        return type_width_bits(a) >= type_width_bits(b) ? a : b;
+    }
+    return "";
+}
+
+// Element type name reached by indexing a value whose type name is `tn`.
+// A bare "string" (a slice of i8) yields raw i8; an array/slice *of* strings
+// yields "string" (the element is itself a slice).
+static std::string index_elem_type_name(const std::string& tn) {
+    if (tn.empty()) return "";
+    bool has_bracket = tn.find('[') != std::string::npos;
+    std::string el = base_type_of(tn);
+    if (!has_bracket && el == "string") return "i8";
+    return el;
+}
+
+std::string CodeGenerator::expr_type_name(const std::shared_ptr<Expr>& e) {
+    if (!e) return "";
+    if (auto n = std::dynamic_pointer_cast<Number>(e)) return "int";
+    if (auto f = std::dynamic_pointer_cast<Float>(e)) return "float";
+    if (auto b = std::dynamic_pointer_cast<Bool>(e)) return "bool";
+    if (auto s = std::dynamic_pointer_cast<String>(e)) return "string";
+    if (auto var = std::dynamic_pointer_cast<Variable>(e)) {
+        std::string tn = lookup_var_type_name(var->name);
+        if (!tn.empty()) return tn;
+        if (is_open_array(var->name)) {
+            auto oit = open_array_elem_type_names.find(var->name);
+            if (oit != open_array_elem_type_names.end()) return base_type_of(oit->second) + "[]";
+        }
+        llvm::Type* ty = nullptr;
+        if (lookup_var(var->name, ty)) return lltype_to_name(ty);
+        return "";
+    }
+    if (auto al = std::dynamic_pointer_cast<ArrayLit>(e)) {
+        if (al->elements.empty()) return "";
+        std::string el = expr_type_name(al->elements[0]);
+        if (el.empty()) return "";
+        return el + "[" + std::to_string(al->elements.size()) + "]";
+    }
+    if (auto ix = std::dynamic_pointer_cast<Index>(e)) {
+        return index_elem_type_name(expr_type_name(ix->object));
+    }
+    if (auto ma = std::dynamic_pointer_cast<MemberAccess>(e)) {
+        if (is_enum_variant_expr(e)) {
+            // Color.red: the object is the enum *name*, not an existing
+            // variable, so report the enum type name directly.
+            if (auto vobj = std::dynamic_pointer_cast<Variable>(ma->object))
+                if (is_enum(vobj->name)) return vobj->name;
+            return expr_type_name(ma->object);
+        }
+        std::string on = expr_type_name(ma->object);
+        auto it = field_type_names_.find(base_type_of(on));
+        if (it != field_type_names_.end()) {
+            auto fit = it->second.find(ma->member);
+            if (fit != it->second.end()) return fit->second;
+        }
+        return "";
+    }
+    if (auto sl = std::dynamic_pointer_cast<StructLiteral>(e)) return sl->name;
+    if (auto n = std::dynamic_pointer_cast<New>(e)) return n->base + "[]";
+    if (auto call = std::dynamic_pointer_cast<Call>(e)) {
+        auto it = return_type_names_.find(call->callee);
+        if (it != return_type_names_.end()) return it->second;
+        return "";
+    }
+    if (auto neg = std::dynamic_pointer_cast<Neg>(e)) return expr_type_name(neg->value);
+    if (auto add = std::dynamic_pointer_cast<Add>(e)) {
+        std::string lt = expr_type_name(add->left), rt = expr_type_name(add->right);
+        if (lt == "string" && rt == "string") return "string";
+        return common_numeric_name(lt, rt);
+    }
+    if (auto sub = std::dynamic_pointer_cast<Sub>(e)) return common_numeric_name(expr_type_name(sub->left), expr_type_name(sub->right));
+    if (auto mul = std::dynamic_pointer_cast<Mul>(e)) return common_numeric_name(expr_type_name(mul->left), expr_type_name(mul->right));
+    if (auto div = std::dynamic_pointer_cast<Div>(e)) return common_numeric_name(expr_type_name(div->left), expr_type_name(div->right));
+    if (std::dynamic_pointer_cast<CmpOp>(e)) return "bool";
+    if (std::dynamic_pointer_cast<And>(e)) return "bool";
+    if (std::dynamic_pointer_cast<Or>(e)) return "bool";
+    if (std::dynamic_pointer_cast<Not>(e)) return "bool";
+    return "";
+}
+
+// Emits a numeric conversion between two scalar type names (validated by sema).
+llvm::Value* CodeGenerator::coerce_numeric(llvm::Value* v, const std::string& src, const std::string& dest) {
+    if (src == dest || !v) return v;
+    if (!is_numeric_type_name(src) || !is_numeric_type_name(dest)) {
+        if (v->getType() != llvm_type_from_name(dest)) {
+            error("Cannot convert " + src + " to " + dest);
+        }
+        return v;
+    }
+    bool src_int = is_int_type_name(src);
+    bool dst_int = is_int_type_name(dest);
+    bool src_float = is_float_type_name(src);
+    bool dst_float = is_float_type_name(dest);
+
+    if (src_int && dst_int) {
+        int sw = type_width_bits(src), dw = type_width_bits(dest);
+        if (dw > sw) {
+            return type_is_unsigned(src) || type_is_unsigned(dest)
+                ? builder->CreateZExt(v, llvm_type_from_name(dest), "zext")
+                : builder->CreateSExt(v, llvm_type_from_name(dest), "sext");
+        }
+        if (dw < sw) return builder->CreateTrunc(v, llvm_type_from_name(dest), "trunc");
+        return v; // same width (int vs i32/u32, i8 vs u8)
+    }
+    if (src_int && dst_float) {
+        return type_is_unsigned(src)
+            ? builder->CreateUIToFP(v, llvm_type_from_name(dest), "uitofp")
+            : builder->CreateSIToFP(v, llvm_type_from_name(dest), "sitofp");
+    }
+    if (src_float && dst_int) {
+        return type_is_unsigned(dest)
+            ? builder->CreateFPToUI(v, llvm_type_from_name(dest), "fptoui")
+            : builder->CreateFPToSI(v, llvm_type_from_name(dest), "fptosi");
+    }
+    if (src_float && dst_float) {
+        int sw = float_width_bits(src), dw = float_width_bits(dest);
+        if (dw > sw) return builder->CreateFPExt(v, llvm_type_from_name(dest), "fpext");
+        if (dw < sw) return builder->CreateFPTrunc(v, llvm_type_from_name(dest), "fptrunc");
+        return v;
+    }
+    error("Cannot convert " + src + " to " + dest);
+}
+
+// Builds a slice of `base` elements in the arena from an array literal,
+// coercing each element to the base type. `base` is the *element* type name
+// ("int", "i64", "Color", "string", ...).
+llvm::Value* CodeGenerator::make_slice_from_lit(const ArrayLit& al, const std::string& base) {
+    llvm::Type* elem = (base == "string")
+        ? static_cast<llvm::Type*>(slice_type_for("string"))
+        : scalar_type_for(base);
+    // A struct element is as valid as a scalar one; only an unknown name is an error.
+    if (!elem) {
+        auto sit = struct_types.find(base);
+        if (sit != struct_types.end()) elem = sit->second;
+    }
+    if (!elem) error("Unknown element type in array literal: " + base);
+    // A slice *of strings* is wrapped by string[]Slice, not the string slice.
+    const std::string wrap = (base == "string") ? "string[]" : base;
+    if (al.elements.empty()) {
+        llvm::Value* nullp = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context));
+        return make_slice(nullp, wrap, elem, builder->getInt32(0));
+    }
+    uint64_t elem_bytes = module->getDataLayout().getTypeAllocSize(elem);
+    llvm::Value* bytes64 = llvm::ConstantInt::get(builder->getInt64Ty(), elem_bytes * al.elements.size());
+    llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes");
+    llvm::Value* ptr = builder->CreateCall(alloc_func, {bytes32}, "lit.ptr");
+    emit_prefetch(ptr);
+    for (std::size_t i = 0; i < al.elements.size(); ++i) {
+        const std::string en = expr_type_name(al.elements[i]);
+        if (!en.empty() && en != base && !can_implicit_coerce(en, base))
+            error("Array literal must contain a single type (got " + en + " and " + base + ")");
+        llvm::Value* ev = coerce_expr_to(al.elements[i], base);
+        if (!ev) return nullptr;
+        llvm::Value* ep = builder->CreateInBoundsGEP(elem, ptr, {builder->getInt32((int)i)}, "lit.elem");
+        builder->CreateStore(ev, ep);
+    }
+    return make_slice(ptr, wrap, elem, builder->getInt32((int)al.elements.size()));
+}
+
+// Coerces an expression to a named target type. Dest may be a slice ("int[]",
+// "string"), a fixed array ("int[3]"), a scalar ("i64", "f32", "Color"), or
+// an enum name. Array literals are rebuilt with per-element coercion and
+// integer literals are materialized at the target width.
+llvm::Value* CodeGenerator::coerce_expr_to(const std::shared_ptr<Expr>& e, const std::string& dest) {
+    if (!e) return nullptr;
+    std::string db = base_type_of(dest);
+    int darr = -1;
+    {
+        std::string dbg;
+        parse_type(dest, dbg, darr);
+    }
+
+    if (is_slice_dest(dest)) {
+        if (auto al = std::dynamic_pointer_cast<ArrayLit>(e)) {
+            // For "string[]" the element base is "string"; for "Color[]" it is
+            // "Color". base_type_of already peeled the brackets.
+            return make_slice_from_lit(*al, db == "string" ? "string" : db);
+        }
+        llvm::Value* v = generate_expr(e);
+        if (!v) return nullptr;
+        if (is_slice_ty(v->getType())) return v; // already a slice; sema checked it
+        if (v->getType()->isArrayTy()) return copy_array_to_slice(v, slice_type_for(db == "string" ? "string[]" : db));
+        return v;
+    }
+
+    if (darr > 0) {
+        llvm::Type* elem_ty = nullptr;
+        if (db == "string") {
+            elem_ty = static_cast<llvm::Type*>(slice_type_for("string"));
+        } else if (llvm::Type* st = scalar_type_for(db)) {
+            elem_ty = st;
+        } else {
+            auto sit = struct_types.find(db);
+            if (sit != struct_types.end()) elem_ty = sit->second;
+        }
+        if (!elem_ty) error("Unknown array type: " + dest);
+        llvm::Type* arr_ty = llvm::ArrayType::get(elem_ty, darr);
+        if (auto al = std::dynamic_pointer_cast<ArrayLit>(e)) {
+            if (al->elements.size() != (std::size_t)darr) error("Array literal size mismatch");
+            llvm::Value* tmp = create_alloca(arr_ty, nullptr, "arr.coerce");
+            for (int i = 0; i < darr; ++i) {
+                const std::string en = expr_type_name(al->elements[i]);
+                if (!en.empty() && en != db && !can_implicit_coerce(en, db))
+                    error("Element type mismatch: cannot convert " + en + " to " + db
+                          + " in array literal of " + dest);
+                llvm::Value* ev = coerce_expr_to(al->elements[i], db);
+                if (!ev) return nullptr;
+                llvm::Value* ep = builder->CreateInBoundsGEP(arr_ty, tmp, {builder->getInt32(0), builder->getInt32(i)}, "arr.elem");
+                builder->CreateStore(ev, ep);
+            }
+            return builder->CreateLoad(arr_ty, tmp, "arr.val");
+        }
+        llvm::Value* v = generate_expr(e);
+        if (!v) return nullptr;
+        if (v->getType() != arr_ty) error("Cannot assign " + lltype_to_name(v->getType()) + " to " + dest);
+        return v;
+    }
+
+    // Scalar / struct / enum destination.
+    const std::string src = expr_type_name(e);
+    if (src == dest) return generate_expr(e);
+
+    if (auto n = std::dynamic_pointer_cast<Number>(e)) {
+        if (is_int_type_name(dest)) {
+            return llvm::ConstantInt::get(llvm_type_from_name(dest),
+                llvm::APInt(type_width_bits(dest), n->value));
+        }
+        if (is_float_type_name(dest)) {
+            return llvm::ConstantFP::get(llvm_type_from_name(dest), (double)n->value);
+        }
+    }
+    if (auto f = std::dynamic_pointer_cast<Float>(e)) {
+        if (is_float_type_name(dest)) {
+            return llvm::ConstantFP::get(llvm_type_from_name(dest), f->value);
+        }
+    }
+    if (auto neg = std::dynamic_pointer_cast<Neg>(e)) {
+        if (auto inner = std::dynamic_pointer_cast<Number>(neg->value)) {
+            if (is_int_type_name(dest)) {
+                llvm::APInt w(type_width_bits(dest), inner->value);
+                w = -w;
+                return llvm::ConstantInt::get(llvm_type_from_name(dest), w);
+            }
+        }
+        if (auto finner = std::dynamic_pointer_cast<Float>(neg->value)) {
+            if (is_float_type_name(dest)) {
+                return llvm::ConstantFP::get(llvm_type_from_name(dest), -finner->value);
+            }
+        }
+        llvm::Value* v = generate_expr(neg->value);
+        if (!v) return nullptr;
+        llvm::Value* negv = is_float_type_name(dest)
+            ? builder->CreateFNeg(v, "negtmp")
+            : builder->CreateNeg(v, "negtmp");
+        return coerce_numeric(negv, src, dest);
+    }
+
+    llvm::Value* v = generate_expr(e);
+    if (!v) return nullptr;
+    std::string sname = src.empty() ? lltype_to_name(v->getType()) : src;
+    if (sname == dest) return v;
+    if (!can_implicit_coerce(sname, dest))
+        error("Cannot convert " + sname + " to " + dest);
+    return coerce_numeric(v, sname, dest);
+}
+
+// ============================================================================
 // Array Handling
 // ============================================================================
+
+llvm::Value* CodeGenerator::gen_ref_arg_ptr(const std::shared_ptr<Expr>& e) {
+    if (auto var = std::dynamic_pointer_cast<Variable>(e)) {
+        llvm::Type* ty = nullptr;
+        llvm::Value* alloc = lookup_var(var->name, ty);
+        if (!alloc) error("Cannot resolve lvalue: " + var->name);
+        if (is_ref_var(var->name))
+            return builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+        return alloc;
+    }
+    if (auto ix = std::dynamic_pointer_cast<Index>(e)) {
+        llvm::Type* elem_ty = nullptr;
+        return gen_index_ptr(*ix, elem_ty);
+    }
+    if (auto ma = std::dynamic_pointer_cast<MemberAccess>(e)) {
+        llvm::Type* fty = nullptr;
+        return gen_member_ptr_inner(*ma, fty);
+    }
+    error("Cannot pass a temporary value to a ref parameter");
+    return nullptr;
+}
 
 llvm::Type* CodeGenerator::element_type_of(const std::shared_ptr<Expr>& e) {
     if (auto n = std::dynamic_pointer_cast<Number>(e)) return builder->getInt32Ty();
@@ -598,16 +1205,35 @@ llvm::Type* CodeGenerator::element_type_of(const std::shared_ptr<Expr>& e) {
     error("Array elements must be literals of a single type");
 }
 
-llvm::Type* CodeGenerator::build_array_type(const ArrayLit& al) {
+std::string CodeGenerator::array_elem_type_name(const ArrayLit& al) {
     if (al.elements.empty()) error("Cannot infer the element type of an empty array ([])");
-    llvm::Type* elem = element_type_of(al.elements[0]);
+    std::string acc = expr_type_name(al.elements[0]);
+    if (acc.empty()) error("Cannot infer the element type of an array literal");
     for (std::size_t i = 1; i < al.elements.size(); ++i) {
-        llvm::Type* other = element_type_of(al.elements[i]);
-        if (other != elem) {
-            error("Array elements must share a single type (got " + llvm_type_name(elem) + " and " + llvm_type_name(other) + ")");
+        std::string other = expr_type_name(al.elements[i]);
+        if (other.empty()) error("Cannot infer the element type of an array literal");
+        if (acc == other) continue;
+        // Unify only same-family aliases ("int"/"i32", "float"/"f64"). A mixed
+        // int+float literal is rejected: numeric literals never silently widen
+        // inside an unchecked (inferred) array literal.
+        bool same_family = is_float_type_name(acc) == is_float_type_name(other);
+        bool same_shape = !is_float_type_name(acc)
+            ? (type_width_bits(acc) == type_width_bits(other)
+               && type_is_unsigned(acc) == type_is_unsigned(other))
+            : (float_width_bits(acc) == float_width_bits(other));
+        if (is_numeric_type_name(acc) && is_numeric_type_name(other)
+            && same_family && same_shape) {
+            acc = common_numeric_name(acc, other);
+            if (acc.empty()) error("Array elements have incompatible numeric types");
+            continue;
         }
+        error("Array elements must share a single type (got " + acc + " and " + other + ")");
     }
-    return llvm::ArrayType::get(elem, al.elements.size());
+    return acc;
+}
+
+llvm::Type* CodeGenerator::build_array_type(const ArrayLit& al) {
+    return llvm::ArrayType::get(llvm_type_from_name(array_elem_type_name(al)), al.elements.size());
 }
 
 llvm::Constant* CodeGenerator::build_array_constant(const ArrayLit& al) {
@@ -650,17 +1276,24 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
     if (var) {
         llvm::Value* alloc = lookup_var(var->name, arr_ty);
         if (!alloc) error("Variable not found: " + var->name);
-        ptr = alloc;
-        cur_arr = arr_ty;
-        is_open = is_open_array(var->name);
-        if (is_open) {
-            // The variable stores a slice { data*, len } — load the whole value.
-            auto slice = builder->CreateLoad(arr_ty, alloc, var->name);
-            ptr = builder->CreateExtractValue(slice, 0, var->name + ".ptr");
-            open_len = builder->CreateExtractValue(slice, 1, var->name + ".len");
-            open_elem = open_array_elem_type(var->name);
+        if (is_ref_var(var->name)) {
+            // Ref/out storage holds the caller's array address: load it first.
+            ptr = builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+            cur_arr = arr_ty;
+            is_open = false;
         } else {
-            if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+            ptr = alloc;
+            cur_arr = arr_ty;
+            is_open = is_open_array(var->name);
+            if (is_open) {
+                // The variable stores a slice { data*, len } — load the whole value.
+                auto slice = builder->CreateLoad(arr_ty, alloc, var->name);
+                ptr = builder->CreateExtractValue(slice, 0, var->name + ".ptr");
+                open_len = builder->CreateExtractValue(slice, 1, var->name + ".len");
+                open_elem = open_array_elem_type(var->name);
+            } else {
+                if (!arr_ty->isArrayTy()) error("Variable '" + var->name + "' is not an array");
+            }
         }
     } else if (ma) {
         // Struct member access yielding a slice: b.items[0]
@@ -702,8 +1335,9 @@ llvm::Value* CodeGenerator::gen_index_ptr(const Index& top, llvm::Type*& elem_ty
         if (is_open) {
             ptr = builder->CreateInBoundsGEP(open_elem, ptr, {idx}, "idx");
         } else {
+            llvm::Type* el = cur_arr->getArrayElementType();
             ptr = builder->CreateInBoundsGEP(cur_arr, ptr, {builder->getInt32(0), idx}, "idx");
-            cur_arr = cur_arr->getArrayElementType();
+            cur_arr = el;
         }
     }
     elem_ty = is_open ? open_elem : cur_arr;
@@ -749,7 +1383,9 @@ llvm::Value* CodeGenerator::gen_new(const New& n) {
          builder->getInt64Ty(), builder->getInt1Ty()});
     builder->CreateCall(memset_fn, {ptr, builder->getInt8(0), bytes64, builder->getInt1(false)});
 
-    return make_slice(ptr, elem, size);
+    emit_prefetch(ptr);
+
+    return make_slice(ptr, n.base == "string" ? "string[]" : n.base, elem, size);
 }
 
 // Copies a stack array value into fresh arena memory, returning a slice.
@@ -761,12 +1397,13 @@ llvm::Value* CodeGenerator::copy_array_to_slice(llvm::Value* arr_val, llvm::Stru
     llvm::Value* bytes64 = llvm::ConstantInt::get(builder->getInt64Ty(), elem_bytes * at->getNumElements());
     llvm::Value* bytes32 = builder->CreateTrunc(bytes64, builder->getInt32Ty(), "bytes");
     llvm::Value* arena_ptr = builder->CreateCall(alloc_func, {bytes32}, "ret.ptr");
+    emit_prefetch(arena_ptr);
     for (uint64_t i = 0; i < at->getNumElements(); ++i) {
         llvm::Value* ep = builder->CreateInBoundsGEP(elem, arena_ptr, {builder->getInt32((uint32_t)i)}, "ret.elem");
         llvm::Value* ev = builder->CreateExtractValue(arr_val, i, "elem");
         builder->CreateStore(ev, ep);
     }
-    return make_slice(arena_ptr, elem, builder->getInt32((int)at->getNumElements()));
+    return make_slice(arena_ptr, slice_bases[slice_ty], elem, builder->getInt32((int)at->getNumElements()));
 }
 
 // Brings a value into a slice form for a slice-typed destination (field, var,
@@ -792,7 +1429,6 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice) {
 
 void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) {
     llvm::Type* elem = slice_elem_type(llvm::cast<llvm::StructType>(slice->getType()));
-    if (elem->isStructTy() && !is_string_slice(elem)) error("Cannot print an open array of structs yet");
 
     auto ptr_val = builder->CreateExtractValue(slice, 0, "sp.ptr");
     auto len_val = builder->CreateExtractValue(slice, 1, "sp.len");
@@ -807,7 +1443,7 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) 
     auto body = llvm::BasicBlock::Create(*context, "sp.body", func);
     auto merge = llvm::BasicBlock::Create(*context, "sp.end");
 
-    auto idx = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sp.i");
+    auto idx = create_alloca(builder->getInt32Ty(), nullptr, "sp.i");
     builder->CreateStore(builder->getInt32(0), idx);
     builder->CreateBr(head);
     builder->SetInsertPoint(head);
@@ -831,27 +1467,18 @@ void CodeGenerator::emit_slice_print(llvm::Value* slice, bool trailing_newline) 
 
     auto ep = builder->CreateInBoundsGEP(elem, ptr_val, {icur}, "sp.elem");
     auto ev = builder->CreateLoad(elem, ep, "sp.val");
-    llvm::Value* fmt = nullptr;
-    llvm::Value* a = ev;
     if (is_string_slice(elem)) {
         auto quote = builder->CreateGlobalString("\"", "sq");
         builder->CreateCall(printf_func, {quote});
-        auto fp = builder->CreateExtractValue(ev, 0, "sp.elem.ptr");
-        auto fl = builder->CreateExtractValue(ev, 1, "sp.elem.len");
-        auto sf = builder->CreateGlobalString("%.*s", "sfmt");
-        builder->CreateCall(printf_func, {sf, fl, fp});
+        emit_print_scalar(ev, "string");
         builder->CreateCall(printf_func, {quote});
     }
-    else if (elem->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
-    else if (elem->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
-    else if (elem->isIntegerTy(1)) {
-        auto tr = builder->CreateGlobalString("true", "bool.true");
-        auto fl = builder->CreateGlobalString("false", "bool.false");
-        fmt = builder->CreateGlobalString("%s", "fmt");
-        a = builder->CreateSelect(ev, tr, fl);
+    else if (elem->isStructTy()) {
+        emit_print_struct_inline(ev, lltype_to_name(elem));
     }
-    else error("Cannot print open array element of type " + llvm_type_name(elem));
-    if (fmt) builder->CreateCall(printf_func, {fmt, a});
+    else {
+        emit_print_scalar(ev, lltype_to_name(elem));
+    }
 
     auto inext = builder->CreateAdd(icur, builder->getInt32(1), "sp.i.next");
     builder->CreateStore(inext, idx);
@@ -884,21 +1511,21 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     if (auto var = std::dynamic_pointer_cast<Variable>(expr)) {
         llvm::Type* ty = nullptr;
         llvm::Value* alloc = lookup_var(var->name, ty);
-        if (alloc) return builder->CreateLoad(ty, alloc, var->name);
-        error("Variable not found: " + var->name);
+        if (!alloc) error("Variable not found: " + var->name);
+        llvm::Value* addr = alloc;
+        if (is_ref_var(var->name)) {
+            // Ref/out param storage holds the caller's address: load it first.
+            addr = builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+        }
+        return builder->CreateLoad(ty, addr, var->name);
     }
     if (auto al = std::dynamic_pointer_cast<ArrayLit>(expr)) {
+        std::string en = array_elem_type_name(*al);
         llvm::Type* arr_ty = build_array_type(*al);
-        llvm::Value* tmp = builder->CreateAlloca(arr_ty, nullptr, "arr.tmp");
+        llvm::Value* tmp = create_alloca(arr_ty, nullptr, "arr.tmp");
         for (std::size_t i = 0; i < al->elements.size(); ++i) {
-            llvm::Value* ev = generate_expr(al->elements[i]);
+            llvm::Value* ev = coerce_expr_to(al->elements[i], en);
             if (!ev) return nullptr;
-            llvm::Type* et = llvm::cast<llvm::ArrayType>(arr_ty)->getElementType();
-            if (et->isDoubleTy() && ev->getType()->isIntegerTy(32)) {
-                ev = builder->CreateSIToFP(ev, builder->getDoubleTy(), "cast");
-            } else if (et != ev->getType()) {
-                error("Array element " + std::to_string(i) + " has type " + llvm_type_name(ev->getType()) + ", expected " + llvm_type_name(et));
-            }
             llvm::Value* eptr = builder->CreateInBoundsGEP(arr_ty, tmp, {builder->getInt32(0), builder->getInt32((int)i)}, "arr.elem");
             builder->CreateStore(ev, eptr);
         }
@@ -910,6 +1537,13 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         return builder->CreateLoad(elem_ty, ptr, "idxtmp");
     }
     if (auto ma = std::dynamic_pointer_cast<MemberAccess>(expr)) {
+        // Color.red: an enum variant is a compile-time i32 index.
+        if (is_enum_variant_expr(expr)) {
+            auto vobj = std::dynamic_pointer_cast<Variable>(ma->object);
+            int idx = enum_variant_index(vobj->name, ma->member);
+            if (idx < 0) error("Unknown enum variant: " + vobj->name + "." + ma->member);
+            return builder->getInt32(idx);
+        }
         llvm::Type* fty = nullptr;
         llvm::Value* ptr = gen_member_ptr_inner(*ma, fty);
         return builder->CreateLoad(fty, ptr, "field");
@@ -966,6 +1600,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto clen = builder->CreateCall(strlen_func, {cstr}, "arg.clen");
             auto b32 = builder->CreateTrunc(builder->CreateZExt(clen, builder->getInt64Ty()), builder->getInt32Ty(), "arg.b32");
             auto buf = builder->CreateCall(alloc_func, {b32}, "arg.buf");
+            emit_prefetch(buf);
             llvm::Function* memcpy_fn = llvm::Intrinsic::getOrInsertDeclaration(
                 module.get(), llvm::Intrinsic::memcpy, llvm::Type::getVoidTy(*context),
                 {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context),
@@ -981,6 +1616,19 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             return merged;
         }
 
+        // assert(cond): if false, print error and exit(1)
+        if (call->callee == "assert" && call->args.size() == 1) {
+            auto v = generate_expr(call->args[0]);
+            if (!v) return nullptr;
+            llvm::Value* cond = v;
+            if (cond->getType()->isIntegerTy(1))
+                cond = builder->CreateZExt(cond, builder->getInt32Ty(), "assert.ext");
+            else if (!cond->getType()->isIntegerTy(32))
+                error("assert() requires an integer or bool condition");
+            builder->CreateCall(assert_func, {cond});
+            return nullptr;
+        }
+
         // exit(n): terminate the program with a status code.
         if (call->callee == "exit" && call->args.size() == 1) {
             auto v = generate_expr(call->args[0]);
@@ -993,14 +1641,167 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             return nullptr;
         }
 
+        // rand(max) -> int: random int in [0, max)
+        if (call->callee == "rand" && call->args.size() == 1) {
+            auto v = generate_expr(call->args[0]);
+            if (!v) return nullptr;
+            if (!v->getType()->isIntegerTy(32)) error("rand() requires an integer max value");
+            return builder->CreateCall(rand_func, {v}, "rand");
+        }
+
+        // trim(s) -> string: strip leading/trailing whitespace
+        if (call->callee == "trim" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("trim() requires a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "trim.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "trim.sl");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "trim.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "trim.l");
+            builder->CreateCall(trim_func, {sp, sl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "trim.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "trim.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // contains(haystack, needle) -> int: 1 if needle found
+        if (call->callee == "contains" && call->args.size() == 2) {
+            auto hv = generate_expr(call->args[0]);
+            auto nv = generate_expr(call->args[1]);
+            if (!hv || !nv) return nullptr;
+            if (!is_string_slice(hv->getType())) error("contains() arg1 must be a string");
+            if (!is_string_slice(nv->getType())) error("contains() arg2 must be a string");
+            auto hp = builder->CreateExtractValue(hv, 0, "c.hp");
+            auto hl = builder->CreateExtractValue(hv, 1, "c.hl");
+            auto np = builder->CreateExtractValue(nv, 0, "c.np");
+            auto nl = builder->CreateExtractValue(nv, 1, "c.nl");
+            return builder->CreateCall(contains_func, {hp, hl, np, nl}, "contains");
+        }
+
+        // replace(s, old, new) -> string: replace all occurrences
+        if (call->callee == "replace" && call->args.size() == 3) {
+            auto sv = generate_expr(call->args[0]);
+            auto ov = generate_expr(call->args[1]);
+            auto nv = generate_expr(call->args[2]);
+            if (!sv || !ov || !nv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("replace() arg1 must be a string");
+            if (!is_string_slice(ov->getType())) error("replace() arg2 must be a string");
+            if (!is_string_slice(nv->getType())) error("replace() arg3 must be a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "r.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "r.sl");
+            auto op = builder->CreateExtractValue(ov, 0, "r.op");
+            auto ol = builder->CreateExtractValue(ov, 1, "r.ol");
+            auto np = builder->CreateExtractValue(nv, 0, "r.np");
+            auto nl = builder->CreateExtractValue(nv, 1, "r.nl");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "r.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "r.l");
+            builder->CreateCall(replace_func, {sp, sl, op, ol, np, nl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "r.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "r.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // upper(s) -> string
+        if (call->callee == "upper" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("upper() requires a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "u.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "u.sl");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "u.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "u.l");
+            builder->CreateCall(upper_func, {sp, sl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "u.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "u.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // lower(s) -> string
+        if (call->callee == "lower" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("lower() requires a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "lo.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "lo.sl");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "lo.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "lo.l");
+            builder->CreateCall(lower_func, {sp, sl, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "lo.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "lo.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // startswith(s, prefix) -> int
+        if (call->callee == "startswith" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto pv = generate_expr(call->args[1]);
+            if (!sv || !pv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("startswith() arg1 must be a string");
+            if (!is_string_slice(pv->getType())) error("startswith() arg2 must be a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "sw.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "sw.sl");
+            auto pp = builder->CreateExtractValue(pv, 0, "sw.pp");
+            auto pl = builder->CreateExtractValue(pv, 1, "sw.pl");
+            return builder->CreateCall(startswith_func, {sp, sl, pp, pl}, "startswith");
+        }
+
+        // endswith(s, suffix) -> int
+        if (call->callee == "endswith" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto pv = generate_expr(call->args[1]);
+            if (!sv || !pv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("endswith() arg1 must be a string");
+            if (!is_string_slice(pv->getType())) error("endswith() arg2 must be a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "ew.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "ew.sl");
+            auto pp = builder->CreateExtractValue(pv, 0, "ew.pp");
+            auto pl = builder->CreateExtractValue(pv, 1, "ew.pl");
+            return builder->CreateCall(endswith_func, {sp, sl, pp, pl}, "endswith");
+        }
+
+        // char_at(s, index) -> string
+        if (call->callee == "char_at" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto iv = generate_expr(call->args[1]);
+            if (!sv || !iv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("char_at() arg1 must be a string");
+            if (!iv->getType()->isIntegerTy(32)) error("char_at() arg2 must be an int");
+            auto sp = builder->CreateExtractValue(sv, 0, "ca.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "ca.sl");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "ca.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "ca.l");
+            builder->CreateCall(char_at_func, {sp, sl, iv, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "ca.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "ca.rl");
+            return make_string_slice(rp, rl);
+        }
+
+        // join(sep, arr) -> string: join string array with separator
+        if (call->callee == "join" && call->args.size() == 2) {
+            auto sv = generate_expr(call->args[0]);
+            auto av = generate_expr(call->args[1]);
+            if (!sv || !av) return nullptr;
+            if (!is_string_slice(sv->getType())) error("join() arg1 must be a string (separator)");
+            auto sp = builder->CreateExtractValue(sv, 0, "j.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "j.sl");
+            auto ap = builder->CreateExtractValue(av, 0, "j.ap");
+            auto al = builder->CreateExtractValue(av, 1, "j.al");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "j.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "j.l");
+            builder->CreateCall(join_func, {sp, sl, ap, al, p_out, l_out});
+            auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "j.rp");
+            auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "j.rl");
+            return make_string_slice(rp, rl);
+        }
+
         // read(fn) -> string: whole file as an arena-backed string.
         if (call->callee == "read" && call->args.size() == 1) {
             auto av = generate_expr(call->args[0]);
             if (!av) return nullptr;
             if (!is_string_slice(av->getType())) error("read() requires a string path");
             auto path = builder->CreateExtractValue(av, 0, "read.path");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "read.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "read.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "read.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "read.l");
             builder->CreateCall(read_file_func, {path, p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "read.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "read.rl");
@@ -1023,46 +1824,71 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
 
         // input() -> string: one line from stdin (no trailing newline); "" on EOF.
         if (call->callee == "input" && call->args.empty()) {
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "in.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "in.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "in.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "in.l");
             builder->CreateCall(read_line_func, {p_out, l_out});
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "in.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "in.rl");
             return make_string_slice(rp, rl);
         }
 
-        // to_int(s) -> int: leading decimal number of a string slice.
+        // to_int(s) -> int: leading decimal number of a string slice; numeric values
+        // are coerced to i32.
         if (call->callee == "to_int" && call->args.size() == 1) {
             auto sv = generate_expr(call->args[0]);
             if (!sv) return nullptr;
-            if (!is_string_slice(sv->getType())) error("to_int() requires a string");
-            return builder->CreateCall(to_int_func,
-                {builder->CreateExtractValue(sv, 0, "ti.ptr"),
-                 builder->CreateExtractValue(sv, 1, "ti.len")}, "to.int");
+            if (is_string_slice(sv->getType())) {
+                return builder->CreateCall(to_int_func,
+                    {builder->CreateExtractValue(sv, 0, "ti.ptr"),
+                     builder->CreateExtractValue(sv, 1, "ti.len")}, "to.int");
+            }
+            return coerce_numeric(sv,
+                expr_type_name(call->args[0]),
+                "int");
         }
 
-        // to_float(s) -> float: leading floating-point number of a string slice.
+        // to_float(s) -> float: leading floating-point number of a string slice;
+        // numeric values are coerced to f64.
         if (call->callee == "to_float" && call->args.size() == 1) {
             auto sv = generate_expr(call->args[0]);
             if (!sv) return nullptr;
-            if (!is_string_slice(sv->getType())) error("to_float() requires a string");
-            return builder->CreateCall(to_float_func,
-                {builder->CreateExtractValue(sv, 0, "tf.ptr"),
-                 builder->CreateExtractValue(sv, 1, "tf.len")}, "to.float");
+            if (is_string_slice(sv->getType())) {
+                return builder->CreateCall(to_float_func,
+                    {builder->CreateExtractValue(sv, 0, "tf.ptr"),
+                     builder->CreateExtractValue(sv, 1, "tf.len")}, "to.float");
+            }
+            return coerce_numeric(sv,
+                expr_type_name(call->args[0]),
+                "float");
         }
 
-        // to_str(int|float) -> string: format a number, matching print's format.
+        // to_str(int|float|fixed-width) -> string: format a number, matching
+        // print's format; i64/u64/f32/enum are handled.
         if (call->callee == "to_str" && call->args.size() == 1) {
             auto nv = generate_expr(call->args[0]);
             if (!nv) return nullptr;
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "ts.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "ts.l");
-            if (nv->getType()->isIntegerTy(32)) {
+            std::string sn = expr_type_name(call->args[0]);
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "ts.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "ts.l");
+            if (sn == "int" || sn == "i32") {
                 builder->CreateCall(int_to_str_func, {nv, p_out, l_out});
-            } else if (nv->getType()->isDoubleTy()) {
+            } else if (sn == "i8" || sn == "i16") {
+                builder->CreateCall(int_to_str_func,
+                    {builder->CreateSExt(nv, builder->getInt32Ty(), "conv"), p_out, l_out});
+            } else if (sn == "u8" || sn == "u16" || sn == "u32") {
+                builder->CreateCall(u64_to_str_func,
+                    {builder->CreateZExt(nv, builder->getInt64Ty(), "conv"), p_out, l_out});
+            } else if (sn == "i64") {
+                builder->CreateCall(i64_to_str_func, {nv, p_out, l_out});
+            } else if (sn == "u64") {
+                builder->CreateCall(u64_to_str_func, {nv, p_out, l_out});
+            } else if (sn == "float" || sn == "f64") {
                 builder->CreateCall(double_to_str_func, {nv, p_out, l_out});
+            } else if (sn == "f32") {
+                builder->CreateCall(double_to_str_func,
+                    {builder->CreateFPExt(nv, builder->getDoubleTy(), "conv"), p_out, l_out});
             } else {
-                error("to_str() requires an int or float");
+                error("to_str() requires a numeric argument");
             }
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "ts.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "ts.rl");
@@ -1078,8 +1904,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!is_string_slice(sv->getType())) error("substr() requires a string");
             if (!stv->getType()->isIntegerTy(32)) error("substr() requires integer start");
             if (!cnv->getType()->isIntegerTy(32)) error("substr() requires integer count");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "sb.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sb.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "sb.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "sb.l");
             builder->CreateCall(substr_func,
                 {builder->CreateExtractValue(sv, 0, "sb.ptr"),
                  builder->CreateExtractValue(sv, 1, "sb.len"), stv, cnv, p_out, l_out});
@@ -1096,8 +1922,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!sv || !spv) return nullptr;
             if (!is_string_slice(sv->getType())) error("split() requires a string");
             if (!is_string_slice(spv->getType())) error("split() separator must be a string");
-            auto p_out = builder->CreateAlloca(llvm::PointerType::getUnqual(*context), nullptr, "sp.p");
-            auto l_out = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "sp.l");
+            auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "sp.p");
+            auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "sp.l");
             builder->CreateCall(split_func,
                 {builder->CreateExtractValue(sv, 0, "sp.ptr"),
                  builder->CreateExtractValue(sv, 1, "sp.len"),
@@ -1117,33 +1943,40 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             if (!a || !b) return nullptr;
             require_numeric(a, call->callee);
             require_numeric(b, call->callee);
-            promote_binop_operands(a, b);
-            if (a->getType()->isDoubleTy() || b->getType()->isDoubleTy()) {
-                if (a->getType()->isIntegerTy(32)) a = builder->CreateSIToFP(a, builder->getDoubleTy(), "tofp");
-                if (b->getType()->isIntegerTy(32)) b = builder->CreateSIToFP(b, builder->getDoubleTy(), "tofp");
+            std::string an = expr_type_name(call->args[0]);
+            std::string bn = expr_type_name(call->args[1]);
+            promote_binop_operands(a, b, an, bn);
+            if (a->getType()->isDoubleTy() || a->getType()->isFloatTy()) {
                 auto cmp = want_min
                     ? builder->CreateFCmpOLT(a, b, "min.cmp")
                     : builder->CreateFCmpOGT(a, b, "max.cmp");
                 return builder->CreateSelect(cmp, a, b, "mm.sel");
             }
+            bool is_unsigned = type_is_unsigned(common_numeric_name(an, bn));
             auto cmp = want_min
-                ? builder->CreateICmpSLT(a, b, "min.cmp")
-                : builder->CreateICmpSGT(a, b, "max.cmp");
+                ? (is_unsigned ? builder->CreateICmpULT(a, b, "min.cmp")
+                               : builder->CreateICmpSLT(a, b, "min.cmp"))
+                : (is_unsigned ? builder->CreateICmpUGT(a, b, "max.cmp")
+                               : builder->CreateICmpSGT(a, b, "max.cmp"));
             return builder->CreateSelect(cmp, a, b, "mm.sel");
         }
 
         // abs(n): absolute value for int (select/negate) or float (fabs).
+        // Unsigned operands are already non-negative, so abs is the identity.
         if (call->callee == "abs" && call->args.size() == 1) {
             auto av = generate_expr(call->args[0]);
             if (!av) return nullptr;
-            if (av->getType()->isIntegerTy(32)) {
-                auto zero = builder->getInt32(0);
+            std::string tname = expr_type_name(call->args[0]);
+            if (is_numeric_type_name(tname) && type_is_unsigned(tname)) return av;
+            llvm::Type* ty = av->getType();
+            if (ty->isIntegerTy()) {
+                auto zero = llvm::ConstantInt::get(ty, 0);
                 auto is_neg = builder->CreateICmpSLT(av, zero, "abs.neg");
                 auto neg = builder->CreateSub(zero, av, "abs.negval");
                 return builder->CreateSelect(is_neg, neg, av, "abs.sel");
             }
-            if (av->getType()->isDoubleTy()) {
-                auto fabs = llvm::Intrinsic::getOrInsertDeclaration(module.get(), llvm::Intrinsic::fabs, {builder->getDoubleTy()});
+            if (ty->isDoubleTy() || ty->isFloatTy()) {
+                auto fabs = llvm::Intrinsic::getOrInsertDeclaration(module.get(), llvm::Intrinsic::fabs, {ty});
                 return builder->CreateCall(fabs, {av}, "abs.f");
             }
             error("abs() requires an int or float");
@@ -1153,33 +1986,52 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (it == functions.end()) error("Unknown function: " + call->callee);
         llvm::Function* func = it->second;
         std::vector<llvm::Value*> args;
+        auto callee_params_it = func_params_.find(call->callee);
         for (std::size_t i = 0; i < call->args.size(); ++i) {
-            auto v = generate_expr(call->args[i]);
-            if (!v) return nullptr;
+            bool is_ref = false;
+            std::string ptn;
+            if (callee_params_it != func_params_.end() && i < callee_params_it->second.size()) {
+                is_ref = callee_params_it->second[i].is_ref;
+                ptn = callee_params_it->second[i].var_type;
+            }
 
-            if (i < func->arg_size()) {
+            if (is_ref) {
+                auto addr = gen_ref_arg_ptr(call->args[i]);
+                if (!addr) return nullptr;
+                args.push_back(addr);
+                continue;
+            }
+
+            llvm::Value* v = nullptr;
+            if (i < func->arg_size() && !ptn.empty()) {
+                // Reject clear scalar/enum mismatches up front so the reported
+                // error names the offending argument (array/slice coercions are
+                // left to coerce_expr_to, which handles fixed↔slice moves).
+                const std::string an = expr_type_name(call->args[i]);
+                if (!an.empty() && an != ptn && an.find('[') == std::string::npos
+                    && !can_implicit_coerce(an, ptn)) {
+                    llvm::Type* param_ty = func->getArg(i)->getType();
+                    std::string got = llvm_type_name(llvm_type_from_name(an));
+                    error("Argument " + std::to_string(i + 1) + " of '" + call->callee
+                          + "' expects " + llvm_type_name(param_ty) + ", got " + got);
+                }
+                // Coerce the argument to the declared parameter type name:
+                // literal integers materialise at the right width, array
+                // literals become slices in the arena, numeric widening and
+                // fixed↔slice conversions all route through coerce_expr_to.
+                v = coerce_expr_to(call->args[i], ptn);
+                if (!v) return nullptr;
                 llvm::Type* param_ty = func->getArg(i)->getType();
-
-                // Open array param: a slice { base*, i32 }. Closed arrays are
-                // copied into the arena (the slice owns its data); anything
-                // already a slice passes through unchanged.
                 if (is_slice_ty(param_ty)) {
-                    if (v->getType()->isArrayTy()) {
-                        v = copy_array_to_slice(v, llvm::cast<llvm::StructType>(param_ty));
-                    } else if (v->getType() != param_ty) {
-                        error("Cannot pass " + llvm_type_name(v->getType()) + " to open array parameter of '" + call->callee + "'");
+                    if (!is_slice_ty(v->getType())) {
+                        error("Cannot pass " + lltype_to_name(v->getType()) + " to open array parameter of '" + call->callee + "'");
                     }
-                    args.push_back(v);
-                    continue;
+                } else if (v->getType() != param_ty) {
+                    error("Argument " + std::to_string(i + 1) + " of '" + call->callee + "' expects " + llvm_type_name(param_ty) + ", got " + llvm_type_name(v->getType()));
                 }
-
-                if (param_ty != v->getType()) {
-                    if (param_ty->isDoubleTy() && v->getType()->isIntegerTy(32)) {
-                        v = builder->CreateSIToFP(v, builder->getDoubleTy(), "cast");
-                    } else {
-                        error("Argument " + std::to_string(i + 1) + " of '" + call->callee + "' expects " + llvm_type_name(param_ty) + ", got " + llvm_type_name(v->getType()));
-                    }
-                }
+            } else {
+                v = generate_expr(call->args[i]);
+                if (!v) return nullptr;
             }
             args.push_back(v);
         }
@@ -1201,10 +2053,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         }
         require_numeric(left, "+");
         require_numeric(right, "+");
-        promote_binop_operands(left, right);
-        if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
-            if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
-            if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
+        promote_binop_operands(left, right, expr_type_name(add->left), expr_type_name(add->right));
+        if (left->getType()->isDoubleTy() || left->getType()->isFloatTy()) {
             return builder->CreateFAdd(left, right, "addtmp");
         }
         return builder->CreateAdd(left, right, "addtmp");
@@ -1215,10 +2065,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (!left || !right) return nullptr;
         require_numeric(left, "-");
         require_numeric(right, "-");
-        promote_binop_operands(left, right);
-        if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
-            if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
-            if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
+        promote_binop_operands(left, right, expr_type_name(sub->left), expr_type_name(sub->right));
+        if (left->getType()->isDoubleTy() || left->getType()->isFloatTy()) {
             return builder->CreateFSub(left, right, "subtmp");
         }
         return builder->CreateSub(left, right, "subtmp");
@@ -1229,10 +2077,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (!left || !right) return nullptr;
         require_numeric(left, "*");
         require_numeric(right, "*");
-        promote_binop_operands(left, right);
-        if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
-            if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
-            if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
+        promote_binop_operands(left, right, expr_type_name(mul->left), expr_type_name(mul->right));
+        if (left->getType()->isDoubleTy() || left->getType()->isFloatTy()) {
             return builder->CreateFMul(left, right, "multmp");
         }
         return builder->CreateMul(left, right, "multmp");
@@ -1243,12 +2089,12 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (!left || !right) return nullptr;
         require_numeric(left, "/");
         require_numeric(right, "/");
-        promote_binop_operands(left, right);
-        if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
-            if (left->getType()->isIntegerTy(32)) left = builder->CreateSIToFP(left, builder->getDoubleTy());
-            if (right->getType()->isIntegerTy(32)) right = builder->CreateSIToFP(right, builder->getDoubleTy());
+        std::string dn = common_numeric_name(expr_type_name(div->left), expr_type_name(div->right));
+        promote_binop_operands(left, right, expr_type_name(div->left), expr_type_name(div->right));
+        if (left->getType()->isDoubleTy() || left->getType()->isFloatTy()) {
             return builder->CreateFDiv(left, right, "divtmp");
         }
+        if (type_is_unsigned(dn)) return builder->CreateUDiv(left, right, "divtmp");
         return builder->CreateSDiv(left, right, "divtmp");
     }
     if (auto neg = std::dynamic_pointer_cast<Neg>(expr)) {
@@ -1278,16 +2124,14 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         bool both_numeric = is_numeric(left->getType()) && is_numeric(right->getType());
         bool both_bool = left->getType()->isIntegerTy(1) && right->getType()->isIntegerTy(1);
         if (!both_numeric && !both_bool) error("Comparison operands must be both numeric or both bool");
-        if (left->getType()->isDoubleTy() || right->getType()->isDoubleTy()) {
-            promote_binop_operands(left, right);
+        std::string lname = expr_type_name(cmp->left);
+        std::string rname = expr_type_name(cmp->right);
+        promote_binop_operands(left, right, lname, rname);
+        if (left->getType()->isDoubleTy() || left->getType()->isFloatTy()) {
             return generate_fcmp(cmp->op, left, right);
         }
-        if (left->getType()->isIntegerTy(1) || right->getType()->isIntegerTy(1)) {
-            left = builder->CreateZExt(left, builder->getInt32Ty());
-            right = builder->CreateZExt(right, builder->getInt32Ty());
-            return generate_icmp(cmp->op, left, right);
-        }
-        return generate_icmp(cmp->op, left, right);
+        bool is_unsigned = both_numeric && type_is_unsigned(common_numeric_name(lname, rname));
+        return generate_icmp(cmp->op, left, right, is_unsigned);
     }
     if (auto not_ = std::dynamic_pointer_cast<Not>(expr)) {
         auto val = generate_expr(not_->value);
@@ -1352,12 +2196,23 @@ llvm::Value* CodeGenerator::generate_logical_or(const Or& or_) {
 }
 
 llvm::Value* CodeGenerator::generate_icmp(const std::string& op, llvm::Value* left, llvm::Value* right) {
+    return generate_icmp(op, left, right, false);
+}
+
+llvm::Value* CodeGenerator::generate_icmp(const std::string& op, llvm::Value* left, llvm::Value* right, bool is_unsigned) {
     if (op == "==") return builder->CreateICmpEQ(left, right, "cmptmp");
     if (op == "!=") return builder->CreateICmpNE(left, right, "cmptmp");
-    if (op == "<")  return builder->CreateICmpSLT(left, right, "cmptmp");
-    if (op == ">")  return builder->CreateICmpSGT(left, right, "cmptmp");
-    if (op == "<=") return builder->CreateICmpSLE(left, right, "cmptmp");
-    if (op == ">=") return builder->CreateICmpSGE(left, right, "cmptmp");
+    if (is_unsigned) {
+        if (op == "<")  return builder->CreateICmpULT(left, right, "cmptmp");
+        if (op == ">")  return builder->CreateICmpUGT(left, right, "cmptmp");
+        if (op == "<=") return builder->CreateICmpULE(left, right, "cmptmp");
+        if (op == ">=") return builder->CreateICmpUGE(left, right, "cmptmp");
+    } else {
+        if (op == "<")  return builder->CreateICmpSLT(left, right, "cmptmp");
+        if (op == ">")  return builder->CreateICmpSGT(left, right, "cmptmp");
+        if (op == "<=") return builder->CreateICmpSLE(left, right, "cmptmp");
+        if (op == ">=") return builder->CreateICmpSGE(left, right, "cmptmp");
+    }
     error("Unknown icmp operator: " + op);
 }
 
@@ -1376,104 +2231,142 @@ llvm::Value* CodeGenerator::generate_fcmp(const std::string& op, llvm::Value* le
 // ============================================================================
 
 void CodeGenerator::generate_let(const Let& let) {
-    llvm::Value* val = generate_expr(let.value);
-    if (!val) return;
-    llvm::Type* ty = val->getType();
-
     if (!let.var_type.empty()) {
         std::string base;
         int arr_size = -1;
         if (!parse_type(let.var_type, base, arr_size)) error("Unknown type: " + let.var_type);
-        if (arr_size == 0) {
+
+        if (arr_size == 0 || is_slice_dest(let.var_type)) {
             // Open array let: let arr: int[] = <array literal | slice value>
-            auto full_type = llvm_type_from_name(let.var_type);
-            llvm::StructType* st = llvm::cast<llvm::StructType>(full_type);
-            if (val->getType()->isArrayTy()) {
-                // let arr: int[] = [1, 2, 3] → copied into the arena so the slice owns its data
-                auto at = llvm::cast<llvm::ArrayType>(val->getType());
-                llvm::Type* elem_ty = slice_elem_type(st);
-                if (at->getElementType() != elem_ty) {
-                    error("Element type mismatch for '" + let.name + "': expected " + llvm_type_name(elem_ty));
-                }
-                val = copy_array_to_slice(val, st);
-            } else if (!is_slice_ty(val->getType())) {
-                error("Type mismatch for '" + let.name + "': expected an array for open array type");
-            }
-            auto alloc = builder->CreateAlloca(st, nullptr, let.name);
+            llvm::StructType* st = llvm::cast<llvm::StructType>(llvm_type_from_name(let.var_type));
+            llvm::Value* val = coerce_expr_to(let.value, let.var_type);
+            if (!val) return;
+            auto alloc = let_slot(st, let.name);
             builder->CreateStore(val, alloc);
             named_values.back()[let.name] = alloc;
             named_types.back()[let.name] = st;
+            var_type_names_.back()[let.name] = let.var_type;
             register_open_array(let.name, slice_elem_type(st));
+            // A plain "string" stores i8 chars; a "string[]" slice stores strings.
+            std::string sb_ = base == "string" ? "i8" : base;
+            open_array_elem_type_names[let.name] = sb_;
             open_epochs[let.name] = epoch_depth;
             return;
-        } else if (arr_size > 0) {
-            llvm::ArrayType* at = llvm::dyn_cast<llvm::ArrayType>(ty);
-            if (!at) error("Type mismatch for '" + let.name + "': expected array of " + base);
-            llvm::Type* scalar = (base == "string")
-                ? static_cast<llvm::Type*>(slice_type_for("string"))
-                : scalar_type_for(base);
-            if (at->getElementType() != scalar) error("Type mismatch for '" + let.name + "': unexpected element type");
-            if ((std::size_t)arr_size != at->getNumElements()) error("Array size mismatch");
-        } else {
-            llvm::Type* declared = llvm_type_from_name(base);
-            if (!declared) error("Unknown type: " + base);
-            if (declared->isDoubleTy() && val->getType()->isIntegerTy(32)) {
-                val = builder->CreateSIToFP(val, builder->getDoubleTy(), "cast");
-                ty = declared;
-            } else if (declared != val->getType()) {
-                error("Type mismatch for '" + let.name + "': cannot assign " + llvm_type_name(val->getType()) + " to " + let.var_type);
-            }
         }
+
+        // Fixed array or scalar: coerce the value to the declared type.
+        llvm::Value* val = coerce_expr_to(let.value, let.var_type);
+        if (!val) return;
+        llvm::Type* declared = arr_size == -1
+            ? llvm_type_from_name(base)
+            : llvm_type_from_name(let.var_type);
+        auto alloc = let_slot(declared, let.name);
+        builder->CreateStore(val, alloc);
+        if (arr_size > 0) {
+            // Declared fixed arrays are not open arrays.
+            define_var(let.name, alloc, declared, let.var_type);
+            return;
+        }
+        var_type_names_.back()[let.name] = base;
+        define_var(let.name, alloc, declared, base);
+        return;
     }
+
+    // Inference: let x = <expr> at the expression's semantic type.
+    llvm::Value* val = generate_expr(let.value);
+    if (!val) return;
+    llvm::Type* ty = val->getType();
+    std::string tname = expr_type_name(let.value);
+    if (tname.empty()) tname = lltype_to_name(ty);
 
     if (is_slice_ty(ty)) {
         // Inference: let a = <slice expr>  (new / int[] call) → open array var
-        auto alloc = builder->CreateAlloca(ty, nullptr, let.name);
+        auto alloc = let_slot(ty, let.name);
         builder->CreateStore(val, alloc);
         named_values.back()[let.name] = alloc;
         named_types.back()[let.name] = ty;
-        register_open_array(let.name, slice_elem_type(llvm::cast<llvm::StructType>(ty)));
+        var_type_names_.back()[let.name] = tname;
+        llvm::StructType* st = llvm::cast<llvm::StructType>(ty);
+        std::string sbase = slice_bases[st];
+        std::string elem_name =
+            sbase == "string" ? "i8" : (sbase == "string[]" ? "string" : sbase);
+        open_array_elem_type_names[let.name] = elem_name;
+        register_open_array(let.name, slice_elem_type(st));
         open_epochs[let.name] = epoch_depth;
         return;
     }
 
-    auto alloc = builder->CreateAlloca(ty, nullptr, let.name);
+    auto alloc = let_slot(ty, let.name);
     builder->CreateStore(val, alloc);
-    define_var(let.name, alloc, ty);
+    define_var(let.name, alloc, ty, tname);
 }
 
 llvm::Value* CodeGenerator::apply_compound(llvm::Value* old, llvm::Value* rhs,
                                            const std::string& op, llvm::Type* target_ty,
-                                           const std::string& ctx) {
-    if (!target_ty->isIntegerTy(32) && !target_ty->isDoubleTy()) {
+                                           const std::string& target_name,
+                                           const std::string& rhs_name,
+                                           const std::string& ctx, bool is_unsigned) {
+    if (!is_numeric(target_ty)) {
         error("Operator '" + op + "' requires a numeric target (" + ctx + ")");
     }
-    if (rhs->getType()->isIntegerTy(8)) rhs = builder->CreateZExt(rhs, builder->getInt32Ty(), "char.up");
-    if (!rhs->getType()->isIntegerTy(32) && !rhs->getType()->isDoubleTy()) {
-        error("Operator '" + op + "' requires a numeric right-hand side (" + ctx + ")");
+    std::string tn = target_name.empty() ? lltype_to_name(target_ty) : target_name;
+    if (is_unsigned) {
+        // Recover the unsigned spelling before coercing the RHS; the LLVM
+        // type alone cannot tell signed from unsigned.
+        if (target_ty->isIntegerTy(8)) tn = "u8";
+        else if (target_ty->isIntegerTy(16)) tn = "u16";
+        else if (target_ty->isIntegerTy(32)) tn = "u32";
+        else if (target_ty->isIntegerTy(64)) tn = "u64";
     }
-    if (target_ty->isDoubleTy() && rhs->getType()->isIntegerTy(32)) {
-        rhs = builder->CreateSIToFP(rhs, builder->getDoubleTy(), "tofloat");
-    } else if (target_ty->isIntegerTy(32) && rhs->getType()->isDoubleTy()) {
-        error("Operator '" + op + "' cannot store a float into an int variable (" + ctx + ")");
-    }
+    std::string rn = rhs_name.empty() ? lltype_to_name(rhs->getType()) : rhs_name;
+    if (rn != tn && !can_implicit_coerce(rn, tn))
+        error("Cannot convert " + rn + " to " + tn + " in operator '" + op + "' (" + ctx + ")");
+    rhs = coerce_numeric(rhs, rn, tn);
+    bool is_fp = is_float_type_name(tn);
     if (op == "+=") {
-        return target_ty->isDoubleTy() ? builder->CreateFAdd(old, rhs, "cmp.add")
-                                       : builder->CreateAdd(old, rhs, "cmp.add");
+        return is_fp ? builder->CreateFAdd(old, rhs, "cmp.add")
+                     : builder->CreateAdd(old, rhs, "cmp.add");
     }
     if (op == "-=") {
-        return target_ty->isDoubleTy() ? builder->CreateFSub(old, rhs, "cmp.sub")
-                                       : builder->CreateSub(old, rhs, "cmp.sub");
+        return is_fp ? builder->CreateFSub(old, rhs, "cmp.sub")
+                     : builder->CreateSub(old, rhs, "cmp.sub");
     }
     if (op == "*=") {
-        return target_ty->isDoubleTy() ? builder->CreateFMul(old, rhs, "cmp.mul")
-                                       : builder->CreateMul(old, rhs, "cmp.mul");
+        return is_fp ? builder->CreateFMul(old, rhs, "cmp.mul")
+                     : builder->CreateMul(old, rhs, "cmp.mul");
     }
     if (op == "/=") {
-        return target_ty->isDoubleTy() ? builder->CreateFDiv(old, rhs, "cmp.div")
-                                       : builder->CreateSDiv(old, rhs, "cmp.div");
+        if (is_fp) return builder->CreateFDiv(old, rhs, "cmp.div");
+        return is_unsigned ? builder->CreateUDiv(old, rhs, "cmp.div")
+                           : builder->CreateSDiv(old, rhs, "cmp.div");
     }
     error("Unknown assignment operator '" + op + "'");
+}
+
+/**
+ * Epoch depth at which the arena memory behind a slice or string value was
+ * bound, or -1 when the value can never be freed.
+ *
+ * A string literal is a module-level constant, so its origin is -1. For a
+ * variable, index or field access the origin is the depth the root variable
+ * was declared at: sema already forbids storing memory from a deeper epoch
+ * into it, so what it holds is safe at that depth. Everything else (new,
+ * array literals, concat, calls) allocates right now, at the current depth.
+ */
+int CodeGenerator::slice_value_origin(const std::shared_ptr<Expr>& e) {
+    if (!e) return epoch_depth;
+    if (dynamic_cast<String*>(e.get())) return -1;
+    const Expr* root = e.get();
+    while (true) {
+        if (auto* v = dynamic_cast<const Variable*>(root)) {
+            auto it = open_epochs.find(v->name);
+            return it != open_epochs.end() ? it->second : 0;
+        }
+        if (auto* ix = dynamic_cast<const Index*>(root)) { root = ix->object.get(); continue; }
+        if (auto* ma = dynamic_cast<const MemberAccess*>(root)) { root = ma->object.get(); continue; }
+        break;
+    }
+    return epoch_depth;
 }
 
 void CodeGenerator::generate_assign(const Assign& a) {
@@ -1495,7 +2388,10 @@ void CodeGenerator::generate_assign(const Assign& a) {
             auto old = builder->CreateLoad(elem_ty, ptr, "cmp.old");
             auto rhs = generate_expr(a.value);
             if (!rhs) return;
-            val = apply_compound(old, rhs, a.op, elem_ty, "indexed assignment");
+            std::string elem_name = index_elem_type_name(expr_type_name(ix->object));
+            bool ui = is_numeric_type_name(elem_name) && type_is_unsigned(elem_name);
+            val = apply_compound(old, rhs, a.op, elem_ty, elem_name,
+                                 expr_type_name(a.value), "indexed assignment", ui);
         }
         builder->CreateStore(val, ptr);
         return;
@@ -1520,7 +2416,15 @@ void CodeGenerator::generate_assign(const Assign& a) {
             auto old = builder->CreateLoad(fty, ptr, "cmp.old");
             auto rhs = generate_expr(a.value);
             if (!rhs) return;
-            val = apply_compound(old, rhs, a.op, fty, "field assignment");
+            std::string fname;
+            auto sit = field_type_names_.find(base_type_of(expr_type_name(ma->object)));
+            if (sit != field_type_names_.end()) {
+                auto fit = sit->second.find(ma->member);
+                if (fit != sit->second.end()) fname = fit->second;
+            }
+            bool ui = is_numeric_type_name(fname) && type_is_unsigned(fname);
+            val = apply_compound(old, rhs, a.op, fty, fname,
+                                 expr_type_name(a.value), "field assignment", ui);
         }
         builder->CreateStore(val, ptr);
         return;
@@ -1533,6 +2437,12 @@ void CodeGenerator::generate_assign(const Assign& a) {
     llvm::Value* alloc = lookup_var(var->name, ty);
     if (!alloc) error("Cannot assign to unknown variable: " + var->name);
 
+    if (is_ref_var(var->name)) {
+            // Write through a ref parameter: load the caller's address
+            // and target that storage directly instead of the local slot.
+            alloc = builder->CreateLoad(builder->getPtrTy(), alloc, var->name + ".ref");
+        }
+
     if (a.op != "=") {
         if (is_slice_ty(ty)) {
             error("Operator '" + a.op + "' cannot be used on a slice (open array)");
@@ -1540,7 +2450,11 @@ void CodeGenerator::generate_assign(const Assign& a) {
         auto old = builder->CreateLoad(ty, alloc, "cmp.old");
         auto rhs = generate_expr(a.value);
         if (!rhs) return;
-        llvm::Value* val = apply_compound(old, rhs, a.op, ty, "assignment to '" + var->name + "'");
+        std::string vname = lookup_var_type_name(var->name);
+        bool ui = type_is_unsigned(vname);
+        llvm::Value* val = apply_compound(old, rhs, a.op, ty, vname,
+                                          expr_type_name(a.value),
+                                          "assignment to '" + var->name + "'", ui);
         builder->CreateStore(val, alloc);
         return;
     }
@@ -1550,9 +2464,14 @@ void CodeGenerator::generate_assign(const Assign& a) {
 
     llvm::Type* val_ty = val->getType();
     if (is_slice_ty(ty)) {
-        // Assigning a slice: the target must live at or below the current epoch
-        // depth, otherwise the arena rollback would leave it dangling.
-        if (open_epochs[var->name] < epoch_depth) {
+        // Assigning a slice: the value's memory must not be freed while the
+        // target still points at it, so the target has to live at least as
+        // deep as the epoch the value was bound in. Keyed on the value's
+        // origin rather than the current depth: a string literal is a global
+        // constant and needs no epoch at all, so storing one into an outer
+        // variable from inside an epoch is fine.
+        int origin = slice_value_origin(a.value);
+        if (origin > open_epochs[var->name]) {
             error("Cannot move an arena slice out of its epoch: assignment to '" + var->name + "'");
         }
         if (val_ty != ty) {
@@ -1575,8 +2494,99 @@ void CodeGenerator::generate_assign(const Assign& a) {
     builder->CreateStore(val, alloc);
 }
 
+void CodeGenerator::emit_prefetch(llvm::Value* ptr) {
+    // Never inside a loop body: the call would block vectorization, and a
+    // sequential stream is already covered by the hardware prefetcher.
+    if (!prefetch_func || !ptr || hot_depth_ == 0 || loop_depth_ > 0) return;
+    // @llvm.prefetch(ptr, rw=0(read), locality=3(L1), cache_type=1(data))
+    builder->CreateCall(prefetch_func, {
+        ptr,
+        builder->getInt32(0),  // read
+        builder->getInt32(3),  // L1 locality
+        builder->getInt32(1)   // data cache
+    });
+}
+
+/**
+ * Create a stack slot for a local. Static slots are moved to the function
+ * entry block: a slot left inside a loop body would be reserved again on every
+ * iteration (slots live until the function returns), so a long-running loop
+ * would grow the stack without bound.
+ */
+llvm::Value* CodeGenerator::create_alloca(llvm::Type* ty, llvm::Value* array_size,
+                                          const llvm::Twine& name) {
+    llvm::AllocaInst* ai = builder->CreateAlloca(ty, array_size, name);
+    // A dynamic size would have to stay at its original position, but every
+    // call site passes a constant (null) size today.
+    if (!array_size) {
+        llvm::BasicBlock& entry = ai->getFunction()->getEntryBlock();
+        if (ai->getParent() != &entry && !entry.empty())
+            ai->moveBefore(entry, entry.begin());
+    }
+    return ai;
+}
+
+llvm::Value* CodeGenerator::hot_alloca(llvm::Type* ty, llvm::Value* array_size, const llvm::Twine& name) {
+    llvm::Value* ai = create_alloca(ty, array_size, name);
+    if (hot_depth_ > 0) {
+        // 64-byte alignment = cache line boundary
+        llvm::cast<llvm::AllocaInst>(ai)->setAlignment(llvm::Align(64));
+    }
+    return ai;
+}
+
+/**
+ * Storage for a `let`. A declaration at file scope is visible from every
+ * function body, so it must be a module-level global: an alloca created while
+ * emitting main would be referenced from other functions, and LLVM rejects a
+ * value that is defined in one function and used in another. The initializer
+ * is still stored at the declaration's position in main, so declaration order
+ * and side effects of the initializer expression are preserved.
+ */
+llvm::Value* CodeGenerator::let_slot(llvm::Type* ty, const llvm::Twine& name) {
+    auto* cur = builder->GetInsertBlock();
+    bool file_scope = cur && cur->getParent() == main_func && named_values.size() == 1;
+    if (file_scope) {
+        auto* gv = new llvm::GlobalVariable(*module, ty, false,
+                                            llvm::GlobalValue::InternalLinkage,
+                                            llvm::Constant::getNullValue(ty), name);
+        if (hot_depth_ > 0) gv->setAlignment(llvm::Align(64));
+        return gv;
+    }
+    return hot_alloca(ty, nullptr, name);
+}
+
+void CodeGenerator::attach_hot_loop_metadata(llvm::Instruction* br) {
+    if (hot_depth_ == 0 || !br) return;
+    // Build !llvm.loop metadata that enables vectorization and unrolling.
+    auto* ctx = &*context;
+    llvm::Metadata* loop_id_args[] = {
+        llvm::MDNode::getDistinct(*ctx, {}),
+        llvm::MDString::get(*ctx, "llvm.loop.vectorize.enable"),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::getTrue(
+            llvm::Type::getInt1Ty(*ctx))),
+        llvm::MDString::get(*ctx, "llvm.loop.vectorize.width"),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(*ctx), 4)),
+        llvm::MDString::get(*ctx, "llvm.loop.unroll.count"),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(*ctx), 4)),
+    };
+    llvm::MDNode* loop_id = llvm::MDNode::getDistinct(*ctx, loop_id_args);
+    // First operand is a self-reference.
+    loop_id->replaceOperandWith(0, loop_id);
+    br->setMetadata(llvm::LLVMContext::MD_loop, loop_id);
+}
+
 void CodeGenerator::generate_hot(const Hot& hot) {
+    hot_depth_++;
+    // Mark the enclosing function with the LLVM "hot" attribute so the
+    // optimizer applies aggressive inlining, unrolling and vectorization.
+    if (auto* fn = builder->GetInsertBlock()->getParent()) {
+        fn->addFnAttr(llvm::Attribute::Hot);
+    }
     for (const auto& stmt : hot.body) generate_stmt(stmt);
+    hot_depth_--;
 }
 
 void CodeGenerator::generate_epoch(const Epoch& ep) {
@@ -1606,40 +2616,125 @@ void CodeGenerator::generate_print(const Print& print) {
     builder->CreateCall(printf_func, {nl});
 }
 
+void CodeGenerator::emit_print_scalar(llvm::Value* val, const std::string& aevix_name) {
+    llvm::FunctionType* printf_ft = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+    auto printf_func = module->getOrInsertFunction("printf", printf_ft);
+    std::string base = base_type_of(aevix_name);
+
+    // Enum: print the variant name selected by the i32 index.
+    if (is_enum(base)) {
+        if (!val->getType()->isIntegerTy(32)) error("Internal: enum value is not i32");
+        auto it = enum_variants_.find(base);
+        if (it == enum_variants_.end()) error("Internal: unknown enum " + base);
+        llvm::Function* fn = builder->GetInsertBlock()->getParent();
+        auto merge = llvm::BasicBlock::Create(*context, "enum.print.merge", fn);
+        auto def = llvm::BasicBlock::Create(*context, "enum.print.def", fn);
+        auto switch_inst = builder->CreateSwitch(val, def, (unsigned)it->second.size());
+        for (std::size_t i = 0; i < it->second.size(); ++i) {
+            auto cblk = llvm::BasicBlock::Create(*context, "enum.print.case", fn);
+            switch_inst->addCase(builder->getInt32((int)i), cblk);
+            builder->SetInsertPoint(cblk);
+            auto nm = builder->CreateGlobalString(it->second[i], "enum.name");
+            builder->CreateCall(printf_func, {nm});
+            builder->CreateBr(merge);
+        }
+        builder->SetInsertPoint(def);
+        auto fmt_num = builder->CreateGlobalString("%d", "fmt");
+        builder->CreateCall(printf_func, {fmt_num, val});
+        builder->CreateBr(merge);
+        builder->SetInsertPoint(merge);
+        return;
+    }
+
+    if (base == "i8" || base == "u8") {
+        auto fmt = builder->CreateGlobalString("%c", "format");
+        builder->CreateCall(printf_func, {fmt, builder->CreateZExt(val, builder->getInt32Ty())});
+        return;
+    }
+    if (base == "int" || base == "i32" || base == "i16" || base == "u16") {
+        llvm::Value* arg = val;
+        if (!val->getType()->isIntegerTy(32)) {
+            arg = base.at(0) == 'u'
+                ? builder->CreateZExt(val, builder->getInt32Ty(), "uarg")
+                : builder->CreateSExt(val, builder->getInt32Ty(), "promote");
+        }
+        auto fmt = builder->CreateGlobalString("%d", "format");
+        builder->CreateCall(printf_func, {fmt, arg});
+        return;
+    }
+    if (base == "u32") {
+        auto arg = builder->CreateZExt(val, builder->getInt64Ty(), "u32arg");
+        auto fmt = builder->CreateGlobalString("%llu", "format");
+        builder->CreateCall(printf_func, {fmt, arg});
+        return;
+    }
+    if (base == "i64") {
+        auto fmt = builder->CreateGlobalString("%lld", "format");
+        builder->CreateCall(printf_func, {fmt, val});
+        return;
+    }
+    if (base == "u64") {
+        auto fmt = builder->CreateGlobalString("%llu", "format");
+        builder->CreateCall(printf_func, {fmt, val});
+        return;
+    }
+    if (base == "float" || base == "f64") {
+        if (!val->getType()->isDoubleTy()) error("Internal: float value is not f64");
+        auto fmt = builder->CreateGlobalString("%f", "format");
+        builder->CreateCall(printf_func, {fmt, val});
+        return;
+    }
+    if (base == "f32") {
+        auto arg = builder->CreateFPExt(val, builder->getDoubleTy(), "f32arg");
+        auto fmt = builder->CreateGlobalString("%f", "format");
+        builder->CreateCall(printf_func, {fmt, arg});
+        return;
+    }
+    if (base == "bool") {
+        auto tr = builder->CreateGlobalString("true", "bool.true");
+        auto fl = builder->CreateGlobalString("false", "bool.false");
+        auto fmt = builder->CreateGlobalString("%s", "format");
+        builder->CreateCall(printf_func, {fmt, builder->CreateSelect(val, tr, fl)});
+        return;
+    }
+    if (base == "string") {
+        auto sp = builder->CreateExtractValue(val, 0, "sp.ptr");
+        auto slen = builder->CreateExtractValue(val, 1, "sp.len");
+        auto fmt = builder->CreateGlobalString("%.*s", "format");
+        builder->CreateCall(printf_func, {fmt, slen, sp});
+        return;
+    }
+    if (val->getType()->isIntegerTy(32)) {
+        // Fallback: unknown i32 values print as signed int (e.g. u32 in an
+        // array whose element type could not be resolved to its Aevix name).
+        auto fmt = builder->CreateGlobalString("%d", "format");
+        builder->CreateCall(printf_func, {fmt, val});
+        return;
+    }
+    error("Cannot print a value of type " + aevix_name);
+}
+
 void CodeGenerator::emit_print_value(const std::shared_ptr<Expr>& value) {
     auto val = generate_expr(value);
     if (!val) return;
 
-    llvm::Value* format_str = nullptr;
-    llvm::Value* arg = val;
-
-    if (val->getType()->isIntegerTy(8)) {
-        format_str = builder->CreateGlobalString("%c", "format");
-        arg = builder->CreateZExt(val, builder->getInt32Ty());
-    }
-    else if (val->getType()->isIntegerTy(32)) format_str = builder->CreateGlobalString("%d", "format");
-    else if (val->getType()->isDoubleTy()) format_str = builder->CreateGlobalString("%f", "format");
-    else if (val->getType()->isIntegerTy(1)) {
-        auto tr = builder->CreateGlobalString("true", "bool.true");
-        auto fl = builder->CreateGlobalString("false", "bool.false");
-        format_str = builder->CreateGlobalString("%s", "format");
-        arg = builder->CreateSelect(val, tr, fl);
-    }
-    else if (val->getType()->isPointerTy()) format_str = builder->CreateGlobalString("%s", "format");
-
-    auto printf_type = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
-    auto printf_func = module->getOrInsertFunction("printf", printf_type);
-
-    if (format_str) {
-        builder->CreateCall(printf_func, {format_str, arg});
+    llvm::Type* ty = val->getType();
+    bool is_structured = ty->isArrayTy() || is_slice_ty(ty) || ty->isStructTy();
+    if (!is_structured) {
+        std::string aname = expr_type_name(value);
+        if (aname.empty()) aname = lltype_to_name(ty);
+        emit_print_scalar(val, aname);
         return;
     }
+
+    llvm::FunctionType* printf_ft = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+    auto printf_func = module->getOrInsertFunction("printf", printf_ft);
 
     if (val->getType()->isArrayTy()) {
         auto at = llvm::cast<llvm::ArrayType>(val->getType());
         int n = (int)at->getNumElements();
         llvm::Type* elem = at->getElementType();
-        auto tmp = builder->CreateAlloca(at, nullptr, "print.arr");
+        auto tmp = create_alloca(at, nullptr, "print.arr");
         builder->CreateStore(val, tmp);
         auto open_br = builder->CreateGlobalString("[", "open_br");
         builder->CreateCall(printf_func, {open_br});
@@ -1671,36 +2766,10 @@ void CodeGenerator::emit_print_value(const std::shared_ptr<Expr>& value) {
                 continue;
             }
             else if (elem->isStructTy()) {
-                auto op = builder->CreateGlobalString("{", "open_br");
-                builder->CreateCall(printf_func, {op});
-                auto st = llvm::cast<llvm::StructType>(elem);
-                for (int k = 0; k < (int)st->getNumElements(); ++k) {
-                    auto fp = builder->CreateInBoundsGEP(st, eptr, {builder->getInt32(0), builder->getInt32(k)}, "pfld");
-                    auto fv = builder->CreateLoad(st->getElementType(k), fp, "pfld.v");
-                    if (k > 0) {
-                        auto comma = builder->CreateGlobalString(", ", "comma");
-                        builder->CreateCall(printf_func, {comma});
-                    }
-                    llvm::Value* ff = nullptr;
-                    llvm::Value* fa = fv;
-                    if (fv->getType()->isIntegerTy(32)) ff = builder->CreateGlobalString("%d", "fmt");
-                    else if (fv->getType()->isDoubleTy()) ff = builder->CreateGlobalString("%f", "fmt");
-                    else if (fv->getType()->isIntegerTy(1)) {
-                        auto tr = builder->CreateGlobalString("true", "bool.true");
-                        auto fl = builder->CreateGlobalString("false", "bool.false");
-                        ff = builder->CreateGlobalString("%s", "fmt");
-                        fa = builder->CreateSelect(fv, tr, fl);
-                    }
-                    else if (fv->getType()->isPointerTy()) ff = builder->CreateGlobalString("%s", "fmt");
-                    else error("Cannot print struct field of type " + llvm_type_name(fv->getType()) + " (nested structs not yet supported in print)");
-                    builder->CreateCall(printf_func, {ff, fa});
-                }
-                auto cl = builder->CreateGlobalString("}", "close_br");
-                builder->CreateCall(printf_func, {cl});
+                emit_print_struct_inline(ev, /*type_name=*/lltype_to_name(elem));
                 continue;
             }
-            else error("Cannot print array element of type " + llvm_type_name(elem));
-            builder->CreateCall(printf_func, {fmt, a});
+            emit_print_scalar(ev, lltype_to_name(elem));
         }
         auto close_br = builder->CreateGlobalString("]", "close_br");
         builder->CreateCall(printf_func, {close_br});
@@ -1718,49 +2787,44 @@ void CodeGenerator::emit_print_value(const std::shared_ptr<Expr>& value) {
         return;
     }
     else if (val->getType()->isStructTy()) {
-        auto st = llvm::cast<llvm::StructType>(val->getType());
-        int n = (int)st->getNumElements();
-        auto tmp = builder->CreateAlloca(st, nullptr, "print.struct");
-        builder->CreateStore(val, tmp);
-        auto open_br = builder->CreateGlobalString("{", "open_br");
-        builder->CreateCall(printf_func, {open_br});
-        for (int i = 0; i < n; ++i) {
-            auto eptr = builder->CreateInBoundsGEP(st, tmp, {builder->getInt32(0), builder->getInt32(i)}, "print.field");
-            auto ev = builder->CreateLoad(st->getElementType(i), eptr, "print.val");
-            if (i > 0) {
-                auto comma = builder->CreateGlobalString(", ", "comma");
-                builder->CreateCall(printf_func, {comma});
-            }
-            llvm::Value* fmt = nullptr;
-            llvm::Value* a = ev;
-            if (ev->getType()->isIntegerTy(32)) fmt = builder->CreateGlobalString("%d", "fmt");
-            else if (ev->getType()->isDoubleTy()) fmt = builder->CreateGlobalString("%f", "fmt");
-            else if (ev->getType()->isIntegerTy(1)) {
-                auto tr = builder->CreateGlobalString("true", "bool.true");
-                auto fl = builder->CreateGlobalString("false", "bool.false");
-                fmt = builder->CreateGlobalString("%s", "fmt");
-                a = builder->CreateSelect(ev, tr, fl);
-            }
-            else if (ev->getType()->isPointerTy()) fmt = builder->CreateGlobalString("%s", "fmt");
-            else if (is_string_slice(ev->getType())) {
-                auto fp = builder->CreateExtractValue(ev, 0, "pfld.p");
-                auto fl = builder->CreateExtractValue(ev, 1, "pfld.l");
-                auto ff = builder->CreateGlobalString("%.*s", "fmt");
-                builder->CreateCall(printf_func, {ff, fl, fp});
-                continue;
-            }
-            else if (is_slice_ty(ev->getType())) {
-                emit_slice_print(ev, false);
-                continue;
-            }
-            else error("Cannot print struct field of type " + llvm_type_name(ev->getType()) + " (nested structs not yet supported in print)");
-            builder->CreateCall(printf_func, {fmt, a});
-        }
-        auto close_br = builder->CreateGlobalString("}", "close_br");
-        builder->CreateCall(printf_func, {close_br});
+        emit_print_struct_inline(val, lltype_to_name(val->getType()));
         return;
     }
     error("Cannot print a value of type " + llvm_type_name(val->getType()));
+}
+
+void CodeGenerator::emit_print_struct_inline(llvm::Value* val, const std::string& type_name) {
+    auto st = llvm::cast<llvm::StructType>(val->getType());
+    int n = (int)st->getNumElements();
+    llvm::FunctionType* printf_ft = llvm::FunctionType::get(builder->getInt32Ty(), llvm::PointerType::getUnqual(*context), true);
+    auto printf_func = module->getOrInsertFunction("printf", printf_ft);
+    auto tmp = create_alloca(st, nullptr, "print.struct");
+    builder->CreateStore(val, tmp);
+    auto open_br = builder->CreateGlobalString("{", "open_br");
+    builder->CreateCall(printf_func, {open_br});
+    (void)type_name;
+    for (int i = 0; i < n; ++i) {
+        auto eptr = builder->CreateInBoundsGEP(st, tmp, {builder->getInt32(0), builder->getInt32(i)}, "print.field");
+        auto ev = builder->CreateLoad(st->getElementType(i), eptr, "print.val");
+        if (i > 0) {
+            auto comma = builder->CreateGlobalString(", ", "comma");
+            builder->CreateCall(printf_func, {comma});
+        }
+        if (is_string_slice(ev->getType())) {
+            emit_print_scalar(ev, "string");
+        }
+        else if (is_slice_ty(ev->getType())) {
+            emit_slice_print(ev, false);
+        }
+        else if (ev->getType()->isStructTy()) {
+            emit_print_struct_inline(ev, lltype_to_name(ev->getType()));
+        }
+        else {
+            emit_print_scalar(ev, lltype_to_name(ev->getType()));
+        }
+    }
+    auto close_br = builder->CreateGlobalString("}", "close_br");
+    builder->CreateCall(printf_func, {close_br});
 }
 
 void CodeGenerator::generate_block(const std::shared_ptr<Block>& block) {
@@ -1798,6 +2862,7 @@ void CodeGenerator::generate_if(const If& if_stmt) {
 
 void CodeGenerator::generate_while(const While& w) {
     auto func = builder->GetInsertBlock()->getParent();
+    LoopDepthGuard loop_depth(loop_depth_);
     auto cond_block = llvm::BasicBlock::Create(*context, "while.cond", func);
     auto body_block = llvm::BasicBlock::Create(*context, "while.body", func);
     auto merge_block = llvm::BasicBlock::Create(*context, "while.end");
@@ -1813,7 +2878,10 @@ void CodeGenerator::generate_while(const While& w) {
     loop_ctx.push_back({merge_block, cond_block});
     generate_block(w.body);
     loop_ctx.pop_back();
-    if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(cond_block);
+    if (!block_has_terminator(builder->GetInsertBlock())) {
+        auto* br = builder->CreateBr(cond_block);
+        attach_hot_loop_metadata(br);
+    }
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
@@ -1821,6 +2889,7 @@ void CodeGenerator::generate_while(const While& w) {
 
 void CodeGenerator::generate_for(const For& f) {
     auto func = builder->GetInsertBlock()->getParent();
+    LoopDepthGuard loop_depth(loop_depth_);
     if (f.init) generate_stmt(f.init);
 
     auto cond_block = llvm::BasicBlock::Create(*context, "for.cond", func);
@@ -1832,7 +2901,9 @@ void CodeGenerator::generate_for(const For& f) {
     builder->SetInsertPoint(cond_block);
     if (f.condition) {
         auto cond = generate_expr(f.condition);
-        if (!cond) return;
+        if (!cond) {
+            return;
+        }
         require_bool(cond, "for condition");
         builder->CreateCondBr(cond, body_block, merge_block);
     } else {
@@ -1847,7 +2918,10 @@ void CodeGenerator::generate_for(const For& f) {
 
     builder->SetInsertPoint(step_block);
     if (f.step) generate_stmt(f.step);
-    if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(cond_block);
+    if (!block_has_terminator(builder->GetInsertBlock())) {
+        auto* br = builder->CreateBr(cond_block);
+        attach_hot_loop_metadata(br);
+    }
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
@@ -1855,6 +2929,7 @@ void CodeGenerator::generate_for(const For& f) {
 
 void CodeGenerator::generate_for_in(const ForIn& fi) {
     auto func = builder->GetInsertBlock()->getParent();
+    LoopDepthGuard loop_depth(loop_depth_);
     llvm::Value* arr = generate_expr(fi.iterable);
     if (!arr) return;
 
@@ -1873,11 +2948,19 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     }
     int N = is_slice ? -1 : (int)llvm::cast<llvm::ArrayType>(arr->getType())->getNumElements();
 
+    // A fixed-size array arrives as a value: spill it once, before the loop,
+    // so the body only does a single element load per iteration.
+    llvm::Value* arr_slot = nullptr;
+    if (!is_slice) {
+        arr_slot = hot_alloca(arr->getType(), nullptr, "forin.arr");
+        builder->CreateStore(arr, arr_slot);
+    }
+
     push_scope();
-    auto xalloc = builder->CreateAlloca(elem, nullptr, fi.var);
+    auto xalloc = hot_alloca(elem, nullptr, fi.var);
     define_var(fi.var, xalloc, elem);
 
-    auto i = builder->CreateAlloca(builder->getInt32Ty(), nullptr, "forin.i");
+    auto i = hot_alloca(builder->getInt32Ty(), nullptr, "forin.i");
     builder->CreateStore(builder->getInt32(0), i);
 
     auto cond_block = llvm::BasicBlock::Create(*context, "forin.cond", func);
@@ -1901,9 +2984,7 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     if (is_slice) {
         eptr = builder->CreateInBoundsGEP(elem, data_ptr, {icur}, "forin.elem");
     } else {
-        auto tmp = builder->CreateAlloca(arr->getType(), nullptr, "forin.arr");
-        builder->CreateStore(arr, tmp);
-        eptr = builder->CreateInBoundsGEP(arr->getType(), tmp, {builder->getInt32(0), icur}, "forin.elem");
+        eptr = builder->CreateInBoundsGEP(arr->getType(), arr_slot, {builder->getInt32(0), icur}, "forin.elem");
     }
     auto ev = builder->CreateLoad(elem, eptr, "forin.val");
     builder->CreateStore(ev, xalloc);
@@ -1915,7 +2996,10 @@ void CodeGenerator::generate_for_in(const ForIn& fi) {
     builder->SetInsertPoint(step_block);
     auto inext = builder->CreateAdd(icur, builder->getInt32(1), "forin.i.next");
     builder->CreateStore(inext, i);
-    builder->CreateBr(cond_block);
+    {
+        auto* br = builder->CreateBr(cond_block);
+        attach_hot_loop_metadata(br);
+    }
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
@@ -1937,12 +3021,31 @@ void CodeGenerator::generate_continue(const Continue& c) {
 }
 
 void CodeGenerator::generate_return(const Return& r) {
-    if (epoch_depth > 0) {
-        error("Cannot return from inside an epoch block: the arena rollback would invalidate any data you sent back");
+    if (epoch_depth > 0 && r.value) {
+        // Only arena-linked values (slices, arrays, strings) cannot be returned.
+        // Primitives (int, float, bool) live in registers and are safe.
+        llvm::Type* check_ty = nullptr;
+        if (!return_type_stack.empty() && return_type_stack.back())
+            check_ty = return_type_stack.back();
+        if (!check_ty) {
+            llvm::Value* v = generate_expr(r.value);
+            if (v) check_ty = v->getType();
+        }
+        if (check_ty) {
+            bool arena_linked = is_slice_ty(check_ty) || check_ty->isArrayTy();
+            if (!arena_linked && !return_name_stack.empty())
+                arena_linked = is_slice_dest(return_name_stack.back());
+            if (arena_linked) {
+                error("Cannot return arena-allocated value from epoch");
+            }
+        }
     }
     llvm::Type* ret_ty = return_type_stack.empty() ? nullptr : return_type_stack.back();
+    std::string ret_name = return_name_stack.empty() ? "" : return_name_stack.back();
     if (r.value) {
-        auto val = generate_expr(r.value);
+        llvm::Value* val = (!ret_name.empty() && ret_ty)
+            ? coerce_expr_to(r.value, ret_name)
+            : generate_expr(r.value);
         if (!val) return;
         if (ret_ty && is_slice_ty(ret_ty)) {
             // Returning a fixed (stack) array from an int[] function: copy the
@@ -1980,7 +3083,10 @@ void CodeGenerator::declare_func(const FuncDecl& fd) {
         std::string pbase;
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
-        if (parr == 0) {
+        if (p.is_ref) {
+            // ref parameter: the caller passes the address of the lvalue.
+            param_types.push_back(builder->getPtrTy());
+        } else if (parr == 0) {
             // Open array (int[]) is a single slice { base*, i32 } argument
             param_types.push_back(llvm_type_from_name(p.var_type));
         } else {
@@ -1995,6 +3101,8 @@ void CodeGenerator::declare_func(const FuncDecl& fd) {
     auto func_type = llvm::FunctionType::get(ret_ty, param_types, false);
     auto func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, fd.name, module.get());
     functions[fd.name] = func;
+    func_params_[fd.name] = fd.params;
+    return_type_names_[fd.name] = fd.return_type;
 }
 
 void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
@@ -2007,29 +3115,44 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
 
     push_scope();
     return_type_stack.push_back(func->getReturnType()->isVoidTy() ? nullptr : func->getReturnType());
+    return_name_stack.push_back(fd.return_type);
 
     auto arg_it = func->arg_begin();
     for (auto& p : fd.params) {
         std::string pbase;
         int parr = -1;
         parse_type(p.var_type, pbase, parr);
-        if (parr == 0) {
+        if (p.is_ref) {
+            // ref parameter: the incoming value is the caller's address.
+            // Store it in a local slot and remember that reads/writes go
+            // through one extra pointer layer (ref_indirect via ref_scopes_).
+            llvm::Argument& arg = *arg_it++;
+            llvm::Type* val_ty = signature_type_for(p.var_type, "parameter '" + p.name + "'");
+            if (!val_ty) val_ty = builder->getInt32Ty();
+            auto slot = create_alloca(builder->getPtrTy(), nullptr, p.name);
+            builder->CreateStore(&arg, slot);
+            named_values.back()[p.name] = slot;
+            named_types.back()[p.name] = val_ty;
+            ref_scopes_.back().insert(p.name);
+            var_type_names_.back()[p.name] = p.var_type;
+        } else if (parr == 0) {
             // Open array: one slice { base*, i32 } argument, stored as a whole
             llvm::Argument& arg = *arg_it++;
             llvm::Type* st = llvm_type_from_name(p.var_type);
-            auto alloca = builder->CreateAlloca(st, nullptr, p.name);
+            auto alloca = create_alloca(st, nullptr, p.name);
             builder->CreateStore(&arg, alloca);
             named_values.back()[p.name] = alloca;
             named_types.back()[p.name] = st;
+            var_type_names_.back()[p.name] = p.var_type;
             register_open_array(p.name, llvm_type_from_name(pbase));
             open_epochs[p.name] = epoch_depth;
         } else {
             llvm::Argument& arg = *arg_it++;
             llvm::Type* pt = signature_type_for(p.var_type, "parameter '" + p.name + "'");
             if (!pt) pt = builder->getInt32Ty();
-            auto alloca = builder->CreateAlloca(pt, nullptr, p.name);
+            auto alloca = create_alloca(pt, nullptr, p.name);
             builder->CreateStore(&arg, alloca);
-            define_var(p.name, alloca, pt);
+            define_var(p.name, alloca, pt, p.var_type);
         }
     }
 
@@ -2046,6 +3169,7 @@ void CodeGenerator::generate_func_decl(const FuncDecl& fd) {
     }
 
     return_type_stack.pop_back();
+    return_name_stack.pop_back();
     pop_scope();
 }
 
@@ -2073,6 +3197,7 @@ void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
         case Stmt::Kind::FuncDecl: generate_func_decl(*stmt->func_decl); break;
         case Stmt::Kind::CallStmt: if (stmt->call_stmt) generate_expr(stmt->call_stmt); break;
         case Stmt::Kind::StructDecl: break; // already registered in pass 1
+        case Stmt::Kind::EnumDecl:   break; // already registered in pass 1
         case Stmt::Kind::Break:    generate_break(stmt->break_stmt); break;
         case Stmt::Kind::Continue: generate_continue(stmt->continue_stmt); break;
     }
@@ -2093,15 +3218,15 @@ void CodeGenerator::finalize() {
 }
 
 void CodeGenerator::generate_program(const Program& program) {
-    // Pass 1: register struct types (needed before function signatures)
+    // Pass 1: register struct types and enum names (needed before function signatures)
     for (const auto& stmt : program.body) {
         if (stmt->kind == Stmt::Kind::StructDecl && stmt->struct_decl) register_struct(*stmt->struct_decl);
     }
     for (const auto& stmt : program.body) {
-        if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) declare_func(*stmt->func_decl);
+        if (stmt->kind == Stmt::Kind::EnumDecl && stmt->enum_decl) register_enum(*stmt->enum_decl);
     }
     for (const auto& stmt : program.body) {
-        if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) generate_func_decl(*stmt->func_decl);
+        if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) declare_func(*stmt->func_decl);
     }
     builder->SetInsertPoint(main_entry_block);
     // Persist argc/argv for argc()/arg() anywhere in the program.
@@ -2109,5 +3234,20 @@ void CodeGenerator::generate_program(const Program& program) {
     builder->CreateStore(main_func->getArg(1), argv_global);
     for (const auto& stmt : program.body) {
         if (stmt->kind != Stmt::Kind::FuncDecl && stmt->kind != Stmt::Kind::StructDecl) generate_stmt(stmt);
+    }
+    // Close main while the builder still points at its trailing block. The
+    // function bodies below move the insert point into their own blocks, so
+    // finalize() would no longer be able to terminate main and the verifier
+    // would reject the module with "does not have terminator".
+    if (auto cur = builder->GetInsertBlock()) {
+        if (!cur->getTerminatorOrNull()) builder->CreateRet(builder->getInt32(0));
+    }
+    // Function bodies come last: their signatures already exist (declare_func),
+    // and every top-level `let` has by now created its slot and registered it
+    // in named_values, so a body may read and write globals declared anywhere
+    // at file scope. Generating them before the top-level statements would
+    // leave the globals unregistered and fail on "unknown variable".
+    for (const auto& stmt : program.body) {
+        if (stmt->kind == Stmt::Kind::FuncDecl && stmt->func_decl) generate_func_decl(*stmt->func_decl);
     }
 }

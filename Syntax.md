@@ -24,9 +24,15 @@ Aevix is a statically typed language. Types can be declared explicitly or inferr
 | Type | Description | LLVM Mapping |
 | :--- | :--- | :--- |
 | `int` | 32-bit signed integer | `i32` |
-| `float` | Double-precision float | `double` |
+| `float` | Double-precision float (alias for `f64`) | `double` |
 | `bool` | Boolean (`true` / `false`) | `i1` |
 | `string` | UTF-8 string slice (`{ i8*, i32 }`) | `{ i8*, i32 }` |
+| `i8`, `i16`, `i32`, `i64` | Signed fixed-width integers | `i8`, `i16`, `i32`, `i64` |
+| `u8`, `u16`, `u32`, `u64` | Unsigned fixed-width integers | `i8`, `i16`, `i32`, `i64` |
+| `f32` | 32-bit float | `float` |
+| `f64` | 64-bit float | `double` |
+
+Fixed-width types are auto-promoted to `int`/`float` in arithmetic. Assigning a wider type to a narrower target is a compile error unless the value fits.
 
 ---
 
@@ -138,8 +144,25 @@ Functions are defined using the `func` keyword. The return type is optional (def
 
 ```aev
 func power(base: float, exp: float) : float {
-    return base * exp; // Simplified for example
+    return base * exp;
 }
+```
+
+### Reference parameters
+Prefix a parameter with `ref` to pass it by reference (read-write). The argument must be an lvalue (variable or assignable expression); temporaries, enum variants, and two `ref` params bound to the same variable are compile errors. `ref` is written on the parameter declaration only — a call site passes the plain argument.
+
+```aev
+func swap(a: ref int, b: ref int) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+
+let x = 1;
+let y = 2;
+swap(x, y);
+print x;  // 2
+print y;  // 1
 ```
 
 ---
@@ -167,8 +190,6 @@ Rules:
 - A name defined in two different files is a conflict — an error. There are no
   namespaces yet; everything merges globally.
 - `import` is a reserved word (it cannot be used as an identifier).
-
-See `notes/package-manager.md` for the compiler ↔ package-manager contract.
 
 ---
 
@@ -254,19 +275,50 @@ int/float values back into strings, so numbers and text compose freely:
 struct Point { x: int, y: int }
 struct Bag { items: int[], tag: string }
 
-let p = Point { 1, 2 };             // positional literal
-print p.x + p.y;                    // 3
+let p = Point { 1, 2 };                    // positional literal
+print p.x + p.y;                           // 3
 
-let b = Bag { new int[3], "box" };  // open-array fields allowed
+let q = Point { y: 2, x: 1 };              // named fields, any order
+print q;                                   // {1, 2}
+
+let b = Bag { new int[3], "box" };         // open-array fields allowed
 b.items[1] = 55;
-print b;                            // {[0, 55, 0], box}
+print b;                                   // {[0, 55, 0], box}
+
+let c = Bag { tag: "bag", items: new int[3] };
 ```
 
-Struct fields are accessed with `.`; member access chains and arrays of structs work. Struct literals are positional (named fields are not supported yet).
+Struct fields are accessed with `.`; member access chains and arrays of structs work.
+
+Struct literals may be fully positional or fully named — the two styles cannot be
+mixed inside one literal. Named fields may appear in any order, but every field
+must be given exactly once; there are no defaults. A name that is unknown,
+duplicated or left out is a compile error.
 
 ---
 
-## 10. Epochs (arena rollback)
+## 10. Enums
+
+Enums define a set of named integer constants. Variants are assigned indices in declaration order starting from 0.
+
+```aev
+enum Color { red, green, blue }
+enum Direction { north, south, east, west }
+
+let c = Color.red;
+print c;                    // 0
+print c == Color.green;     // false
+
+if (c == Color.red) {
+    print "facing red";
+}
+```
+
+Enum values are `i32` under the hood. They can be compared, printed (prints the variant name), and used in `if` conditions. Assigning to an enum variant or passing one as a `ref` parameter is a compile error.
+
+---
+
+## 11. Epochs (arena rollback)
 
 `epoch { ... }` saves the arena position on entry and restores it on exit, logically freeing everything allocated inside. Variables defined before the epoch survive; slices cannot escape an epoch.
 
@@ -280,7 +332,7 @@ print len(keep);               // still 2
 
 ---
 
-## 11. Standard I/O and Builtins
+## 12. Standard I/O and Builtins
 
 Output is handled by the `print` statement (supports int, float, bool, strings, arrays/slices, structs):
 ```aev
@@ -293,9 +345,8 @@ space-separated and a single newline is emitted once at the end:
 print 1, "two", 3.5;         // 1 two 3.500000
 ```
 Booleans print as the words `true` / `false` (also inside arrays and structs).
-
-Note: printing an open array (slice) of structs is not supported yet; fixed
-arrays of structs and slices of strings print fine.
+Fixed arrays and open arrays (slices) print in the same bracketed form, for
+scalars, strings and structs alike: `[{1, 2}, {3, 4}]`.
 
 Built-in functions:
 
@@ -312,34 +363,86 @@ Built-in functions:
 | `to_str(n)` | `to_str(int or float) -> string` | Number rendered as text (floats use `%f`, matching `print`) |
 | `substr(s, start, n)` | `substr(s: string, start: int, n: int) -> string` | Clamped segment of `s`, copied to the arena |
 | `split(s, sep)` | `split(s: string, sep: string) -> string[]` | Split `s` on every `sep`; empty pieces preserved |
+| `join(arr, sep)` | `join(arr: string[], sep: string) -> string` | Join string array with separator |
 | `min(a, b)` | `min(int or float...) -> same` | Smaller of two numbers (int/float/mixed) |
 | `max(a, b)` | `max(int or float...) -> same` | Larger of two numbers (int/float/mixed) |
 | `abs(n)` | `abs(int or float) -> same` | Absolute value |
+| `rand(max)` | `rand(max: int) -> int` | Random integer in `[0, max)` |
+| `assert(cond)` | `assert(cond: int or bool)` | If `cond` is 0, print error and `exit(1)` |
 | `exit(n)` | `exit(n: int)` | Terminate the program with status `n` |
+
+#### String builtins
+
+| Builtin | Signature | Description |
+| :--- | :--- | :--- |
+| `trim(s)` | `trim(s: string) -> string` | Strip leading/trailing whitespace |
+| `upper(s)` | `upper(s: string) -> string` | Uppercase copy |
+| `lower(s)` | `lower(s: string) -> string` | Lowercase copy |
+| `contains(h, n)` | `contains(h: string, n: string) -> bool` | `true` if `h` contains `n` |
+| `startswith(h, p)` | `startswith(h: string, p: string) -> bool` | `true` if `h` starts with `p` |
+| `endswith(h, p)` | `endswith(h: string, p: string) -> bool` | `true` if `h` ends with `p` |
+| `replace(s, old, new)` | `replace(s: string, old: string, new: string) -> string` | Replace all `old` with `new` |
+| `char_at(s, i)` | `char_at(s: string, i: int) -> string` | Single-character slice at index `i` |
 
 ```aev
 hot {
     print argc();
     if (arg(0) == "fail") { exit(7); }
-    let name = input();          // read a line from the terminal or a pipe
+    let name = input();
     write("out.txt", "hello, " + name);
     print read("out.txt");
+
+    let dice = rand(6) + 1;           // random int 1..6
+    assert(dice >= 1);                 // abort if false
+
+    let parts = split("a,b,c", ",");  // ["a", "b", "c"]
+    let csv = join(parts, ";");       // "a;b;c"
+
+    let s = "  Hello, World!  ";
+    print trim(s);                     // "Hello, World!"
+    print upper(s);                    // "  HELLO, WORLD!  "
+    print contains(s, "World");        // true
+    print replace(s, "World", "Aevix"); // "  Hello, Aevix!  "
+    print startswith(s, "  H");        // true
+    print endswith(s, "!  ");          // true
+    print char_at(s, 2);               // "H"
 }
 ```
 
 ---
 
-## 12. The `hot` Region
-The `hot` block marks a section as a critical hot path. It is a valid block
-scope today (variables, statements and epochs work inside it); the L1-cache /
-register pinning optimization that it will drive is on the roadmap and not yet
-implemented.
+## 13. The `hot` Region
+The `hot` block marks a section as a critical hot path. It is a normal block
+scope (variables, statements and loops work inside it), and the compiler
+applies cache-oriented optimizations to everything it covers:
+
+- the enclosing function gets LLVM's `hot` attribute (aggressive inlining,
+  unrolling, vectorization);
+- every loop back edge inside the block carries `llvm.loop` metadata enabling
+  vectorization (width 4) and unrolling (count 4);
+- local slots are 64-byte (cache line) aligned;
+- arena allocations made in straight-line code inside the block (concat,
+  literals, `new`) are prefetched into L1 before their first use.
+
+Loop bodies deliberately get **no** software prefetch: any call inside a loop
+makes LLVM's vectorizer reject that loop, and a vectorized loop streams
+through L1 far faster than a prefetch hint could help — sequential access is
+already covered by the hardware prefetcher.
+
+The build pipeline runs `opt -O2` between codegen and `llc`, which is what
+actually consumes the `hot` attribute and the `llvm.loop` metadata; without
+that stage the hints would never reach an optimizer.
+
+`epoch` blocks are rejected inside `hot`: rolling the arena back would evict
+the very lines the region pins, so sema reports `epoch inside hot region
+defeats L1 cache pinning`.
 
 ```aev
 hot {
-    // This block is treated as a high-performance hot path
-    for (let i = 0; i < 1000000; i += 1) {
-        process(i);
+    let total = 0;
+    for (let i = 0; i < len(data); i += 1) {
+        total = total + data[i];
     }
+    print total;
 }
 ```

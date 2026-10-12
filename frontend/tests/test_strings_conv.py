@@ -219,3 +219,82 @@ def test_min_max_abs_in_expressions():
     )
     assert ec == 0, err
     assert out == ["8", "12"]
+
+
+# --- string builtins ---
+
+def test_trim():
+    ec, out, err = run_and_capture('print trim("  hi  ");\n')
+    assert ec == 0, err
+    assert out == ["hi"]
+
+
+def test_upper():
+    ec, out, err = run_and_capture('print upper("hello");\n')
+    assert ec == 0, err
+    assert out == ["HELLO"]
+
+
+def test_lower():
+    ec, out, err = run_and_capture('print lower("HELLO");\n')
+    assert ec == 0, err
+    assert out == ["hello"]
+
+
+def test_contains_true():
+    ec, out, err = run_and_capture('print contains("hello", "ell");\n')
+    assert ec == 0, err
+    assert out == ["1"]
+
+
+def test_contains_false():
+    ec, out, err = run_and_capture('print contains("hello", "xyz");\n')
+    assert ec == 0, err
+    assert out == ["0"]
+
+
+def test_replace():
+    ec, out, err = run_and_capture('print replace("hello", "l", "r");\n')
+    assert ec == 0, err
+    assert out == ["herro"]
+
+
+def test_startswith_true():
+    ec, out, err = run_and_capture('print startswith("hello", "he");\n')
+    assert ec == 0, err
+    assert out == ["1"]
+
+
+def test_startswith_false():
+    ec, out, err = run_and_capture('print startswith("hello", "lo");\n')
+    assert ec == 0, err
+    assert out == ["0"]
+
+
+def test_endswith_true():
+    ec, out, err = run_and_capture('print endswith("hello", "lo");\n')
+    assert ec == 0, err
+    assert out == ["1"]
+
+
+def test_endswith_false():
+    ec, out, err = run_and_capture('print endswith("hello", "he");\n')
+    assert ec == 0, err
+    assert out == ["0"]
+
+
+def test_char_at():
+    ec, out, err = run_and_capture('print char_at("abc", 1);\n')
+    assert ec == 0, err
+    assert out == ["b"]
+
+
+def test_assert_ok():
+    ec, out, err = run_and_capture('assert(1); print "ok";\n')
+    assert ec == 0, err
+    assert out == ["ok"]
+
+
+def test_assert_fail():
+    ec, out, err = run_and_capture('assert(0); print "bad";\n')
+    assert ec != 0

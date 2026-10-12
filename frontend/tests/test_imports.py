@@ -20,7 +20,7 @@ from src.parser import parse
 
 from test_arrays import (
     run_and_capture, FRONTEND_DIR, ROOT, VENV_PYTHON,
-    BACKEND_BIN, RUNTIME_OBJ, LLC,
+    BACKEND_BIN, RUNTIME_OBJ, LLC, OPT,
 )
 
 FIX = "tests/fixtures"
@@ -63,8 +63,12 @@ def full_program(project_dir, main_name="main.aev"):
     ir = os.path.join(project_dir, "out.ll")
     with open(ir, "w") as fh:
         fh.write(be.stdout)
+    opt_ll = os.path.join(project_dir, "out.opt.ll")
+    oc = subprocess.run([OPT, "-passes=default<O2>", "-S", ir, "-o", opt_ll],
+                        capture_output=True, text=True)
+    assert oc.returncode == 0, oc.stderr
     obj = os.path.join(project_dir, "out.o")
-    lc = subprocess.run([LLC, "-filetype=obj", ir, "-o", obj],
+    lc = subprocess.run([LLC, "-filetype=obj", opt_ll, "-o", obj],
                         capture_output=True, text=True)
     assert lc.returncode == 0, lc.stderr
     exe = os.path.join(project_dir, "prog")
