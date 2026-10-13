@@ -8,7 +8,7 @@ namespace aevix {
 
 enum class TokType {
     // Literals
-    NUMBER, FLOAT, STRING, BOOL,
+    NUMBER, FLOAT, STRING, BOOL, FSTRING,
     // Identifier
     IDENT,
     // Type keywords
@@ -103,6 +103,10 @@ private:
         // String literal
         if (c == '"') return read_string(start_line, start_col);
 
+        // Interpolated string: an `f` immediately followed by `"` (no space) is
+        // the f-string marker, matching Python. A lone `f` stays an identifier.
+        if (c == 'f' && peek2() == '"') return read_fstring(start_line, start_col);
+
         // Number or float
         if (c >= '0' && c <= '9') return read_number(start_line, start_col);
 
@@ -135,6 +139,33 @@ private:
         }
         if (pos < src.size()) advance(); // skip closing "
         return {TokType::STRING, val, sl, sc};
+    }
+
+    // read_fstring consumes `f"..."`. It processes backslash escapes exactly
+    // like a plain string but keeps `{`/`}` intact so the parser can split the
+    // value into literal runs and embedded expressions.
+    Token read_fstring(int sl, int sc) {
+        advance(); // skip the f marker
+        advance(); // skip opening "
+        std::string val;
+        while (pos < src.size() && peek() != '"') {
+            if (peek() == '\\') {
+                advance();
+                char esc = advance();
+                switch (esc) {
+                    case 'n': val += '\n'; break;
+                    case 't': val += '\t'; break;
+                    case 'r': val += '\r'; break;
+                    case '\\': val += '\\'; break;
+                    case '"': val += '"'; break;
+                    default: val += '\\'; val += esc; break;
+                }
+            } else {
+                val += advance();
+            }
+        }
+        if (pos < src.size()) advance(); // skip closing "
+        return {TokType::FSTRING, val, sl, sc};
     }
 
     Token read_number(int sl, int sc) {

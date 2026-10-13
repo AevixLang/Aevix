@@ -18,6 +18,14 @@ public:
         return prog;
     }
 
+    // parse_expression compiles a standalone expression string into an AST node.
+    // f-string interpolation reuses this to expand each embedded `{...}` segment.
+    static ExprPtr parse_expression(const std::string& code, const std::string& filename = "interp") {
+        Lexer lex(code, filename);
+        Parser sub(lex.tokenize(), filename);
+        return sub.parse_expr();
+    }
+
 private:
     std::vector<Token> tokens;
     size_t pos;
@@ -377,6 +385,57 @@ private:
     ExprPtr parse_expr() { return parse_or(false); }
     ExprPtr parse_expr_no_brace() { return parse_or(true); }
 
+    // build_fstring turns an f-string's raw value into a concatenation of
+    // string literals and to_str() calls. `{{` and `}}` escape a literal brace;
+    // a single `{`...`}` holds an expression, parsed recursively. Desugaring at
+    // parse time keeps sema and codegen unchanged (both already understand `+`
+    // on strings and to_str).
+    ExprPtr build_fstring(const std::string& raw, int sl, int sc) {
+        std::vector<ExprPtr> pieces;
+        std::string lit;
+
+        auto flush_lit = [&]() {
+            if (!lit.empty()) {
+                pieces.push_back(std::make_shared<Expr>(Expr{StringLit{lit}, sl, sc}));
+                lit.clear();
+            }
+        };
+
+        size_t i = 0;
+        while (i < raw.size()) {
+            char c = raw[i];
+            if (c == '{' && i + 1 < raw.size() && raw[i + 1] == '{') {
+                lit += '{'; i += 2; continue;
+            }
+            if (c == '}' && i + 1 < raw.size() && raw[i + 1] == '}') {
+                lit += '}'; i += 2; continue;
+            }
+            if (c == '{') {
+                size_t close = raw.find('}', i + 1);
+                if (close == std::string::npos)
+                    throw std::runtime_error("unterminated { in f-string");
+                std::string code = raw.substr(i + 1, close - i - 1);
+                flush_lit();
+                // The empty expression `f"{}"` is a mistake, not an empty value.
+                if (code.find_first_not_of(" \t") == std::string::npos)
+                    throw std::runtime_error("empty {} in f-string");
+                ExprPtr sub = parse_expression(code, fname);
+                pieces.push_back(std::make_shared<Expr>(
+                    Expr{Call{"to_str", {sub}}, sub->line, sub->col}));
+                i = close + 1; continue;
+            }
+            lit += c; i++;
+        }
+        flush_lit();
+
+        // Fold the pieces into a left-leaning `+` chain.
+        if (pieces.empty()) return std::make_shared<Expr>(Expr{StringLit{""}, sl, sc});
+        ExprPtr acc = pieces[0];
+        for (size_t k = 1; k < pieces.size(); k++)
+            acc = std::make_shared<Expr>(Expr{Add{acc, pieces[k]}, sl, sc});
+        return acc;
+    }
+
     ExprPtr parse_or(bool stop_before_brace) {
         ExprPtr left = parse_and(stop_before_brace);
         while (match(TokType::PIPE_PIPE)) {
@@ -511,6 +570,10 @@ private:
         if (check(TokType::STRING)) {
             Token t = advance();
             return std::make_shared<Expr>(Expr{StringLit{t.value}, sl, sc});
+        }
+        if (check(TokType::FSTRING)) {
+            Token t = advance();
+            return build_fstring(t.value, sl, sc);
         }
 
         // Primary: identifier with optional suffixes
