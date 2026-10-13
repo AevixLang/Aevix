@@ -95,3 +95,87 @@ def test_cli_reports_the_real_source_filename():
         assert "undefined variable" in err
         assert "--> " + src + ":2:7" in err, err
         assert "input.aev" not in err, err
+
+
+# ---------------------------------------------------------------------------
+# package resolution (the C++ consumer half of the PM contract)
+# ---------------------------------------------------------------------------
+
+def _write_lock(proj, deps):
+    """Writes an aevix.lock pinning `deps` (name -> (version, path))."""
+    lock = {"name": "app", "version": "0.0.1",
+            "dependencies": {n: {"version": v, "path": p} for n, (v, p) in deps.items()}}
+    with open(os.path.join(proj, "aevix.lock"), "w") as f:
+        json.dump(lock, f)
+
+
+def _run_cpp_project(proj, main_src="main.aev"):
+    """Runs the C++ frontend on proj/main.aev; returns (rc, stderr)."""
+    out = os.path.join(proj, "ast.json")
+    proc = subprocess.run([CPP_FE, os.path.join(proj, main_src), "-o", out],
+                          cwd=proj, capture_output=True, text=True)
+    return proc.returncode, proc.stderr
+
+
+def test_cpp_package_resolution():
+    with tempfile.TemporaryDirectory() as proj:
+        pkg = os.path.join(proj, "calc@1.0.0")
+        os.makedirs(pkg)
+        with open(os.path.join(pkg, "num.aev"), "w") as f:
+            f.write("func add(a: int, b: int): int { return a + b; }\n")
+        _write_lock(proj, {"calc": ("1.0.0", "calc@1.0.0")})
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write('import "calc:num";\nprint add(2, 3);\n')
+        rc, err = _run_cpp_project(proj)
+        assert rc == 0, err
+        with open(os.path.join(proj, "ast.json")) as f:
+            assert "add" in f.read()
+
+
+def test_cpp_package_entry_point_lib_aev():
+    with tempfile.TemporaryDirectory() as proj:
+        pkg = os.path.join(proj, "tools@0.1.0")
+        os.makedirs(pkg)
+        with open(os.path.join(pkg, "lib.aev"), "w") as f:
+            f.write("func tool_val(): int { return 55; }\n")
+        _write_lock(proj, {"tools": ("0.1.0", "tools@0.1.0")})
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write('import "tools:";\nprint tool_val();\n')
+        rc, err = _run_cpp_project(proj)
+        assert rc == 0, err
+        with open(os.path.join(proj, "ast.json")) as f:
+            assert "tool_val" in f.read()
+
+
+def test_cpp_package_not_listed_in_lock():
+    with tempfile.TemporaryDirectory() as proj:
+        _write_lock(proj, {})
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write('import "calc:num";\nprint 1;\n')
+        rc, err = _run_cpp_project(proj)
+        assert rc != 0
+        assert "not in aevix.lock" in err
+        assert "aevix-pm add calc" in err
+
+
+def test_cpp_package_without_lock():
+    with tempfile.TemporaryDirectory() as proj:
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write('import "calc:num";\nprint 1;\n')
+        rc, err = _run_cpp_project(proj)
+        assert rc != 0
+        assert "aevix.lock" in err
+
+
+def test_cpp_package_module_not_found():
+    with tempfile.TemporaryDirectory() as proj:
+        pkg = os.path.join(proj, "calc@1.0.0")
+        os.makedirs(pkg)
+        with open(os.path.join(pkg, "num.aev"), "w") as f:
+            f.write("func add(a: int, b: int): int { return a + b; }\n")
+        _write_lock(proj, {"calc": ("1.0.0", "calc@1.0.0")})
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write('import "calc:missing";\nprint 1;\n')
+        rc, err = _run_cpp_project(proj)
+        assert rc != 0
+        assert "not found in package 'calc'" in err
