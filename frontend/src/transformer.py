@@ -39,7 +39,61 @@ def _expr_from_token(tok):
         return Bool(value=(str(tok) == "true"))
     elif tok.type == "STRING":
         return String(value=_decode_escapes(str(tok)[1:-1]))
+    elif tok.type == "FSTRING":
+        return _build_fstring_ast(str(tok))
     return Variable(value=str(tok))
+
+
+def _parse_interp_expr(code):
+    """Parses a standalone expression string into an AST node.
+
+    An f-string segment is not a full program, so it is wrapped in a throwaway
+    `let` binding; only the bound value is kept. The temporary name is discarded
+    and any names inside resolve at the interpolation site's scope."""
+    from .parser import parse as _parse_program  # lazy: parser imports this module
+    prog = _parse_program("let __aev_interp = %s;" % code)
+    return prog.body[0].value
+
+
+def _build_fstring_ast(raw):
+    """Desugars an f-string into a `+` chain of string literals and to_str()
+    calls, mirroring the C++ frontend. `{{`/`}}` emit a literal brace; a single
+    `{...}` holds an expression. This keeps sema and codegen unchanged."""
+    inner = _decode_escapes(raw[2:-1])  # strip f" and closing "
+    pieces = []
+    lit = []
+
+    def flush_lit():
+        if lit:
+            pieces.append(String(value="".join(lit)))
+            lit.clear()
+
+    i = 0
+    while i < len(inner):
+        c = inner[i]
+        if c == "{" and i + 1 < len(inner) and inner[i + 1] == "{":
+            lit.append("{"); i += 2; continue
+        if c == "}" and i + 1 < len(inner) and inner[i + 1] == "}":
+            lit.append("}"); i += 2; continue
+        if c == "{":
+            close = inner.find("}", i + 1)
+            if close == -1:
+                raise ValueError("unterminated { in f-string")
+            code = inner[i + 1:close]
+            flush_lit()
+            if not code.strip():
+                raise ValueError("empty {} in f-string")
+            pieces.append(Call(callee="to_str", args=[_parse_interp_expr(code)]))
+            i = close + 1; continue
+        lit.append(c); i += 1
+    flush_lit()
+
+    if not pieces:
+        return String(value="")
+    result = pieces[0]
+    for p in pieces[1:]:
+        result = Add(left=result, right=p)
+    return result
 
 def _with_pos(f, data, children, meta):
     """v_args wrapper: stamps the resulting AST node with the source position of
