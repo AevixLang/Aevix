@@ -1868,6 +1868,9 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto nv = generate_expr(call->args[0]);
             if (!nv) return nullptr;
             std::string sn = expr_type_name(call->args[0]);
+            // to_str(string) is the identity; f-string interpolation relies on
+            // it to pass string-valued segments through unchanged.
+            if (sn == "string") return nv;
             auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "ts.p");
             auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "ts.l");
             if (sn == "int" || sn == "i32") {
