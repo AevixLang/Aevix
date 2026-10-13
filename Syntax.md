@@ -191,6 +191,29 @@ Rules:
   namespaces yet; everything merges globally.
 - `import` is a reserved word (it cannot be used as an identifier).
 
+### Package manager (`aevix-pm`)
+
+The compiler only *reads* the package graph; the `aevix-pm` tool *writes* it.
+`aevix-pm` maintains two files at the project root:
+
+- `aevix.toml` — the manifest: your package's name, version, and declared
+  dependencies (human-edited intent).
+- `aevix.lock` — the resolved, pinned graph (JSON): the exact version and path
+  of every dependency. This is what the compiler consumes.
+
+```bash
+aevix-pm init myapp                    # scaffold aevix.toml + aevix.lock
+aevix-pm add calc --path ../calc       # add a local path dependency
+aevix-pm remove calc                   # drop it and re-resolve the lock
+aevix-pm list                          # show declared dependencies
+```
+
+`aevix add` records the dependency in `aevix.toml` and regenerates `aevix.lock`
+(deterministically, so diffs stay minimal). A package is a directory of `.aev`
+files; `import "calc:"` (empty module) loads its entry point `lib.aev`, while
+`import "calc:num"` loads `num.aev` inside it. Local `path` dependencies are
+supported in this release; version-based registry fetching lands later.
+
 ---
 
 ## 7. Arrays and Slices

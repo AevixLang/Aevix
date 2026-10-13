@@ -22,6 +22,9 @@ Aevix aims to push beyond existing languages by combining:
   loop vectorize/unroll metadata, cache-line aligned locals, allocation
   prefetch (`epoch` is rejected inside)
 - **Multi-file imports** — with cycle detection and package support
+- **Package manager** — `aevix-pm` maintains `aevix.toml` / `aevix.lock`; the
+  compiler resolves `package:module` imports against the lock (local `path`
+  dependencies)
 - **C++ frontend** — 20x faster than the legacy Python frontend
 
 ### Roadmap
@@ -170,7 +173,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ### Known limitations
 - `func` declarations are allowed only at the top level of a file.
 - `import` is top-level only; no namespaces — imported declarations merge globally.
-- Package imports (`name:module`) require a project `aevix.lock` — the package manager is under development.
+- Package imports (`name:module`) resolve against a project `aevix.lock` authored by `aevix-pm`. Local `path` dependencies are supported; version-based registry fetching is not yet.
 - The arena grows on demand but is never freed individually; epoch blocks roll the allocation point back.
 - `hot` accelerates loops (cache-line aligned slots, vectorize/unroll
   metadata consumed by the pipeline's `opt -O2` stage, allocation prefetch)
