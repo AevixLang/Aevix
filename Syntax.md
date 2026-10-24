@@ -99,7 +99,19 @@ if (condition) {
 }
 ```
 
-### Iteration (`while`)
+### Pattern match (`match`)
+```aev
+match (expr) {
+    case value: { /* body */ }
+    case value: { /* body */ }
+    default:    { /* body */ }
+}
+```
+
+`match` compares the scrutinee by equality and runs the first matching
+branch's body; `default` is optional. Each branch must wrap its body in
+braces. Values may be literals, variables, or enum-qualified names
+(`Color.red`).
 ```aev
 while (condition) {
     // body

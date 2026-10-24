@@ -431,3 +431,67 @@ def test_std_all_import():
     )
     assert ec == 0, err
     assert out == ["true", "27", "5"]
+
+
+# --- match statement ---
+
+def test_match_int_cases():
+    ec, out, err = run_and_capture(
+        "func main() {\n"
+        "    let x = 2;\n"
+        "    match (x) {\n"
+        "        case 1: { print \"one\"; }\n"
+        "        case 2: { print \"two\"; }\n"
+        "        default: { print \"other\"; }\n"
+        "    }\n"
+        "}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["two"]
+
+
+def test_match_default():
+    ec, out, err = run_and_capture(
+        "func main() {\n"
+        "    let x = 9;\n"
+        "    match (x) {\n"
+        "        case 1: { print \"one\"; }\n"
+        "        default: { print \"default\"; }\n"
+        "    }\n"
+        "}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["default"]
+
+
+def test_match_multi_stmt():
+    ec, out, err = run_and_capture(
+        "func main() {\n"
+        "    let x = 3;\n"
+        "    match (x) {\n"
+        "        case 3: { print \"three\"; print \"also\"; }\n"
+        "    }\n"
+        "}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["three", "also"]
+
+
+def test_match_enum_cases():
+    ec, out, err = run_and_capture(
+        "enum Color { red, green, blue }\n"
+        "func name(c: Color) : string {\n"
+        "    match (c) {\n"
+        "        case Color.red: { return \"red\"; }\n"
+        "        case Color.green: { return \"green\"; }\n"
+        "        default: { return \"blue\"; }\n"
+        "    }\n"
+        "}\n"
+        "func main() {\n    let c = Color.green;\n    print name(c);\n}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["green"]
