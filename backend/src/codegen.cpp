@@ -1664,7 +1664,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             return make_string_slice(rp, rl);
         }
 
-        // contains(haystack, needle) -> int: 1 if needle found
+        // contains(haystack, needle) -> bool
         if (call->callee == "contains" && call->args.size() == 2) {
             auto hv = generate_expr(call->args[0]);
             auto nv = generate_expr(call->args[1]);
@@ -1675,7 +1675,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto hl = builder->CreateExtractValue(hv, 1, "c.hl");
             auto np = builder->CreateExtractValue(nv, 0, "c.np");
             auto nl = builder->CreateExtractValue(nv, 1, "c.nl");
-            return builder->CreateCall(contains_func, {hp, hl, np, nl}, "contains");
+            auto r = builder->CreateCall(contains_func, {hp, hl, np, nl}, "contains");
+            return builder->CreateTrunc(r, builder->getInt1Ty(), "contains.b");
         }
 
         // replace(s, old, new) -> string: replace all occurrences
@@ -1731,7 +1732,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             return make_string_slice(rp, rl);
         }
 
-        // startswith(s, prefix) -> int
+        // startswith(s, prefix) -> bool
         if (call->callee == "startswith" && call->args.size() == 2) {
             auto sv = generate_expr(call->args[0]);
             auto pv = generate_expr(call->args[1]);
@@ -1742,10 +1743,11 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto sl = builder->CreateExtractValue(sv, 1, "sw.sl");
             auto pp = builder->CreateExtractValue(pv, 0, "sw.pp");
             auto pl = builder->CreateExtractValue(pv, 1, "sw.pl");
-            return builder->CreateCall(startswith_func, {sp, sl, pp, pl}, "startswith");
+            auto r = builder->CreateCall(startswith_func, {sp, sl, pp, pl}, "startswith");
+            return builder->CreateTrunc(r, builder->getInt1Ty(), "startswith.b");
         }
 
-        // endswith(s, suffix) -> int
+        // endswith(s, suffix) -> bool
         if (call->callee == "endswith" && call->args.size() == 2) {
             auto sv = generate_expr(call->args[0]);
             auto pv = generate_expr(call->args[1]);
@@ -1756,7 +1758,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto sl = builder->CreateExtractValue(sv, 1, "ew.sl");
             auto pp = builder->CreateExtractValue(pv, 0, "ew.pp");
             auto pl = builder->CreateExtractValue(pv, 1, "ew.pl");
-            return builder->CreateCall(endswith_func, {sp, sl, pp, pl}, "endswith");
+            auto r = builder->CreateCall(endswith_func, {sp, sl, pp, pl}, "endswith");
+            return builder->CreateTrunc(r, builder->getInt1Ty(), "endswith.b");
         }
 
         // char_at(s, index) -> string

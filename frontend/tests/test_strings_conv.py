@@ -244,13 +244,13 @@ def test_lower():
 def test_contains_true():
     ec, out, err = run_and_capture('print contains("hello", "ell");\n')
     assert ec == 0, err
-    assert out == ["1"]
+    assert out == ["true"]
 
 
 def test_contains_false():
     ec, out, err = run_and_capture('print contains("hello", "xyz");\n')
     assert ec == 0, err
-    assert out == ["0"]
+    assert out == ["false"]
 
 
 def test_replace():
@@ -262,25 +262,40 @@ def test_replace():
 def test_startswith_true():
     ec, out, err = run_and_capture('print startswith("hello", "he");\n')
     assert ec == 0, err
-    assert out == ["1"]
+    assert out == ["true"]
 
 
 def test_startswith_false():
     ec, out, err = run_and_capture('print startswith("hello", "lo");\n')
     assert ec == 0, err
-    assert out == ["0"]
+    assert out == ["false"]
 
 
 def test_endswith_true():
     ec, out, err = run_and_capture('print endswith("hello", "lo");\n')
     assert ec == 0, err
-    assert out == ["1"]
+    assert out == ["true"]
 
 
 def test_endswith_false():
     ec, out, err = run_and_capture('print endswith("hello", "he");\n')
     assert ec == 0, err
-    assert out == ["0"]
+    assert out == ["false"]
+
+
+def test_predicates_are_bool_in_conditions():
+    "The three string predicates are bool, so they drop straight into if/while."
+    ec, out, err = run_and_capture(
+        'func main() {\n'
+        '    if (startswith("hello", "he")) { print "prefix"; }\n'
+        '    if (contains("hello", "zz")) { print "unexpected"; }\n'
+        '    let found = endswith("hello", "lo");\n'
+        '    if (found) { print "suffix"; }\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["prefix", "suffix"]
 
 
 def test_char_at():
