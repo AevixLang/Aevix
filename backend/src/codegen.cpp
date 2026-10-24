@@ -2226,13 +2226,14 @@ llvm::Value* CodeGenerator::generate_logical_and(const And& and_) {
     auto rhs = generate_expr(and_.right);
     if (!rhs) return nullptr;
     require_bool(rhs, "&&");
+    llvm::BasicBlock* rhs_pred = builder->GetInsertBlock();
     if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
     llvm::PHINode* phi = builder->CreatePHI(builder->getInt1Ty(), 2, "andtmp");
     phi->addIncoming(builder->getFalse(), current);
-    phi->addIncoming(rhs, rhs_block);
+    phi->addIncoming(rhs, rhs_pred);
     return phi;
 }
 
@@ -2251,13 +2252,14 @@ llvm::Value* CodeGenerator::generate_logical_or(const Or& or_) {
     auto rhs = generate_expr(or_.right);
     if (!rhs) return nullptr;
     require_bool(rhs, "||");
+    llvm::BasicBlock* rhs_pred = builder->GetInsertBlock();
     if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
 
     func->insert(func->end(), merge_block);
     builder->SetInsertPoint(merge_block);
     llvm::PHINode* phi = builder->CreatePHI(builder->getInt1Ty(), 2, "ortmp");
     phi->addIncoming(builder->getTrue(), current);
-    phi->addIncoming(rhs, rhs_block);
+    phi->addIncoming(rhs, rhs_pred);
     return phi;
 }
 
