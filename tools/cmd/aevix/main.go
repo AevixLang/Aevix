@@ -307,8 +307,9 @@ func makeStages(absSrc, astPath, irPath, objPath, progOut, python, backendExe, s
 		}},
 		{"link", func() error {
 			// clang: object + arena runtime -> executable
+			// On some platforms (especially macOS), math functions need -lm
 			runtimeObj := filepath.Join(rootDir, "backend", "build", "runtime.o")
-			return runTool("clang", objPath, runtimeObj, "-o", progOut)
+			return runTool("clang", objPath, runtimeObj, "-lm", "-o", progOut)
 		}},
 	}
 }

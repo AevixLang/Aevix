@@ -258,6 +258,9 @@ void CodeGenerator::build_conv_runtime() {
     auto join_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
     join_func = llvm::Function::Create(join_ft, llvm::Function::ExternalLinkage, "__aevix_join", module.get());
 
+    // Float math intrinsics - use LLVM intrinsics to avoid calling convention issues
+    // These will be lowered to native instructions or library calls by LLVM
+
     // aevix_assert(i32 cond)
     auto assert_ft = llvm::FunctionType::get(void_ty, {i32}, false);
     assert_func = llvm::Function::Create(assert_ft, llvm::Function::ExternalLinkage, "aevix_assert", module.get());
@@ -1795,6 +1798,49 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "j.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "j.rl");
             return make_string_slice(rp, rl);
+        }
+
+        // Float math intrinsics - use LLVM intrinsics
+        if ((call->callee == "sqrt" || call->callee == "sin" || call->callee == "cos" ||
+             call->callee == "tan" || call->callee == "log" || call->callee == "exp" ||
+             call->callee == "floor" || call->callee == "ceil") && call->args.size() == 1) {
+            auto av = generate_expr(call->args[0]);
+            if (!av) return nullptr;
+            if (!av->getType()->isDoubleTy() && !av->getType()->isFloatTy()) {
+                error(call->callee + "() requires a float argument");
+            }
+            if (av->getType()->isFloatTy()) {
+                av = builder->CreateFPExt(av, builder->getDoubleTy(), "promote");
+            }
+            llvm::Function* f = nullptr;
+            llvm::Intrinsic::ID iid;
+            if (call->callee == "sqrt") iid = llvm::Intrinsic::sqrt;
+            else if (call->callee == "sin") iid = llvm::Intrinsic::sin;
+            else if (call->callee == "cos") iid = llvm::Intrinsic::cos;
+            else if (call->callee == "tan") iid = llvm::Intrinsic::tan;
+            else if (call->callee == "log") iid = llvm::Intrinsic::log;
+            else if (call->callee == "exp") iid = llvm::Intrinsic::exp;
+            else if (call->callee == "floor") iid = llvm::Intrinsic::floor;
+            else if (call->callee == "ceil") iid = llvm::Intrinsic::ceil;
+            f = llvm::Intrinsic::getOrInsertDeclaration(module.get(), iid, {builder->getDoubleTy()});
+            return builder->CreateCall(f, {av}, call->callee);
+        }
+
+        // pow(base, exp) -> float
+        if (call->callee == "pow" && call->args.size() == 2) {
+            auto bv = generate_expr(call->args[0]);
+            auto ev = generate_expr(call->args[1]);
+            if (!bv || !ev) return nullptr;
+            if (!bv->getType()->isDoubleTy() && !bv->getType()->isFloatTy()) {
+                error("pow() first argument must be a float");
+            }
+            if (!ev->getType()->isDoubleTy() && !ev->getType()->isFloatTy()) {
+                error("pow() second argument must be a float");
+            }
+            if (bv->getType()->isFloatTy()) bv = builder->CreateFPExt(bv, builder->getDoubleTy(), "promote");
+            if (ev->getType()->isFloatTy()) ev = builder->CreateFPExt(ev, builder->getDoubleTy(), "promote");
+            auto f = llvm::Intrinsic::getOrInsertDeclaration(module.get(), llvm::Intrinsic::pow, {builder->getDoubleTy()});
+            return builder->CreateCall(f, {bv, ev}, "pow");
         }
 
         // read(fn) -> string: whole file as an arena-backed string.

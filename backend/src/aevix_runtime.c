@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -461,3 +462,17 @@ void aevix_assert(int32_t cond) {
         exit(1);
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Float math intrinsics                                              */
+/* ------------------------------------------------------------------ */
+
+double __aevix_sqrt_f64(double x) { return sqrt(x); }
+double __aevix_sin_f64(double x) { return sin(x); }
+double __aevix_cos_f64(double x) { return cos(x); }
+double __aevix_tan_f64(double x) { return tan(x); }
+double __aevix_log_f64(double x) { return log(x); }
+double __aevix_exp_f64(double x) { return exp(x); }
+double __aevix_floor_f64(double x) { return floor(x); }
+double __aevix_ceil_f64(double x) { return ceil(x); }
+double __aevix_pow_f64(double base, double exp) { return pow(base, exp); }

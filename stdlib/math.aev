@@ -1,23 +1,11 @@
-// std:math — numeric helpers.
+// std:math — integer math and utility functions.
 //
-// Pure-Aevix functions are implemented here. Anything needing transcendental
-// or sqrt requires new runtime intrinsics; those are marked TODO with a stub
-// that panics so the signature is discoverable and the compiler doesn't crash.
-//
-// When runtime adds the missing ops, swap the stub for the real call.
+// Float math (sqrt, sin, cos, tan, log, exp, floor, ceil, pow) and abs/min/max
+// are available as compiler builtins everywhere and need no import — this module
+// adds the higher-level helpers on top of them.
 
-// absolute value (already builtin)
-func abs(x: int) : int {
-    return abs(x); // builtin
-}
-
-// min/max (already builtins)
-func min(a: int, b: int) : int {
-    return min(a, b);
-}
-func max(a: int, b: int) : int {
-    return max(a, b);
-}
+// absolute value is a builtin — not redefined here to avoid shadowing
+// clamp x to [lo, hi]
 
 // clamp x to [lo, hi]
 func clamp(x: int, lo: int, hi: int) : int {
@@ -83,31 +71,10 @@ func is_odd(n: int) : bool {
 // FLOAT math — needs runtime intrinsics (TODO)
 // ========================================================================
 
-// sqrt(x) — TODO: add __aevix_sqrt_f64 to runtime
-func sqrt(x: float) : float {
-    // STUB: remove when runtime provides sqrt
-    exit(1);
-}
-
-// sin/cos/tan — TODO
-func sin(x: float) : float { exit(1); }
-func cos(x: float) : float { exit(1); }
-func tan(x: float) : float { exit(1); }
-
-// log/exp — TODO
-func log(x: float) : float { exit(1); }
-func exp(x: float) : float { exit(1); }
-
-// floor/ceil — TODO
-func floor(x: float) : float { exit(1); }
-func ceil(x: float) : float { exit(1); }
-
-// pow_f64 — TODO
-func pow_f64(base: float, exp: float) : float { exit(1); }
-
-// ========================================================================
-// CONSTANTS
-// ========================================================================
+// NOTE: float builtins (sqrt, sin, cos, tan, log, exp, floor, ceil, pow)
+// are already available as builtins and do not require `import "std:math"`.
+// This stdlib provides higher-level integer and utility functions on top of
+// the existing type system.
 
 // PI approximation
 func pi() : float {

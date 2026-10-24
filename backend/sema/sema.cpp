@@ -268,6 +268,15 @@ private:
             {"join",   "string"},
             {"assert", ""},
             {"exit",   ""},
+            {"sqrt",   "float"},
+            {"sin",    "float"},
+            {"cos",    "float"},
+            {"tan",    "float"},
+            {"log",    "float"},
+            {"exp",    "float"},
+            {"floor",  "float"},
+            {"ceil",   "float"},
+            {"pow",    "float"},
         };
         return m;
     }
