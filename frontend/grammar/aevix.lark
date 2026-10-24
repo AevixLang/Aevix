@@ -7,6 +7,7 @@ stmt: import_stmt
     | expr_stmt
     | print_stmt
     | if_stmt
+    | match_stmt
     | while_stmt
     | for_stmt
     | for_in_stmt
@@ -44,6 +45,8 @@ break_stmt: "break" ";"
 continue_stmt: "continue" ";"
 if_stmt: "if" "(" expr ")" block ("else" else_branch)?
 else_branch: if_stmt | block
+match_stmt: "match" "(" expr ")" "{" match_case* "}"
+match_case: ("case" expr ":" block) | ("default" ":" block)
 while_stmt: "while" "(" expr ")" block
 for_stmt: "for" "(" for_init? SEMI expr? SEMI for_step? ")" block
 for_in_stmt: "for" CNAME "in" expr block

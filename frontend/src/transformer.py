@@ -9,7 +9,7 @@ from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Mod, Neg,
     CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, EnumDecl, Import,
-    New, Epoch, Break, Continue
+    New, Epoch, Break, Continue, Match, MatchCase
 )
 
 def _decode_escapes(raw):
@@ -306,6 +306,28 @@ class AevixTransformer(Transformer):
 
     def while_stmt(self, items):
         return While(condition=items[0], body=items[1])
+
+    def match_stmt(self, items):
+        scrutinee = items[0]
+        cases = []
+        default_body = None
+        for c in items[1:]:
+            if isinstance(c, tuple) and c and c[0] == "default":
+                default_body = c[1]
+            elif isinstance(c, tuple) and c and c[0] == "case":
+                cases.append(MatchCase(value=c[1], body=c[2]))
+            else:
+                cases.append(c)
+        return Match(scrutinee=scrutinee, cases=cases, default_body=default_body)
+
+    def match_case(self, items):
+        # Anonymous literal "case"/"default" is filtered by Lark, so `items`
+        # holds the remainder. A case with a value has >=2 items.
+        if len(items) == 1:
+            return ("default", items[0])
+        if len(items) >= 2:
+            return ("case", items[0], items[1])
+        return items
 
     def for_stmt(self, items):
         # Named SEMI keeps the clause separators in the parse tree, so empty
