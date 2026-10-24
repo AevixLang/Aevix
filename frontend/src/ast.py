@@ -94,6 +94,12 @@ class Div:
     type: str = "Div"
 
 @dataclass
+class Mod:
+    left: object
+    right: object
+    type: str = "Mod"
+
+@dataclass
 class Neg:
     value: object
     type: str = "Neg"

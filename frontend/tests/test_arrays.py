@@ -899,3 +899,32 @@ def test_closed_arg_to_open_param_is_arena_backed():
     assert ec == 0, err
     assert out == ["[1, 2, 3]", "[1, 99, 3]"]
 
+
+
+# --- modulo operator ---
+
+def test_modulo_operator():
+    ec, out, err = run_and_capture(
+        'func main() {\n'
+        '    print 10 % 3;\n'
+        '    print 17 % 5;\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["1", "2"]
+
+
+def test_modulo_in_loop():
+    ec, out, err = run_and_capture(
+        'func main() {\n'
+        '    let i = 0;\n'
+        '    while (i < 10) {\n'
+        '        if (i % 3 == 0) { print i; }\n'
+        '        i = i + 1;\n'
+        '    }\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["0", "3", "6", "9"]

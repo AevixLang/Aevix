@@ -84,6 +84,12 @@ static std::shared_ptr<Expr> parse_expr_inner(const json& j) {
         div->right = parse_expr(j["right"]);
         return div;
     }
+    else if (type == "Mod") {
+        auto mod = std::make_shared<Mod>();
+        mod->left = parse_expr(j["left"]);
+        mod->right = parse_expr(j["right"]);
+        return mod;
+    }
     else if (type == "Neg") {
         auto neg = std::make_shared<Neg>();
         neg->value = parse_expr(j["value"]);

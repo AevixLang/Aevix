@@ -77,6 +77,7 @@ struct Add { ExprPtr left, right; };
 struct Sub { ExprPtr left, right; };
 struct Mul { ExprPtr left, right; };
 struct Div { ExprPtr left, right; };
+struct Mod { ExprPtr left, right; };
 
 struct CmpOp {
     std::string op; // ==, !=, <, >, <=, >=
@@ -90,7 +91,7 @@ using ExprVariant = std::variant<
     Number, FloatLit, BoolLit, StringLit, Variable,
     ArrayLit, NewExpr, Call, MemberAccess, Index, StructLiteral,
     UnaryMinus, LogicalNot,
-    Add, Sub, Mul, Div,
+    Add, Sub, Mul, Div, Mod,
     CmpOp, And, Or
 >;
 

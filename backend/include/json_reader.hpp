@@ -62,6 +62,11 @@ struct Div : public Expr {
     std::shared_ptr<Expr> right;
 };
 
+struct Mod : public Expr {
+    std::shared_ptr<Expr> left;
+    std::shared_ptr<Expr> right;
+};
+
 struct Neg : public Expr {
     std::shared_ptr<Expr> value;
 };

@@ -488,15 +488,18 @@ private:
 
     ExprPtr parse_mul(bool stop_before_brace) {
         ExprPtr left = parse_factor(stop_before_brace);
-        while (check(TokType::STAR) || check(TokType::SLASH)) {
-            bool is_mul = check(TokType::STAR);
+        while (check(TokType::STAR) || check(TokType::SLASH) || check(TokType::MOD)) {
+            TokType op = peek().type;
             advance();
             ExprPtr right = parse_factor(stop_before_brace);
-            if (is_mul) {
+            if (op == TokType::STAR) {
                 auto node = Mul{left, right};
                 left = std::make_shared<Expr>(Expr{node, left->line, left->col});
-            } else {
+            } else if (op == TokType::SLASH) {
                 auto node = Div{left, right};
+                left = std::make_shared<Expr>(Expr{node, left->line, left->col});
+            } else {
+                auto node = Mod{left, right};
                 left = std::make_shared<Expr>(Expr{node, left->line, left->col});
             }
         }

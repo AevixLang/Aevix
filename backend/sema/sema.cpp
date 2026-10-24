@@ -468,6 +468,8 @@ std::string Checker::infer(Expr* e) {
         return bin_arith(m->left.get(), m->right.get(), e->line, e->col);
     if (auto* d = dynamic_cast<Div*>(e))
         return bin_arith(d->left.get(), d->right.get(), e->line, e->col);
+    if (auto* m = dynamic_cast<Mod*>(e))
+        return bin_arith(m->left.get(), m->right.get(), e->line, e->col);
     if (auto* c = dynamic_cast<CmpOp*>(e)) {
         std::string t1 = infer(c->left.get()), t2 = infer(c->right.get());
         if (!t1.empty() && !t2.empty()) {

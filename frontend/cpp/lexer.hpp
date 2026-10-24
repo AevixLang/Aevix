@@ -21,8 +21,8 @@ enum class TokType {
     KW_WHILE, KW_FOR, KW_IN, KW_RETURN, KW_BREAK, KW_CONTINUE,
     KW_STRUCT, KW_ENUM, KW_NEW, KW_IMPORT, KW_EPOCH, KW_REF,
     // Operators
-    PLUS, MINUS, STAR, SLASH,
-    EQ, PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ,
+    PLUS, MINUS, STAR, SLASH, MOD,
+    EQ, PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ, MOD_EQ,
     EQ_EQ, BANG_EQ, LT, GT, LT_EQ, GT_EQ,
     AMP_AMP, PIPE_PIPE, BANG,
     // Delimiters
@@ -247,6 +247,9 @@ private:
             case '/':
                 if (peek() == '=') { advance(); return {TokType::SLASH_EQ, "/=", sl, sc}; }
                 return {TokType::SLASH, "/", sl, sc};
+            case '%':
+                if (peek() == '=') { advance(); return {TokType::MOD_EQ, "%=", sl, sc}; }
+                return {TokType::MOD, "%", sl, sc};
             case '=':
                 if (peek() == '=') { advance(); return {TokType::EQ_EQ, "==", sl, sc}; }
                 return {TokType::EQ, "=", sl, sc};

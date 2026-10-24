@@ -286,6 +286,7 @@ private:
     static void write_expr_node(std::ostringstream& os, const Sub& n, int d) { write_binary(os, "Sub", n.left, n.right, d); }
     static void write_expr_node(std::ostringstream& os, const Mul& n, int d) { write_binary(os, "Mul", n.left, n.right, d); }
     static void write_expr_node(std::ostringstream& os, const Div& n, int d) { write_binary(os, "Div", n.left, n.right, d); }
+    static void write_expr_node(std::ostringstream& os, const Mod& n, int d) { write_binary(os, "Mod", n.left, n.right, d); }
     static void write_expr_node(std::ostringstream& os, const And& n, int d) { write_binary(os, "And", n.left, n.right, d); }
     static void write_expr_node(std::ostringstream& os, const Or& n, int d)  { write_binary(os, "Or", n.left, n.right, d); }
 

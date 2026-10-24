@@ -2103,6 +2103,20 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         if (type_is_unsigned(dn)) return builder->CreateUDiv(left, right, "divtmp");
         return builder->CreateSDiv(left, right, "divtmp");
     }
+    if (auto mod = std::dynamic_pointer_cast<Mod>(expr)) {
+        auto left = generate_expr(mod->left);
+        auto right = generate_expr(mod->right);
+        if (!left || !right) return nullptr;
+        require_numeric(left, "%");
+        require_numeric(right, "%");
+        std::string dn = common_numeric_name(expr_type_name(mod->left), expr_type_name(mod->right));
+        promote_binop_operands(left, right, expr_type_name(mod->left), expr_type_name(mod->right));
+        if (left->getType()->isDoubleTy() || left->getType()->isFloatTy()) {
+            return builder->CreateFRem(left, right, "modtmp");
+        }
+        if (type_is_unsigned(dn)) return builder->CreateURem(left, right, "modtmp");
+        return builder->CreateSRem(left, right, "modtmp");
+    }
     if (auto neg = std::dynamic_pointer_cast<Neg>(expr)) {
         auto val = generate_expr(neg->value);
         if (!val) return nullptr;

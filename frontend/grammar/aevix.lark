@@ -108,7 +108,7 @@ EQ: "="
 SEMI: ";"
 OP_ASSIGN: "+=" | "-=" | "*=" | "/="
 ADDOP: "+" | "-"
-MULOP: "*" | "/"
+MULOP: "*" | "/" | "%"
 MINUS: "-"
 BANG: "!"
 

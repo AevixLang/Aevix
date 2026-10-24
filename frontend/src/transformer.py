@@ -7,7 +7,7 @@
 from lark import Transformer, Token, v_args
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
-    Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
+    Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Mod, Neg,
     CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, EnumDecl, Import,
     New, Epoch, Break, Continue
 )
@@ -200,7 +200,12 @@ class AevixTransformer(Transformer):
         result = items[0]
         for i in range(1, len(items), 2):
             op, right = str(items[i]), items[i + 1]
-            result = Mul(left=result, right=right) if op == '*' else Div(left=result, right=right)
+            if op == '*':
+                result = Mul(left=result, right=right)
+            elif op == '/':
+                result = Div(left=result, right=right)
+            else:
+                result = Mod(left=result, right=right)
         return result
 
     def arith(self, items):
