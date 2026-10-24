@@ -6,6 +6,22 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Standard library (`std:`)** — `std:text`, `std:io`, `std:math` ship *with*
+  the toolchain and bypass `aevix.lock`. `import "std:"` loads the full surface;
+  individual modules available as `std:text` etc.
+- **`%` modulo operator** — full support (grammar, both frontends, sema, codegen).
+- **`match` statement** — `match (x) { case V: { ... } default: { ... } }`, lowered
+  to an if-chain; enums require exhaustive coverage or a `default` (checked by
+  sema) and duplicate cases are rejected.
+- **Float math builtins** — `sqrt`, `sin`, `cos`, `tan`, `log`, `exp`, `floor`,
+  `ceil`, `pow` (LLVM intrinsics on top of the runtime).
+
+### Changed
+- **String predicates return `bool`** — `contains`, `startswith`, `endswith`
+  are now typed as `bool` (docs already claimed so); codegen truncates the
+  runtime's i32 to i1.
+
 ## [0.2.0] — 2026-10-13
 
 Hardening & memory-safety release. Static checks move into a dedicated `sema`
