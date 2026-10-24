@@ -69,6 +69,12 @@ func main() {
 		run(cmdRemove(os.Args[2:]))
 	case "list":
 		run(cmdList(os.Args[2:]))
+	case "update":
+		run(cmdUpdate(os.Args[2:]))
+	case "tree":
+		run(cmdTree(os.Args[2:]))
+	case "why":
+		run(cmdWhy(os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "aevix-pm: unknown command %q\n\n", os.Args[1])
 		usage()
@@ -91,7 +97,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  init [name]              Create aevix.toml and an empty aevix.lock")
 	fmt.Fprintln(os.Stderr, "  add <name> --path <dir>  Add a local path dependency and update the lock")
 	fmt.Fprintln(os.Stderr, "  remove <name>            Remove a dependency and update the lock")
+	fmt.Fprintln(os.Stderr, "  update [name]            Re-resolve deps to match the manifest")
 	fmt.Fprintln(os.Stderr, "  list                     List declared dependencies")
+	fmt.Fprintln(os.Stderr, "  tree                     Print the resolved dependency graph")
+	fmt.Fprintln(os.Stderr, "  why <name>               Explain why a package is in the graph")
 }
 
 // findProjectRoot walks up from the current directory looking for a manifest or
@@ -438,6 +447,94 @@ func cmdList(args []string) error {
 	}
 	return nil
 }
+
+func cmdUpdate(args []string) error {
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	m, err := readManifest(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", manifestName, err)
+	}
+	var only string
+	if len(args) > 0 {
+		only = args[0]
+	}
+	if only != "" {
+		if _, ok := m.Deps[only]; !ok {
+			return fmt.Errorf("dependency %q is not declared in %s", only, manifestName)
+		}
+	}
+	if err := recomputeLock(root, m); err != nil {
+		return err
+	}
+	if only != "" {
+		fmt.Printf("Updated %s\n", only)
+	} else {
+		fmt.Printf("Updated %d dependencies\n", len(m.Deps))
+	}
+	return nil
+}
+
+func cmdTree(args []string) error {
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	l, err := readLock(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", lockName, err)
+	}
+	if len(l.Dependencies) == 0 {
+		fmt.Printf("%s (%s) has no dependencies\n", l.Name, l.Version)
+		return nil
+	}
+	fmt.Printf("%s (%s)\n", l.Name, l.Version)
+	for _, name := range sortedLockKeys(l.Dependencies) {
+		dep := l.Dependencies[name]
+		if dep.Path != "" {
+			fmt.Printf("└── %s (%s) -> %s\n", name, dep.Version, dep.Path)
+		} else {
+			fmt.Printf("└── %s (%s)\n", name, dep.Version)
+		}
+	}
+	return nil
+}
+
+func sortedLockKeys(m map[string]LockDep) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func cmdWhy(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: aevix-pm why <name>")
+	}
+	target := args[0]
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	m, err := readManifest(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", manifestName, err)
+	}
+	if d, ok := m.Deps[target]; ok {
+		if d.Path != "" {
+			fmt.Printf("%s is a direct dependency of %s: -> %s\n", target, m.Name, d.Path)
+		} else {
+			fmt.Printf("%s is a direct dependency of %s: version %s\n", target, m.Name, d.Version)
+		}
+		return nil
+	}
+	return fmt.Errorf("%s is not a dependency of %s", target, m.Name)
+}
+
 
 func sortedKeys(m map[string]Dep) []string {
 	keys := make([]string, 0, len(m))
