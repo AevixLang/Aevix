@@ -69,6 +69,8 @@ func main() {
 		run(cmdRemove(os.Args[2:]))
 	case "list":
 		run(cmdList(os.Args[2:]))
+	case "vendor":
+		run(cmdVendor(os.Args[2:]))
 	case "update":
 		run(cmdUpdate(os.Args[2:]))
 	case "tree":
@@ -99,6 +101,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  remove <name>            Remove a dependency and update the lock")
 	fmt.Fprintln(os.Stderr, "  update [name]            Re-resolve deps to match the manifest")
 	fmt.Fprintln(os.Stderr, "  list                     List declared dependencies")
+	fmt.Fprintln(os.Stderr, "  vendor                   Copy dependencies into lib/")
 	fmt.Fprintln(os.Stderr, "  tree                     Print the resolved dependency graph")
 	fmt.Fprintln(os.Stderr, "  why <name>               Explain why a package is in the graph")
 }
@@ -446,6 +449,76 @@ func cmdList(args []string) error {
 		}
 	}
 	return nil
+}
+
+func cmdVendor(args []string) error {
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	l, err := readLock(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", lockName, err)
+	}
+	if len(l.Dependencies) == 0 {
+		fmt.Println("no dependencies to vendor")
+		return nil
+	}
+	vendorDir := filepath.Join(root, "lib", "vendor")
+	if err := os.RemoveAll(vendorDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(vendorDir, 0o755); err != nil {
+		return err
+	}
+	for _, name := range sortedLockKeys(l.Dependencies) {
+		dep := l.Dependencies[name]
+		if dep.Path == "" {
+			continue
+		}
+		target := filepath.Join(vendorDir, name)
+		srcPath := dep.Path
+		if !filepath.IsAbs(srcPath) {
+			srcPath = filepath.Join(root, srcPath)
+		}
+		if err := copyTree(srcPath, target); err != nil {
+			return fmt.Errorf("vendor %s: %w", name, err)
+		}
+		fmt.Printf("vendored %s -> %s\n", name, target)
+	}
+	return nil
+}
+
+func copyTree(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory: %s", src)
+	}
+	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		_, err = os.Stat(target)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
 }
 
 func cmdUpdate(args []string) error {
