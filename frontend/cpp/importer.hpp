@@ -19,6 +19,10 @@ public:
 
 class ImportResolver {
 public:
+    // Where `std:` resolves from. The toolchain sets this from its own
+    // layout; leaving it empty means only $AEVIX_STDLIB is consulted.
+    std::string stdlib_dir_;
+
     Program load(const std::string& path) {
         if (!std::filesystem::exists(path)) {
             throw ImportError("file not found: " + path);
@@ -157,8 +161,7 @@ private:
         while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
 
         if (trimmed.substr(0, 4) == "std:") {
-            throw ImportError("'std:' is reserved for the standard library (imported from " +
-                std::filesystem::path(importer).filename().string() + ")");
+            return resolve_std(trimmed.substr(4), importer);
         }
 
         if (trimmed.find(':') != std::string::npos) {
@@ -166,6 +169,27 @@ private:
         }
 
         return resolve_path(trimmed, from_dir, importer);
+    }
+
+    // resolve_std maps `std:<module>` onto a file in the standard library.
+    // The std ships *with* the toolchain rather than through aevix.lock: a user
+    // never declares it as a dependency, and a version mismatch between the
+    // compiler and its own std is not a state we can be in.
+    std::string resolve_std(const std::string& module, const std::string& importer) {
+        std::vector<std::string> bases;
+        const char* env = std::getenv("AEVIX_STDLIB");
+        if (env && *env) bases.push_back(env);
+        if (!stdlib_dir_.empty()) bases.push_back(stdlib_dir_);
+
+        for (auto& base : bases) {
+            std::string cand = candidate(base, module);
+            if (!cand.empty()) return cand;
+        }
+
+        std::string what = module.empty() ? "std" : ("std:" + module);
+        throw ImportError("standard library module '" + what + "' not found (imported from " +
+            displayName(importer) + "; searched " + std::to_string(bases.size()) +
+            " location(s))");
     }
 
     std::string displayName(const std::string& p) {

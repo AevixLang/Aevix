@@ -365,3 +365,69 @@ def test_for_in_over_plain_variable_parses():
     )
     assert ec == 0, err
     assert out == ["10", "20", "30"]
+
+# --- stdlib imports ---
+
+def test_std_text_import():
+    ec, out, err = run_and_capture(
+        'import "std:text";\n'
+        'func main() {\n'
+        '    print repeat("ab", 2);\n'
+        '    print index_of("hello", "ll");\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["abab", "2"]
+
+
+def test_std_math_import():
+    ec, out, err = run_and_capture(
+        'import "std:math";\n'
+        'func main() {\n'
+        '    print pow_int(2, 8);\n'
+        '    print gcd(20, 12);\n'
+        '    print lcm(6, 8);\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["256", "4", "24"]
+
+
+def test_std_io_import():
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aev", delete=False) as f:
+        f.write(
+            'import "std:io";\n'
+            'func main() {\n'
+            '    print write_file("/tmp/aevtest/io_out.txt", "hello");\n'
+            '}\n'
+            'main();\n'
+        )
+        f.flush()
+        src = f.name
+    try:
+        ec, out, err = run_and_capture(open(src).read())
+        assert ec == 0, err
+        assert out == ["true"]
+        assert os.path.exists("/tmp/aevtest/io_out.txt")
+        with open("/tmp/aevtest/io_out.txt") as r:
+            assert r.read() == "hello"
+    finally:
+        os.unlink(src)
+
+
+def test_std_all_import():
+    ec, out, err = run_and_capture(
+        'import "std:";\n'
+        'func main() {\n'
+        '    print is_empty("");\n'
+        '    print pow_int(3, 3);\n'
+        '    print gcd(15, 5);\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["true", "27", "5"]

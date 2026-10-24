@@ -3,9 +3,27 @@
 #include "parser.hpp"
 #include "importer.hpp"
 #include "json_out.hpp"
+#include <filesystem>
 #include <iostream>
 #include <fstream>
 #include <string>
+
+// find_stdlib walks up from the compiler's own location looking for a stdlib/
+// directory. `std:` must resolve relative to the toolchain, not to the
+// importing file — sources can live anywhere, the compiler cannot.
+static std::string find_stdlib(const std::string& argv0) {
+    std::error_code ec;
+    std::filesystem::path exe = std::filesystem::absolute(argv0, ec);
+    if (ec) return "";
+    std::string d = exe.parent_path().string();
+    while (!d.empty()) {
+        if (std::filesystem::is_directory(d + "/stdlib")) return d + "/stdlib";
+        std::string parent = std::filesystem::path(d).parent_path().string();
+        if (parent == d) break;
+        d = parent;
+    }
+    return "";
+}
 
 int main(int argc, char** argv) {
     std::string out_path = "ast.json";
@@ -31,6 +49,7 @@ int main(int argc, char** argv) {
 
     try {
         aevix::ImportResolver resolver;
+        resolver.stdlib_dir_ = find_stdlib(argv[0]);
         aevix::Program prog = resolver.load(src_path);
         std::string json = aevix::JsonWriter::to_json(prog);
 

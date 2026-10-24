@@ -1,0 +1,120 @@
+// std:math — numeric helpers.
+//
+// Pure-Aevix functions are implemented here. Anything needing transcendental
+// or sqrt requires new runtime intrinsics; those are marked TODO with a stub
+// that panics so the signature is discoverable and the compiler doesn't crash.
+//
+// When runtime adds the missing ops, swap the stub for the real call.
+
+// absolute value (already builtin)
+func abs(x: int) : int {
+    return abs(x); // builtin
+}
+
+// min/max (already builtins)
+func min(a: int, b: int) : int {
+    return min(a, b);
+}
+func max(a: int, b: int) : int {
+    return max(a, b);
+}
+
+// clamp x to [lo, hi]
+func clamp(x: int, lo: int, hi: int) : int {
+    if (x < lo) { return lo; }
+    if (x > hi) { return hi; }
+    return x;
+}
+
+// integer power: base^exp (exp >= 0)
+func pow_int(base: int, exp: int) : int {
+    if (exp < 0) { exit(1); }
+    let r = 1;
+    let b = base;
+    let e = exp;
+    while (e > 0) {
+        if (e % 2 == 1) { r = r * b; }
+        b = b * b;
+        e = e / 2;
+    }
+    return r;
+}
+
+// factorial (small inputs only; overflow is UB like everything else)
+func fact(n: int) : int {
+    if (n < 0) { exit(1); }
+    let r = 1;
+    let i = 2;
+    while (i <= n) {
+        r = r * i;
+        i = i + 1;
+    }
+    return r;
+}
+
+// gcd via Euclid
+func gcd(a: int, b: int) : int {
+    if (a < 0) { a = -a; }
+    if (b < 0) { b = -b; }
+    while (b != 0) {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+// lcm via gcd
+func lcm(a: int, b: int) : int {
+    return (a / gcd(a, b)) * b;
+}
+
+// is n even?
+func is_even(n: int) : bool {
+    return n % 2 == 0;
+}
+
+// is n odd?
+func is_odd(n: int) : bool {
+    return n % 2 != 0;
+}
+
+// ========================================================================
+// FLOAT math — needs runtime intrinsics (TODO)
+// ========================================================================
+
+// sqrt(x) — TODO: add __aevix_sqrt_f64 to runtime
+func sqrt(x: float) : float {
+    // STUB: remove when runtime provides sqrt
+    exit(1);
+}
+
+// sin/cos/tan — TODO
+func sin(x: float) : float { exit(1); }
+func cos(x: float) : float { exit(1); }
+func tan(x: float) : float { exit(1); }
+
+// log/exp — TODO
+func log(x: float) : float { exit(1); }
+func exp(x: float) : float { exit(1); }
+
+// floor/ceil — TODO
+func floor(x: float) : float { exit(1); }
+func ceil(x: float) : float { exit(1); }
+
+// pow_f64 — TODO
+func pow_f64(base: float, exp: float) : float { exit(1); }
+
+// ========================================================================
+// CONSTANTS
+// ========================================================================
+
+// PI approximation
+func pi() : float {
+    return 3.14159265358979323846;
+}
+
+// E approximation
+func e() : float {
+    return 2.71828182845904523536;
+}

@@ -1,0 +1,50 @@
+// std:io — I/O helpers over the runtime's read/write/stdin/stdout.
+//
+// All functions are pure Aevix; no new runtime support needed.
+
+// Read entire file as string; panics on failure.
+func read_file(path: string) : string {
+    return read(path);
+}
+
+// Write entire string to file; returns true on success.
+func write_file(path: string, data: string) : bool {
+    return write(path, data);
+}
+
+// Read one line from stdin (no trailing newline). Returns "" on EOF.
+func read_line() : string {
+    return input();
+}
+
+// Read all remaining stdin as a string.
+func read_all() : string {
+    let out = "";
+    while (true) {
+        let line = input();
+        if (len(line) == 0) { break; }
+        out = out + line + "\n";
+    }
+    return out;
+}
+
+// Print any number of values, space-separated, newline at end.
+func print_line(args: string[]) {
+    let i = 0;
+    let out = "";
+    while (i < len(args)) {
+        if (i > 0) { out = out + " "; }
+        out = out + args[i];
+        i = i + 1;
+    }
+    print out;
+}
+
+// Print a slice of strings, one per line.
+func print_lines(lines: string[]) {
+    let i = 0;
+    while (i < len(lines)) {
+        print lines[i];
+        i = i + 1;
+    }
+}
