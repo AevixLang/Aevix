@@ -960,12 +960,54 @@ void Checker::check_stmt(Stmt& s) {
         break;
     case Stmt::Kind::Match:
         if (s.match_stmt) {
-            infer(s.match_stmt->scrutinee.get());
+            const std::string scrut_type = infer(s.match_stmt->scrutinee.get());
+            // Track covered variants when the scrutinee is an enum, so an
+            // exhaustive match can be accepted and a missing one rejected.
+            std::vector<std::string> covered;
+            bool is_enum = enums_.count(scrut_type) > 0;
+            bool has_default = s.match_stmt->default_body.get() != nullptr;
             for (auto& c : s.match_stmt->cases) {
-                infer(c.value.get());
+                const std::string vt = infer(c.value.get());
+                if (vt != scrut_type && !vt.empty() && !scrut_type.empty()) {
+                    // Allow an enum variant lowered from its enum name to the
+                    // same enum type — both infer to the enum name, so this only
+                    // surfaces genuine type mismatches.
+                    error("match case type mismatch", c.value->line, c.value->col);
+                }
                 check_block(c.body->body);
+                // Track enum variants covered by this case.
+                if (is_enum) {
+                    if (auto* ma = dynamic_cast<MemberAccess*>(c.value.get())) {
+                        if (auto* v = dynamic_cast<Variable*>(ma->object.get()))
+                            if (v->name == scrut_type)
+                                covered.push_back(ma->member);
+                    }
+                }
             }
             if (s.match_stmt->default_body) check_block(s.match_stmt->default_body->body);
+            // Exhaustiveness check for enums: every variant covered, or default.
+            if (is_enum && !has_default) {
+                auto it = enums_.find(scrut_type);
+                if (it != enums_.end()) {
+                    for (const auto& v : it->second) {
+                        if (std::find(covered.begin(), covered.end(), v) == covered.end()) {
+                            error("non-exhaustive match on " + scrut_type + ": missing variant '" + v + "'", s.line, s.col);
+                            break;
+                        }
+                    }
+                }
+            }
+            // Reject duplicate cases for enum scrutinees.
+            if (is_enum) {
+                std::set<std::string> seen;
+                for (const auto& v : covered) {
+                    if (seen.count(v)) {
+                        error("duplicate case '" + v + "' in match", s.line, s.col);
+                        break;
+                    }
+                    seen.insert(v);
+                }
+            }
         }
         break;
     case Stmt::Kind::While:
