@@ -125,6 +125,21 @@ private:
         os << ", \"body\": "; write_stmts(os, n.body, d); os << "}";
     }
 
+    static void write_stmt_node(std::ostringstream& os, const Match& n, int d) {
+        os << "{\"type\": \"Match\", \"scrutinee\": "; write_expr(os, *n.scrutinee, d);
+        os << ", \"cases\": [";
+        for (size_t i = 0; i < n.cases.size(); ++i) {
+            if (i > 0) os << ", ";
+            os << "{\"value\": "; write_expr(os, *n.cases[i].value, d);
+            os << ", \"body\": "; write_stmts(os, n.cases[i].body, d); os << "}";
+        }
+        os << "]";
+        if (n.default_body) {
+            os << ", \"default_body\": "; write_opt_stmts(os, n.default_body, d);
+        }
+        os << "}";
+    }
+
     static void write_stmt_node(std::ostringstream& os, const For& n, int d) {
         os << "{\"type\": \"For\"";
         if (n.init) { os << ", \"init\": "; write_stmt(os, **n.init, d); }

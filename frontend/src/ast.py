@@ -211,6 +211,20 @@ class For:
     type: str = "For"
 
 @dataclass
+class MatchCase:
+    value: object
+    body: list
+    type: str = "MatchCase"
+
+
+@dataclass
+class Match:
+    scrutinee: object
+    cases: list
+    default_body: list | None = None
+    type: str = "Match"
+
+@dataclass
 class ForIn:
     var: str
     iterable: object

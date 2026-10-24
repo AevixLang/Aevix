@@ -148,6 +148,17 @@ struct Return {
     std::optional<ExprPtr> value;
 };
 
+struct MatchCase {
+    ExprPtr value;
+    std::vector<StmtPtr> body;
+};
+
+struct Match {
+    ExprPtr scrutinee;
+    std::vector<MatchCase> cases;
+    std::optional<std::vector<StmtPtr>> default_body;
+};
+
 struct Assign {
     ExprPtr target;
     std::string op; // =, +=, -=, *=, /=
@@ -184,7 +195,7 @@ struct EnumDecl {
 
 using StmtVariant = std::variant<
     Import, Let, Hot, Epoch, Print, Break, Continue,
-    If, While, For, ForIn, Return, Assign,
+    If, While, For, ForIn, Return, Assign, Match,
     FuncDecl, StructDecl, EnumDecl, Expr
 >;
 

@@ -2900,6 +2900,54 @@ void CodeGenerator::generate_block(const std::shared_ptr<Block>& block) {
     pop_scope();
 }
 
+void CodeGenerator::generate_match(const Match& m) {
+    llvm::Value* scr = generate_expr(m.scrutinee);
+    if (!scr) return;
+
+    auto current = builder->GetInsertBlock();
+    if (current->getTerminatorOrNull()) return;
+    llvm::Function* func = current->getParent();
+    auto merge_block = llvm::BasicBlock::Create(*context, "match.merge", func);
+
+    size_t n = m.cases.size();
+    std::vector<llvm::BasicBlock*> then_blocks(n);
+    std::vector<llvm::BasicBlock*> next_blocks(n);
+    for (size_t i = 0; i < n; ++i) {
+        then_blocks[i] = llvm::BasicBlock::Create(*context, "match.case.then", func);
+        next_blocks[i] = llvm::BasicBlock::Create(*context, "match.case.next", func);
+    }
+    llvm::BasicBlock* default_block = llvm::BasicBlock::Create(*context, "match.default", func);
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto& c = m.cases[i];
+        llvm::Value* v = generate_expr(c.value);
+        if (!v) { builder->SetInsertPoint(merge_block); return; }
+        llvm::Value* eq = nullptr;
+        if (scr->getType()->isDoubleTy() || scr->getType()->isFloatTy()) {
+            if (v->getType()->isIntegerTy()) v = builder->CreateSIToFP(v, scr->getType(), "p");
+            eq = builder->CreateFCmpOEQ(scr, v, "eq");
+        } else {
+            if (v->getType()->getIntegerBitWidth() < scr->getType()->getIntegerBitWidth())
+                v = builder->CreateZExt(v, scr->getType(), "z");
+            else if (v->getType()->getIntegerBitWidth() > scr->getType()->getIntegerBitWidth())
+                v = builder->CreateTrunc(v, scr->getType(), "t");
+            eq = builder->CreateICmpEQ(scr, v, "eq");
+        }
+        builder->CreateCondBr(eq, then_blocks[i], next_blocks[i]);
+        builder->SetInsertPoint(then_blocks[i]);
+        if (c.body) for (const auto& st : c.body->body) generate_stmt(st);
+        if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
+        builder->SetInsertPoint(next_blocks[i]);
+    }
+
+    builder->CreateBr(default_block);
+    builder->SetInsertPoint(default_block);
+    if (m.default_body) for (const auto& st : m.default_body->body) generate_stmt(st);
+    if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
+
+    builder->SetInsertPoint(merge_block);
+}
+
 void CodeGenerator::generate_if(const If& if_stmt) {
     auto cond = generate_expr(if_stmt.condition);
     if (!cond) return;
@@ -3255,6 +3303,7 @@ void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
         case Stmt::Kind::Epoch:    generate_epoch(stmt->epoch); break;
         case Stmt::Kind::Print:    generate_print(stmt->print); break;
         case Stmt::Kind::If:       if (stmt->if_stmt) generate_if(*stmt->if_stmt); break;
+        case Stmt::Kind::Match:   if (stmt->match_stmt) generate_match(*stmt->match_stmt); break;
         case Stmt::Kind::While:    if (stmt->while_stmt) generate_while(*stmt->while_stmt); break;
         case Stmt::Kind::For:      if (stmt->for_stmt) generate_for(*stmt->for_stmt); break;
         case Stmt::Kind::ForIn:    if (stmt->for_in_stmt) generate_for_in(*stmt->for_in_stmt); break;

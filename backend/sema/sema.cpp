@@ -958,6 +958,16 @@ void Checker::check_stmt(Stmt& s) {
         check_block(s.if_stmt->then_block->body);
         if (s.if_stmt->else_block) check_block(s.if_stmt->else_block->body);
         break;
+    case Stmt::Kind::Match:
+        if (s.match_stmt) {
+            infer(s.match_stmt->scrutinee.get());
+            for (auto& c : s.match_stmt->cases) {
+                infer(c.value.get());
+                check_block(c.body->body);
+            }
+            if (s.match_stmt->default_body) check_block(s.match_stmt->default_body->body);
+        }
+        break;
     case Stmt::Kind::While:
         loop_depth_++;
         infer(s.while_stmt->condition.get());

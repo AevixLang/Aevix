@@ -67,7 +67,7 @@ private:
             case TokType::KW_PRINT: case TokType::KW_IF: case TokType::KW_WHILE:
             case TokType::KW_FOR: case TokType::KW_RETURN: case TokType::KW_BREAK:
             case TokType::KW_CONTINUE: case TokType::KW_STRUCT: case TokType::KW_ENUM:
-            case TokType::KW_IMPORT: case TokType::KW_EPOCH:
+            case TokType::KW_IMPORT: case TokType::KW_EPOCH: case TokType::KW_MATCH:
                 return true;
             default: return false;
         }
@@ -111,6 +111,7 @@ private:
             case TokType::KW_IF:      s = parse_if(); break;
             case TokType::KW_WHILE:   s = parse_while(); break;
             case TokType::KW_FOR:     s = parse_for(); break;
+            case TokType::KW_MATCH:   s = parse_match(); break;
             case TokType::KW_RETURN:  s = parse_return(); break;
             case TokType::KW_BREAK:   advance(); expect(TokType::SEMI, "expected ';'"); s = std::make_shared<Stmt>(Break{}); break;
             case TokType::KW_CONTINUE: advance(); expect(TokType::SEMI, "expected ';'"); s = std::make_shared<Stmt>(Continue{}); break;
@@ -189,6 +190,33 @@ private:
             }
         }
         return std::make_shared<Stmt>(If{cond, then_body, else_body});
+    }
+
+    StmtPtr parse_match() {
+        advance(); // match
+        expect(TokType::LPAREN, "expected '(' after match");
+        ExprPtr scrutinee = parse_expr();
+        expect(TokType::RPAREN, "expected ')'");
+        expect(TokType::LBRACE, "expected '{'");
+        std::vector<MatchCase> cases;
+        std::optional<std::vector<StmtPtr>> default_body;
+        while (!check(TokType::RBRACE)) {
+            if (match(TokType::KW_CASE)) {
+                ExprPtr val = parse_expr();
+                expect(TokType::COLON, "expected ':' after case value");
+                expect(TokType::LBRACE, "expected '{'");
+                auto body = parse_block();
+                cases.push_back(MatchCase{val, body});
+            } else if (match(TokType::KW_DEFAULT)) {
+                expect(TokType::COLON, "expected ':' after default");
+                expect(TokType::LBRACE, "expected '{'");
+                default_body = parse_block();
+            } else {
+                throw std::runtime_error("expected 'case' or 'default' in match");
+            }
+        }
+        expect(TokType::RBRACE, "expected '}' after match");
+        return std::make_shared<Stmt>(Match{scrutinee, cases, default_body});
     }
 
     StmtPtr parse_while() {

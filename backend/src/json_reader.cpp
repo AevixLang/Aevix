@@ -236,6 +236,21 @@ static std::shared_ptr<Stmt> parse_stmt(const json& j) {
         }
         stmt->if_stmt = if_stmt;
     }
+    else if (type == "Match") {
+        stmt->kind = Stmt::Kind::Match;
+        auto m = std::make_shared<Match>();
+        m->scrutinee = parse_expr(j["scrutinee"]);
+        for (const auto& c : j["cases"]) {
+            MatchCase mc;
+            mc.value = parse_expr(c["value"]);
+            mc.body = parse_block(c["body"]);
+            m->cases.push_back(mc);
+        }
+        if (j.contains("default_body") && !j["default_body"].is_null()) {
+            m->default_body = parse_block(j["default_body"]);
+        }
+        stmt->match_stmt = m;
+    }
     else if (type == "While") {
         stmt->kind = Stmt::Kind::While;
         auto w = std::make_shared<While>();
