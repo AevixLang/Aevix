@@ -7,9 +7,9 @@
 from lark import Transformer, Token, v_args
 from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
-    Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Neg,
+    Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Mod, Neg,
     CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, EnumDecl, Import,
-    New, Epoch, Break, Continue
+    New, Epoch, Break, Continue, Match, MatchCase
 )
 
 def _decode_escapes(raw):
@@ -39,7 +39,61 @@ def _expr_from_token(tok):
         return Bool(value=(str(tok) == "true"))
     elif tok.type == "STRING":
         return String(value=_decode_escapes(str(tok)[1:-1]))
+    elif tok.type == "FSTRING":
+        return _build_fstring_ast(str(tok))
     return Variable(value=str(tok))
+
+
+def _parse_interp_expr(code):
+    """Parses a standalone expression string into an AST node.
+
+    An f-string segment is not a full program, so it is wrapped in a throwaway
+    `let` binding; only the bound value is kept. The temporary name is discarded
+    and any names inside resolve at the interpolation site's scope."""
+    from .parser import parse as _parse_program  # lazy: parser imports this module
+    prog = _parse_program("let __aev_interp = %s;" % code)
+    return prog.body[0].value
+
+
+def _build_fstring_ast(raw):
+    """Desugars an f-string into a `+` chain of string literals and to_str()
+    calls, mirroring the C++ frontend. `{{`/`}}` emit a literal brace; a single
+    `{...}` holds an expression. This keeps sema and codegen unchanged."""
+    inner = _decode_escapes(raw[2:-1])  # strip f" and closing "
+    pieces = []
+    lit = []
+
+    def flush_lit():
+        if lit:
+            pieces.append(String(value="".join(lit)))
+            lit.clear()
+
+    i = 0
+    while i < len(inner):
+        c = inner[i]
+        if c == "{" and i + 1 < len(inner) and inner[i + 1] == "{":
+            lit.append("{"); i += 2; continue
+        if c == "}" and i + 1 < len(inner) and inner[i + 1] == "}":
+            lit.append("}"); i += 2; continue
+        if c == "{":
+            close = inner.find("}", i + 1)
+            if close == -1:
+                raise ValueError("unterminated { in f-string")
+            code = inner[i + 1:close]
+            flush_lit()
+            if not code.strip():
+                raise ValueError("empty {} in f-string")
+            pieces.append(Call(callee="to_str", args=[_parse_interp_expr(code)]))
+            i = close + 1; continue
+        lit.append(c); i += 1
+    flush_lit()
+
+    if not pieces:
+        return String(value="")
+    result = pieces[0]
+    for p in pieces[1:]:
+        result = Add(left=result, right=p)
+    return result
 
 def _with_pos(f, data, children, meta):
     """v_args wrapper: stamps the resulting AST node with the source position of
@@ -146,7 +200,12 @@ class AevixTransformer(Transformer):
         result = items[0]
         for i in range(1, len(items), 2):
             op, right = str(items[i]), items[i + 1]
-            result = Mul(left=result, right=right) if op == '*' else Div(left=result, right=right)
+            if op == '*':
+                result = Mul(left=result, right=right)
+            elif op == '/':
+                result = Div(left=result, right=right)
+            else:
+                result = Mod(left=result, right=right)
         return result
 
     def arith(self, items):
@@ -247,6 +306,28 @@ class AevixTransformer(Transformer):
 
     def while_stmt(self, items):
         return While(condition=items[0], body=items[1])
+
+    def match_stmt(self, items):
+        scrutinee = items[0]
+        cases = []
+        default_body = None
+        for c in items[1:]:
+            if isinstance(c, tuple) and c and c[0] == "default":
+                default_body = c[1]
+            elif isinstance(c, tuple) and c and c[0] == "case":
+                cases.append(MatchCase(value=c[1], body=c[2]))
+            else:
+                cases.append(c)
+        return Match(scrutinee=scrutinee, cases=cases, default_body=default_body)
+
+    def match_case(self, items):
+        # Anonymous literal "case"/"default" is filtered by Lark, so `items`
+        # holds the remainder. A case with a value has >=2 items.
+        if len(items) == 1:
+            return ("default", items[0])
+        if len(items) >= 2:
+            return ("case", items[0], items[1])
+        return items
 
     def for_stmt(self, items):
         # Named SEMI keeps the clause separators in the parse tree, so empty

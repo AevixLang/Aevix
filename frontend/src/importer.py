@@ -157,13 +157,33 @@ def _resolve_package(spec, from_dir, importer):
 def _resolve_import(spec, from_dir, importer):
     spec = spec.strip()
     if spec.startswith("std:"):
+        module = spec[4:]
+        stdlib_dir = _find_stdlib_dir(from_dir)
+        if stdlib_dir:
+            cand = _candidate(stdlib_dir, module)
+            if cand:
+                return cand
         raise ImportResolveError(
-            f"'std:' is reserved for the standard library, which is not "
-            f"available yet (imported from {_display(importer)})"
-        )
+            f"standard library module 'std:{module}' not found (imported from "
+            f"{_display(importer)}; searched stdlib relative to compiler)")
     if ":" in spec:
         return _resolve_package(spec, from_dir, importer)
     return _resolve_path(spec, from_dir, importer)
+
+
+def _find_stdlib_dir(start):
+    """Walk up from start looking for a stdlib/ directory."""
+    import os
+    d = os.path.abspath(start)
+    while d:
+        cand = os.path.join(d, "stdlib")
+        if os.path.isdir(cand):
+            return cand
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
 
 
 def _statement_bodies(s):

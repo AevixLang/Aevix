@@ -18,6 +18,14 @@ public:
         return prog;
     }
 
+    // parse_expression compiles a standalone expression string into an AST node.
+    // f-string interpolation reuses this to expand each embedded `{...}` segment.
+    static ExprPtr parse_expression(const std::string& code, const std::string& filename = "interp") {
+        Lexer lex(code, filename);
+        Parser sub(lex.tokenize(), filename);
+        return sub.parse_expr();
+    }
+
 private:
     std::vector<Token> tokens;
     size_t pos;
@@ -59,7 +67,7 @@ private:
             case TokType::KW_PRINT: case TokType::KW_IF: case TokType::KW_WHILE:
             case TokType::KW_FOR: case TokType::KW_RETURN: case TokType::KW_BREAK:
             case TokType::KW_CONTINUE: case TokType::KW_STRUCT: case TokType::KW_ENUM:
-            case TokType::KW_IMPORT: case TokType::KW_EPOCH:
+            case TokType::KW_IMPORT: case TokType::KW_EPOCH: case TokType::KW_MATCH:
                 return true;
             default: return false;
         }
@@ -103,6 +111,7 @@ private:
             case TokType::KW_IF:      s = parse_if(); break;
             case TokType::KW_WHILE:   s = parse_while(); break;
             case TokType::KW_FOR:     s = parse_for(); break;
+            case TokType::KW_MATCH:   s = parse_match(); break;
             case TokType::KW_RETURN:  s = parse_return(); break;
             case TokType::KW_BREAK:   advance(); expect(TokType::SEMI, "expected ';'"); s = std::make_shared<Stmt>(Break{}); break;
             case TokType::KW_CONTINUE: advance(); expect(TokType::SEMI, "expected ';'"); s = std::make_shared<Stmt>(Continue{}); break;
@@ -181,6 +190,33 @@ private:
             }
         }
         return std::make_shared<Stmt>(If{cond, then_body, else_body});
+    }
+
+    StmtPtr parse_match() {
+        advance(); // match
+        expect(TokType::LPAREN, "expected '(' after match");
+        ExprPtr scrutinee = parse_expr();
+        expect(TokType::RPAREN, "expected ')'");
+        expect(TokType::LBRACE, "expected '{'");
+        std::vector<MatchCase> cases;
+        std::optional<std::vector<StmtPtr>> default_body;
+        while (!check(TokType::RBRACE)) {
+            if (match(TokType::KW_CASE)) {
+                ExprPtr val = parse_expr();
+                expect(TokType::COLON, "expected ':' after case value");
+                expect(TokType::LBRACE, "expected '{'");
+                auto body = parse_block();
+                cases.push_back(MatchCase{val, body});
+            } else if (match(TokType::KW_DEFAULT)) {
+                expect(TokType::COLON, "expected ':' after default");
+                expect(TokType::LBRACE, "expected '{'");
+                default_body = parse_block();
+            } else {
+                throw std::runtime_error("expected 'case' or 'default' in match");
+            }
+        }
+        expect(TokType::RBRACE, "expected '}' after match");
+        return std::make_shared<Stmt>(Match{scrutinee, cases, default_body});
     }
 
     StmtPtr parse_while() {
@@ -377,6 +413,57 @@ private:
     ExprPtr parse_expr() { return parse_or(false); }
     ExprPtr parse_expr_no_brace() { return parse_or(true); }
 
+    // build_fstring turns an f-string's raw value into a concatenation of
+    // string literals and to_str() calls. `{{` and `}}` escape a literal brace;
+    // a single `{`...`}` holds an expression, parsed recursively. Desugaring at
+    // parse time keeps sema and codegen unchanged (both already understand `+`
+    // on strings and to_str).
+    ExprPtr build_fstring(const std::string& raw, int sl, int sc) {
+        std::vector<ExprPtr> pieces;
+        std::string lit;
+
+        auto flush_lit = [&]() {
+            if (!lit.empty()) {
+                pieces.push_back(std::make_shared<Expr>(Expr{StringLit{lit}, sl, sc}));
+                lit.clear();
+            }
+        };
+
+        size_t i = 0;
+        while (i < raw.size()) {
+            char c = raw[i];
+            if (c == '{' && i + 1 < raw.size() && raw[i + 1] == '{') {
+                lit += '{'; i += 2; continue;
+            }
+            if (c == '}' && i + 1 < raw.size() && raw[i + 1] == '}') {
+                lit += '}'; i += 2; continue;
+            }
+            if (c == '{') {
+                size_t close = raw.find('}', i + 1);
+                if (close == std::string::npos)
+                    throw std::runtime_error("unterminated { in f-string");
+                std::string code = raw.substr(i + 1, close - i - 1);
+                flush_lit();
+                // The empty expression `f"{}"` is a mistake, not an empty value.
+                if (code.find_first_not_of(" \t") == std::string::npos)
+                    throw std::runtime_error("empty {} in f-string");
+                ExprPtr sub = parse_expression(code, fname);
+                pieces.push_back(std::make_shared<Expr>(
+                    Expr{Call{"to_str", {sub}}, sub->line, sub->col}));
+                i = close + 1; continue;
+            }
+            lit += c; i++;
+        }
+        flush_lit();
+
+        // Fold the pieces into a left-leaning `+` chain.
+        if (pieces.empty()) return std::make_shared<Expr>(Expr{StringLit{""}, sl, sc});
+        ExprPtr acc = pieces[0];
+        for (size_t k = 1; k < pieces.size(); k++)
+            acc = std::make_shared<Expr>(Expr{Add{acc, pieces[k]}, sl, sc});
+        return acc;
+    }
+
     ExprPtr parse_or(bool stop_before_brace) {
         ExprPtr left = parse_and(stop_before_brace);
         while (match(TokType::PIPE_PIPE)) {
@@ -429,15 +516,18 @@ private:
 
     ExprPtr parse_mul(bool stop_before_brace) {
         ExprPtr left = parse_factor(stop_before_brace);
-        while (check(TokType::STAR) || check(TokType::SLASH)) {
-            bool is_mul = check(TokType::STAR);
+        while (check(TokType::STAR) || check(TokType::SLASH) || check(TokType::MOD)) {
+            TokType op = peek().type;
             advance();
             ExprPtr right = parse_factor(stop_before_brace);
-            if (is_mul) {
+            if (op == TokType::STAR) {
                 auto node = Mul{left, right};
                 left = std::make_shared<Expr>(Expr{node, left->line, left->col});
-            } else {
+            } else if (op == TokType::SLASH) {
                 auto node = Div{left, right};
+                left = std::make_shared<Expr>(Expr{node, left->line, left->col});
+            } else {
+                auto node = Mod{left, right};
                 left = std::make_shared<Expr>(Expr{node, left->line, left->col});
             }
         }
@@ -511,6 +601,10 @@ private:
         if (check(TokType::STRING)) {
             Token t = advance();
             return std::make_shared<Expr>(Expr{StringLit{t.value}, sl, sc});
+        }
+        if (check(TokType::FSTRING)) {
+            Token t = advance();
+            return build_fstring(t.value, sl, sc);
         }
 
         // Primary: identifier with optional suffixes

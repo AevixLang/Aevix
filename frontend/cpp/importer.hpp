@@ -1,7 +1,9 @@
 #pragma once
 #include "ast.hpp"
+#include "lock.hpp"
 #include "parser.hpp"
 #include "lexer.hpp"
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -17,6 +19,10 @@ public:
 
 class ImportResolver {
 public:
+    // Where `std:` resolves from. The toolchain sets this from its own
+    // layout; leaving it empty means only $AEVIX_STDLIB is consulted.
+    std::string stdlib_dir_;
+
     Program load(const std::string& path) {
         if (!std::filesystem::exists(path)) {
             throw ImportError("file not found: " + path);
@@ -155,15 +161,109 @@ private:
         while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
 
         if (trimmed.substr(0, 4) == "std:") {
-            throw ImportError("'std:' is reserved for the standard library (imported from " +
-                std::filesystem::path(importer).filename().string() + ")");
+            return resolve_std(trimmed.substr(4), importer);
         }
 
         if (trimmed.find(':') != std::string::npos) {
-            throw ImportError("package imports not yet supported in C++ frontend");
+            return resolve_package(trimmed, from_dir, importer);
         }
 
         return resolve_path(trimmed, from_dir, importer);
+    }
+
+    // resolve_std maps `std:<module>` onto a file in the standard library.
+    // The std ships *with* the toolchain rather than through aevix.lock: a user
+    // never declares it as a dependency, and a version mismatch between the
+    // compiler and its own std is not a state we can be in.
+    std::string resolve_std(const std::string& module, const std::string& importer) {
+        std::vector<std::string> bases;
+        const char* env = std::getenv("AEVIX_STDLIB");
+        if (env && *env) bases.push_back(env);
+        if (!stdlib_dir_.empty()) bases.push_back(stdlib_dir_);
+
+        for (auto& base : bases) {
+            std::string cand = candidate(base, module);
+            if (!cand.empty()) return cand;
+        }
+
+        std::string what = module.empty() ? "std" : ("std:" + module);
+        throw ImportError("standard library module '" + what + "' not found (imported from " +
+            displayName(importer) + "; searched " + std::to_string(bases.size()) +
+            " location(s))");
+    }
+
+    std::string displayName(const std::string& p) {
+        return std::filesystem::path(p).filename().string();
+    }
+
+    // find_lock walks up from `start` looking for aevix.lock, mirroring the
+    // package manager's own project-root detection. Returns false if none is
+    // found; outPath is then left untouched.
+    bool find_lock(const std::string& start, std::string& outPath) {
+        std::string d = std::filesystem::canonical(start).string();
+        while (true) {
+            std::string p = d + "/aevix.lock";
+            if (std::filesystem::is_regular_file(p)) {
+                outPath = p;
+                return true;
+            }
+            auto parent = std::filesystem::path(d).parent_path().string();
+            if (parent == d) return false;
+            d = parent;
+        }
+    }
+
+    // resolve_package implements the read-only half of the package contract:
+    // it maps `name:module` onto a directory pinned in aevix.lock and resolves
+    // the module inside it. The compiler never writes the lock — that is the
+    // package manager's job.
+    std::string resolve_package(const std::string& spec, const std::string& from_dir, const std::string& importer) {
+        auto colon = spec.find(':');
+        std::string name = spec.substr(0, colon);
+        std::string module = spec.substr(colon + 1);
+
+        std::string lockPath;
+        if (!find_lock(from_dir, lockPath)) {
+            throw ImportError("package '" + name + "' not found (imported from " +
+                displayName(importer) + "): project has no aevix.lock; initialize it "
+                "with the package manager (e.g. 'aevix-pm init')");
+        }
+        lock::Json data;
+        try {
+            data = lock::load(lockPath);
+        } catch (const std::exception& e) {
+            throw ImportError("cannot read aevix.lock: " + std::string(e.what()));
+        }
+        std::string lockdir = std::filesystem::path(lockPath).parent_path().string();
+
+        const lock::Json* deps = data.get("dependencies");
+        const lock::Json* dep = deps ? deps->get(name) : nullptr;
+        if (!dep) {
+            throw ImportError("package '" + name + "' is not in aevix.lock (imported from " +
+                displayName(importer) + "); add it with the package manager (e.g. 'aevix-pm add " +
+                name + "')");
+        }
+
+        std::string pkgdir;
+        std::string path = dep->getString("path");
+        if (!path.empty()) {
+            // A relative path in the lock is relative to the lock's own directory.
+            pkgdir = std::filesystem::path(path).is_absolute() ? path : (lockdir + "/" + path);
+        } else {
+            std::string version = dep->getString("version");
+            if (version.empty()) {
+                throw ImportError("package '" + name + "' in aevix.lock has no version or path");
+            }
+            const char* home = std::getenv("HOME");
+            pkgdir = std::string(home ? home : "") + "/.aevix/pkg/" + name + "@" + version;
+        }
+
+        std::string cand = candidate(pkgdir, module);
+        if (cand.empty()) {
+            throw ImportError("module '" + module + "' not found in package '" + name +
+                "' (imported from " + displayName(importer) + "; pkg dir: " + pkgdir + ")");
+        }
+        return cand;
     }
 
     std::string resolve_path(const std::string& spec, const std::string& from_dir, const std::string& importer) {

@@ -1,0 +1,87 @@
+// std:math — integer math and utility functions.
+//
+// Float math (sqrt, sin, cos, tan, log, exp, floor, ceil, pow) and abs/min/max
+// are available as compiler builtins everywhere and need no import — this module
+// adds the higher-level helpers on top of them.
+
+// absolute value is a builtin — not redefined here to avoid shadowing
+// clamp x to [lo, hi]
+
+// clamp x to [lo, hi]
+func clamp(x: int, lo: int, hi: int) : int {
+    if (x < lo) { return lo; }
+    if (x > hi) { return hi; }
+    return x;
+}
+
+// integer power: base^exp (exp >= 0)
+func pow_int(base: int, exp: int) : int {
+    if (exp < 0) { exit(1); }
+    let r = 1;
+    let b = base;
+    let e = exp;
+    while (e > 0) {
+        if (e % 2 == 1) { r = r * b; }
+        b = b * b;
+        e = e / 2;
+    }
+    return r;
+}
+
+// factorial (small inputs only; overflow is UB like everything else)
+func fact(n: int) : int {
+    if (n < 0) { exit(1); }
+    let r = 1;
+    let i = 2;
+    while (i <= n) {
+        r = r * i;
+        i = i + 1;
+    }
+    return r;
+}
+
+// gcd via Euclid
+func gcd(a: int, b: int) : int {
+    if (a < 0) { a = -a; }
+    if (b < 0) { b = -b; }
+    while (b != 0) {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+// lcm via gcd
+func lcm(a: int, b: int) : int {
+    return (a / gcd(a, b)) * b;
+}
+
+// is n even?
+func is_even(n: int) : bool {
+    return n % 2 == 0;
+}
+
+// is n odd?
+func is_odd(n: int) : bool {
+    return n % 2 != 0;
+}
+
+// ========================================================================
+// FLOAT math — needs runtime intrinsics (TODO)
+// ========================================================================
+
+// NOTE: float builtins (sqrt, sin, cos, tan, log, exp, floor, ceil, pow)
+// are already available as builtins and do not require `import "std:math"`.
+// This stdlib provides higher-level integer and utility functions on top of
+// the existing type system.
+
+// PI approximation
+func pi() : float {
+    return 3.14159265358979323846;
+}
+
+// E approximation
+func e() : float {
+    return 2.71828182845904523536;
+}

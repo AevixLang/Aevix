@@ -77,6 +77,7 @@ struct Add { ExprPtr left, right; };
 struct Sub { ExprPtr left, right; };
 struct Mul { ExprPtr left, right; };
 struct Div { ExprPtr left, right; };
+struct Mod { ExprPtr left, right; };
 
 struct CmpOp {
     std::string op; // ==, !=, <, >, <=, >=
@@ -90,7 +91,7 @@ using ExprVariant = std::variant<
     Number, FloatLit, BoolLit, StringLit, Variable,
     ArrayLit, NewExpr, Call, MemberAccess, Index, StructLiteral,
     UnaryMinus, LogicalNot,
-    Add, Sub, Mul, Div,
+    Add, Sub, Mul, Div, Mod,
     CmpOp, And, Or
 >;
 
@@ -147,6 +148,17 @@ struct Return {
     std::optional<ExprPtr> value;
 };
 
+struct MatchCase {
+    ExprPtr value;
+    std::vector<StmtPtr> body;
+};
+
+struct Match {
+    ExprPtr scrutinee;
+    std::vector<MatchCase> cases;
+    std::optional<std::vector<StmtPtr>> default_body;
+};
+
 struct Assign {
     ExprPtr target;
     std::string op; // =, +=, -=, *=, /=
@@ -183,7 +195,7 @@ struct EnumDecl {
 
 using StmtVariant = std::variant<
     Import, Let, Hot, Epoch, Print, Break, Continue,
-    If, While, For, ForIn, Return, Assign,
+    If, While, For, ForIn, Return, Assign, Match,
     FuncDecl, StructDecl, EnumDecl, Expr
 >;
 

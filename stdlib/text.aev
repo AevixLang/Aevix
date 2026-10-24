@@ -1,0 +1,102 @@
+// std:text — string helpers built on the runtime primitives.
+//
+// Every function here is pure Aevix over the existing string builtins; nothing
+// needs new runtime support. Declarations merge into the flat global namespace,
+// so a name defined here collides with the same name in user code — that clash
+// is a compile error, never a silent shadow.
+
+// true when the string holds no characters.
+func is_empty(s: string) : bool {
+    return len(s) == 0;
+}
+
+// s repeated n times; n <= 1 yields s unchanged.
+func repeat(s: string, n: int) : string {
+    if (n <= 1) { return s; }
+    let out = "";
+    let i = 0;
+    while (i < n) {
+        out = out + s;
+        i = i + 1;
+    }
+    return out;
+}
+
+// left-pad s with fill until it reaches width characters.
+func pad_left(s: string, width: int, fill: string) : string {
+    let out = s;
+    while (len(out) < width) {
+        out = fill + out;
+    }
+    return out;
+}
+
+// right-pad s with fill until it reaches width characters.
+func pad_right(s: string, width: int, fill: string) : string {
+    let out = s;
+    while (len(out) < width) {
+        out = out + fill;
+    }
+    return out;
+}
+
+// index of the first occurrence of needle in s, or -1 when absent.
+func index_of(s: string, needle: string) : int {
+    let n = len(needle);
+    if (n == 0) { return 0; }
+    let limit = len(s) - n;
+    let i = 0;
+    while (i <= limit) {
+        if (substr(s, i, n) == needle) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// index of the last occurrence of needle in s, or -1 when absent.
+func last_index_of(s: string, needle: string) : int {
+    let n = len(needle);
+    if (n == 0) { return len(s); }
+    let i = len(s) - n;
+    while (i >= 0) {
+        if (substr(s, i, n) == needle) { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+
+// how many non-overlapping times needle occurs in s.
+func count(s: string, needle: string) : int {
+    let n = len(needle);
+    if (n == 0) { return 0; }
+    let total = 0;
+    let i = 0;
+    let limit = len(s) - n;
+    while (i <= limit) {
+        if (substr(s, i, n) == needle) {
+            total = total + 1;
+            i = i + n;
+        } else {
+            i = i + 1;
+        }
+    }
+    return total;
+}
+
+// drop a leading prefix when present; otherwise return s unchanged.
+func strip_prefix(s: string, prefix: string) : string {
+    if (startswith(s, prefix)) { return substr(s, len(prefix), len(s) - len(prefix)); }
+    return s;
+}
+
+// drop a trailing suffix when present; otherwise return s unchanged.
+func strip_suffix(s: string, suffix: string) : string {
+    if (endswith(s, suffix)) { return substr(s, 0, len(s) - len(suffix)); }
+    return s;
+}
+
+// a and b compared without regard to ASCII case.
+func equals_ignore_case(a: string, b: string) : bool {
+    if (len(a) != len(b)) { return false; }
+    return upper(a) == upper(b);
+}

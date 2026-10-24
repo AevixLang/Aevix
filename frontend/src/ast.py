@@ -94,6 +94,12 @@ class Div:
     type: str = "Div"
 
 @dataclass
+class Mod:
+    left: object
+    right: object
+    type: str = "Mod"
+
+@dataclass
 class Neg:
     value: object
     type: str = "Neg"
@@ -203,6 +209,20 @@ class For:
     condition: Optional[object] = None
     step: Optional[object] = None
     type: str = "For"
+
+@dataclass
+class MatchCase:
+    value: object
+    body: list
+    type: str = "MatchCase"
+
+
+@dataclass
+class Match:
+    scrutinee: object
+    cases: list
+    default_body: list | None = None
+    type: str = "Match"
 
 @dataclass
 class ForIn:

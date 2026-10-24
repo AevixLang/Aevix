@@ -8,7 +8,7 @@ namespace aevix {
 
 enum class TokType {
     // Literals
-    NUMBER, FLOAT, STRING, BOOL,
+    NUMBER, FLOAT, STRING, BOOL, FSTRING,
     // Identifier
     IDENT,
     // Type keywords
@@ -20,9 +20,10 @@ enum class TokType {
     KW_FUNC, KW_LET, KW_HOT, KW_PRINT, KW_IF, KW_ELSE,
     KW_WHILE, KW_FOR, KW_IN, KW_RETURN, KW_BREAK, KW_CONTINUE,
     KW_STRUCT, KW_ENUM, KW_NEW, KW_IMPORT, KW_EPOCH, KW_REF,
+    KW_MATCH, KW_CASE, KW_DEFAULT,
     // Operators
-    PLUS, MINUS, STAR, SLASH,
-    EQ, PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ,
+    PLUS, MINUS, STAR, SLASH, MOD,
+    EQ, PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ, MOD_EQ,
     EQ_EQ, BANG_EQ, LT, GT, LT_EQ, GT_EQ,
     AMP_AMP, PIPE_PIPE, BANG,
     // Delimiters
@@ -103,6 +104,10 @@ private:
         // String literal
         if (c == '"') return read_string(start_line, start_col);
 
+        // Interpolated string: an `f` immediately followed by `"` (no space) is
+        // the f-string marker, matching Python. A lone `f` stays an identifier.
+        if (c == 'f' && peek2() == '"') return read_fstring(start_line, start_col);
+
         // Number or float
         if (c >= '0' && c <= '9') return read_number(start_line, start_col);
 
@@ -135,6 +140,33 @@ private:
         }
         if (pos < src.size()) advance(); // skip closing "
         return {TokType::STRING, val, sl, sc};
+    }
+
+    // read_fstring consumes `f"..."`. It processes backslash escapes exactly
+    // like a plain string but keeps `{`/`}` intact so the parser can split the
+    // value into literal runs and embedded expressions.
+    Token read_fstring(int sl, int sc) {
+        advance(); // skip the f marker
+        advance(); // skip opening "
+        std::string val;
+        while (pos < src.size() && peek() != '"') {
+            if (peek() == '\\') {
+                advance();
+                char esc = advance();
+                switch (esc) {
+                    case 'n': val += '\n'; break;
+                    case 't': val += '\t'; break;
+                    case 'r': val += '\r'; break;
+                    case '\\': val += '\\'; break;
+                    case '"': val += '"'; break;
+                    default: val += '\\'; val += esc; break;
+                }
+            } else {
+                val += advance();
+            }
+        }
+        if (pos < src.size()) advance(); // skip closing "
+        return {TokType::FSTRING, val, sl, sc};
     }
 
     Token read_number(int sl, int sc) {
@@ -182,6 +214,9 @@ private:
         if (s == "import")   return TokType::KW_IMPORT;
         if (s == "epoch")    return TokType::KW_EPOCH;
         if (s == "ref")      return TokType::KW_REF;
+        if (s == "match")    return TokType::KW_MATCH;
+        if (s == "case")     return TokType::KW_CASE;
+        if (s == "default")  return TokType::KW_DEFAULT;
         if (s == "true")     return TokType::BOOL;
         if (s == "false")    return TokType::BOOL;
         if (s == "int")      return TokType::T_INT;
@@ -216,6 +251,9 @@ private:
             case '/':
                 if (peek() == '=') { advance(); return {TokType::SLASH_EQ, "/=", sl, sc}; }
                 return {TokType::SLASH, "/", sl, sc};
+            case '%':
+                if (peek() == '=') { advance(); return {TokType::MOD_EQ, "%=", sl, sc}; }
+                return {TokType::MOD, "%", sl, sc};
             case '=':
                 if (peek() == '=') { advance(); return {TokType::EQ_EQ, "==", sl, sc}; }
                 return {TokType::EQ, "=", sl, sc};

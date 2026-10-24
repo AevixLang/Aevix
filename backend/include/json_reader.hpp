@@ -62,6 +62,11 @@ struct Div : public Expr {
     std::shared_ptr<Expr> right;
 };
 
+struct Mod : public Expr {
+    std::shared_ptr<Expr> left;
+    std::shared_ptr<Expr> right;
+};
+
 struct Neg : public Expr {
     std::shared_ptr<Expr> value;
 };
@@ -151,6 +156,17 @@ struct While {
     std::shared_ptr<Block> body;
 };
 
+struct MatchCase {
+    std::shared_ptr<Expr> value;
+    std::shared_ptr<Block> body;
+};
+
+struct Match {
+    std::shared_ptr<Expr> scrutinee;
+    std::vector<MatchCase> cases;
+    std::shared_ptr<Block> default_body;
+};
+
 struct For {
     std::shared_ptr<Stmt> init;
     std::shared_ptr<Expr> condition;
@@ -203,7 +219,7 @@ struct EnumDecl {
 };
 
 struct Stmt {
-    enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, FuncDecl, CallStmt, StructDecl, EnumDecl, Break, Continue };
+    enum class Kind { Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, Match, FuncDecl, CallStmt, StructDecl, EnumDecl, Break, Continue };
     Kind kind;
     int line = 0;   // 1-based source line of the node, 0 if unknown
     int col = 0;    // 1-based source column of the node, 0 if unknown
@@ -217,6 +233,7 @@ struct Stmt {
     std::shared_ptr<ForIn> for_in_stmt;
     std::shared_ptr<Return> return_stmt;
     std::shared_ptr<Assign> assign_stmt;
+    std::shared_ptr<Match> match_stmt;
     std::shared_ptr<FuncDecl> func_decl;
     std::shared_ptr<Call> call_stmt;
     std::shared_ptr<StructDecl> struct_decl;

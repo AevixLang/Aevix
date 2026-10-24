@@ -1,0 +1,11 @@
+// stdlib entry point — re-exports all public modules.
+//
+// Users can:
+//   import "std:";          // pulls all below into global namespace
+//   import "std:text";      // only text
+//   import "std:io";        // only io
+//   import "std:math";      // only math
+
+import "std:text";
+import "std:io";
+import "std:math";

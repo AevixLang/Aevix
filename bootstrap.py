@@ -71,11 +71,14 @@ def setup_backend():
 
 def setup_tools():
     print_status("Building Go CLI tools...")
-    # Build the aevix CLI
-    if not run(["go", "build", "-o", "aevix", "tools/cmd/aevix/main.go"]):
-        print_error("Go build failed. Make sure Go is installed.")
-        sys.exit(1)
-    print_status("Go CLI built successfully (executable: ./aevix).")
+    # Build the aevix CLI and the package manager. They are separate binaries so
+    # aevix-pm can be extracted into its own repository without touching aevix.
+    for name in ("aevix", "aevix-pm"):
+        pkg = f"tools/cmd/{name}"
+        if not run(["go", "build", "-o", name, pkg]):
+            print_error(f"Go build failed for {name}. Make sure Go is installed.")
+            sys.exit(1)
+    print_status("Go tools built successfully (executables: ./aevix, ./aevix-pm).")
     install_cli_symlink()
 
 
@@ -84,8 +87,9 @@ def path_list():
 
 
 def install_cli_symlink():
-    """Symlink the built CLI into ~/.local/bin so `aevix` works from anywhere.
-    The CLI locates the compiler repo from its own path, so the symlink is safe."""
+    """Symlink the built CLI and package manager into ~/.local/bin so they work
+    from anywhere. Both locate the compiler repo from their own path, so the
+    symlinks are safe."""
     if platform.system() == "Windows":
         print_status("Skipping PATH install on Windows (add %AEVIX_HOME% manually).")
         return
@@ -93,18 +97,19 @@ def install_cli_symlink():
     bin_dir = home / ".local" / "bin"
     try:
         bin_dir.mkdir(parents=True, exist_ok=True)
-        link = bin_dir / "aevix"
-        target = Path("aevix").resolve()
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(target)
+        for name in ("aevix", "aevix-pm"):
+            link = bin_dir / name
+            target = Path(name).resolve()
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(target)
     except OSError as e:
-        print_error(f"Could not symlink aevix into {bin_dir}: {e}")
+        print_error(f"Could not symlink into {bin_dir}: {e}")
         return
     if str(bin_dir) in path_list():
-        print_status(f"Global CLI installed: {link} -> {target}")
+        print_status(f"Global tools installed: aevix, aevix-pm -> {bin_dir}")
     else:
-        print_status(f"Global CLI installed at {link}")
+        print_status(f"Global tools installed at {bin_dir}")
         print(f"ℹ️  Add {bin_dir} to your PATH (export PATH=\"$HOME/.local/bin:$PATH\").")
 
 

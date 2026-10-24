@@ -221,9 +221,14 @@ def test_nested_import_rejected():
 
 
 def test_std_reserved():
-    rc, err = fe_errors('import "std:io";\nprint 1;\n')
-    assert rc != 0
-    assert "reserved" in err
+    # std: is now implemented — this tests it works, not that it's reserved.
+    ec, out, err = run_and_capture(
+        'import "std:text";\n'
+        'func main() { print repeat("x", 2); }\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["xx"]
 
 
 def test_package_without_lock():

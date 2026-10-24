@@ -258,6 +258,9 @@ void CodeGenerator::build_conv_runtime() {
     auto join_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
     join_func = llvm::Function::Create(join_ft, llvm::Function::ExternalLinkage, "__aevix_join", module.get());
 
+    // Float math intrinsics - use LLVM intrinsics to avoid calling convention issues
+    // These will be lowered to native instructions or library calls by LLVM
+
     // aevix_assert(i32 cond)
     auto assert_ft = llvm::FunctionType::get(void_ty, {i32}, false);
     assert_func = llvm::Function::Create(assert_ft, llvm::Function::ExternalLinkage, "aevix_assert", module.get());
@@ -1664,7 +1667,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             return make_string_slice(rp, rl);
         }
 
-        // contains(haystack, needle) -> int: 1 if needle found
+        // contains(haystack, needle) -> bool
         if (call->callee == "contains" && call->args.size() == 2) {
             auto hv = generate_expr(call->args[0]);
             auto nv = generate_expr(call->args[1]);
@@ -1675,7 +1678,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto hl = builder->CreateExtractValue(hv, 1, "c.hl");
             auto np = builder->CreateExtractValue(nv, 0, "c.np");
             auto nl = builder->CreateExtractValue(nv, 1, "c.nl");
-            return builder->CreateCall(contains_func, {hp, hl, np, nl}, "contains");
+            auto r = builder->CreateCall(contains_func, {hp, hl, np, nl}, "contains");
+            return builder->CreateTrunc(r, builder->getInt1Ty(), "contains.b");
         }
 
         // replace(s, old, new) -> string: replace all occurrences
@@ -1731,7 +1735,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             return make_string_slice(rp, rl);
         }
 
-        // startswith(s, prefix) -> int
+        // startswith(s, prefix) -> bool
         if (call->callee == "startswith" && call->args.size() == 2) {
             auto sv = generate_expr(call->args[0]);
             auto pv = generate_expr(call->args[1]);
@@ -1742,10 +1746,11 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto sl = builder->CreateExtractValue(sv, 1, "sw.sl");
             auto pp = builder->CreateExtractValue(pv, 0, "sw.pp");
             auto pl = builder->CreateExtractValue(pv, 1, "sw.pl");
-            return builder->CreateCall(startswith_func, {sp, sl, pp, pl}, "startswith");
+            auto r = builder->CreateCall(startswith_func, {sp, sl, pp, pl}, "startswith");
+            return builder->CreateTrunc(r, builder->getInt1Ty(), "startswith.b");
         }
 
-        // endswith(s, suffix) -> int
+        // endswith(s, suffix) -> bool
         if (call->callee == "endswith" && call->args.size() == 2) {
             auto sv = generate_expr(call->args[0]);
             auto pv = generate_expr(call->args[1]);
@@ -1756,7 +1761,8 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto sl = builder->CreateExtractValue(sv, 1, "ew.sl");
             auto pp = builder->CreateExtractValue(pv, 0, "ew.pp");
             auto pl = builder->CreateExtractValue(pv, 1, "ew.pl");
-            return builder->CreateCall(endswith_func, {sp, sl, pp, pl}, "endswith");
+            auto r = builder->CreateCall(endswith_func, {sp, sl, pp, pl}, "endswith");
+            return builder->CreateTrunc(r, builder->getInt1Ty(), "endswith.b");
         }
 
         // char_at(s, index) -> string
@@ -1792,6 +1798,49 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "j.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "j.rl");
             return make_string_slice(rp, rl);
+        }
+
+        // Float math intrinsics - use LLVM intrinsics
+        if ((call->callee == "sqrt" || call->callee == "sin" || call->callee == "cos" ||
+             call->callee == "tan" || call->callee == "log" || call->callee == "exp" ||
+             call->callee == "floor" || call->callee == "ceil") && call->args.size() == 1) {
+            auto av = generate_expr(call->args[0]);
+            if (!av) return nullptr;
+            if (!av->getType()->isDoubleTy() && !av->getType()->isFloatTy()) {
+                error(call->callee + "() requires a float argument");
+            }
+            if (av->getType()->isFloatTy()) {
+                av = builder->CreateFPExt(av, builder->getDoubleTy(), "promote");
+            }
+            llvm::Function* f = nullptr;
+            llvm::Intrinsic::ID iid;
+            if (call->callee == "sqrt") iid = llvm::Intrinsic::sqrt;
+            else if (call->callee == "sin") iid = llvm::Intrinsic::sin;
+            else if (call->callee == "cos") iid = llvm::Intrinsic::cos;
+            else if (call->callee == "tan") iid = llvm::Intrinsic::tan;
+            else if (call->callee == "log") iid = llvm::Intrinsic::log;
+            else if (call->callee == "exp") iid = llvm::Intrinsic::exp;
+            else if (call->callee == "floor") iid = llvm::Intrinsic::floor;
+            else if (call->callee == "ceil") iid = llvm::Intrinsic::ceil;
+            f = llvm::Intrinsic::getOrInsertDeclaration(module.get(), iid, {builder->getDoubleTy()});
+            return builder->CreateCall(f, {av}, call->callee);
+        }
+
+        // pow(base, exp) -> float
+        if (call->callee == "pow" && call->args.size() == 2) {
+            auto bv = generate_expr(call->args[0]);
+            auto ev = generate_expr(call->args[1]);
+            if (!bv || !ev) return nullptr;
+            if (!bv->getType()->isDoubleTy() && !bv->getType()->isFloatTy()) {
+                error("pow() first argument must be a float");
+            }
+            if (!ev->getType()->isDoubleTy() && !ev->getType()->isFloatTy()) {
+                error("pow() second argument must be a float");
+            }
+            if (bv->getType()->isFloatTy()) bv = builder->CreateFPExt(bv, builder->getDoubleTy(), "promote");
+            if (ev->getType()->isFloatTy()) ev = builder->CreateFPExt(ev, builder->getDoubleTy(), "promote");
+            auto f = llvm::Intrinsic::getOrInsertDeclaration(module.get(), llvm::Intrinsic::pow, {builder->getDoubleTy()});
+            return builder->CreateCall(f, {bv, ev}, "pow");
         }
 
         // read(fn) -> string: whole file as an arena-backed string.
@@ -1868,6 +1917,9 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto nv = generate_expr(call->args[0]);
             if (!nv) return nullptr;
             std::string sn = expr_type_name(call->args[0]);
+            // to_str(string) is the identity; f-string interpolation relies on
+            // it to pass string-valued segments through unchanged.
+            if (sn == "string") return nv;
             auto p_out = create_alloca(llvm::PointerType::getUnqual(*context), nullptr, "ts.p");
             auto l_out = create_alloca(builder->getInt32Ty(), nullptr, "ts.l");
             if (sn == "int" || sn == "i32") {
@@ -2096,6 +2148,20 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
         }
         if (type_is_unsigned(dn)) return builder->CreateUDiv(left, right, "divtmp");
         return builder->CreateSDiv(left, right, "divtmp");
+    }
+    if (auto mod = std::dynamic_pointer_cast<Mod>(expr)) {
+        auto left = generate_expr(mod->left);
+        auto right = generate_expr(mod->right);
+        if (!left || !right) return nullptr;
+        require_numeric(left, "%");
+        require_numeric(right, "%");
+        std::string dn = common_numeric_name(expr_type_name(mod->left), expr_type_name(mod->right));
+        promote_binop_operands(left, right, expr_type_name(mod->left), expr_type_name(mod->right));
+        if (left->getType()->isDoubleTy() || left->getType()->isFloatTy()) {
+            return builder->CreateFRem(left, right, "modtmp");
+        }
+        if (type_is_unsigned(dn)) return builder->CreateURem(left, right, "modtmp");
+        return builder->CreateSRem(left, right, "modtmp");
     }
     if (auto neg = std::dynamic_pointer_cast<Neg>(expr)) {
         auto val = generate_expr(neg->value);
@@ -2834,6 +2900,54 @@ void CodeGenerator::generate_block(const std::shared_ptr<Block>& block) {
     pop_scope();
 }
 
+void CodeGenerator::generate_match(const Match& m) {
+    llvm::Value* scr = generate_expr(m.scrutinee);
+    if (!scr) return;
+
+    auto current = builder->GetInsertBlock();
+    if (current->getTerminatorOrNull()) return;
+    llvm::Function* func = current->getParent();
+    auto merge_block = llvm::BasicBlock::Create(*context, "match.merge", func);
+
+    size_t n = m.cases.size();
+    std::vector<llvm::BasicBlock*> then_blocks(n);
+    std::vector<llvm::BasicBlock*> next_blocks(n);
+    for (size_t i = 0; i < n; ++i) {
+        then_blocks[i] = llvm::BasicBlock::Create(*context, "match.case.then", func);
+        next_blocks[i] = llvm::BasicBlock::Create(*context, "match.case.next", func);
+    }
+    llvm::BasicBlock* default_block = llvm::BasicBlock::Create(*context, "match.default", func);
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto& c = m.cases[i];
+        llvm::Value* v = generate_expr(c.value);
+        if (!v) { builder->SetInsertPoint(merge_block); return; }
+        llvm::Value* eq = nullptr;
+        if (scr->getType()->isDoubleTy() || scr->getType()->isFloatTy()) {
+            if (v->getType()->isIntegerTy()) v = builder->CreateSIToFP(v, scr->getType(), "p");
+            eq = builder->CreateFCmpOEQ(scr, v, "eq");
+        } else {
+            if (v->getType()->getIntegerBitWidth() < scr->getType()->getIntegerBitWidth())
+                v = builder->CreateZExt(v, scr->getType(), "z");
+            else if (v->getType()->getIntegerBitWidth() > scr->getType()->getIntegerBitWidth())
+                v = builder->CreateTrunc(v, scr->getType(), "t");
+            eq = builder->CreateICmpEQ(scr, v, "eq");
+        }
+        builder->CreateCondBr(eq, then_blocks[i], next_blocks[i]);
+        builder->SetInsertPoint(then_blocks[i]);
+        if (c.body) for (const auto& st : c.body->body) generate_stmt(st);
+        if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
+        builder->SetInsertPoint(next_blocks[i]);
+    }
+
+    builder->CreateBr(default_block);
+    builder->SetInsertPoint(default_block);
+    if (m.default_body) for (const auto& st : m.default_body->body) generate_stmt(st);
+    if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
+
+    builder->SetInsertPoint(merge_block);
+}
+
 void CodeGenerator::generate_if(const If& if_stmt) {
     auto cond = generate_expr(if_stmt.condition);
     if (!cond) return;
@@ -3189,6 +3303,7 @@ void CodeGenerator::generate_stmt(const std::shared_ptr<Stmt>& stmt) {
         case Stmt::Kind::Epoch:    generate_epoch(stmt->epoch); break;
         case Stmt::Kind::Print:    generate_print(stmt->print); break;
         case Stmt::Kind::If:       if (stmt->if_stmt) generate_if(*stmt->if_stmt); break;
+        case Stmt::Kind::Match:   if (stmt->match_stmt) generate_match(*stmt->match_stmt); break;
         case Stmt::Kind::While:    if (stmt->while_stmt) generate_while(*stmt->while_stmt); break;
         case Stmt::Kind::For:      if (stmt->for_stmt) generate_for(*stmt->for_stmt); break;
         case Stmt::Kind::ForIn:    if (stmt->for_in_stmt) generate_for_in(*stmt->for_in_stmt); break;

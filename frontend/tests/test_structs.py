@@ -365,3 +365,133 @@ def test_for_in_over_plain_variable_parses():
     )
     assert ec == 0, err
     assert out == ["10", "20", "30"]
+
+# --- stdlib imports ---
+
+def test_std_text_import():
+    ec, out, err = run_and_capture(
+        'import "std:text";\n'
+        'func main() {\n'
+        '    print repeat("ab", 2);\n'
+        '    print index_of("hello", "ll");\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["abab", "2"]
+
+
+def test_std_math_import():
+    ec, out, err = run_and_capture(
+        'import "std:math";\n'
+        'func main() {\n'
+        '    print pow_int(2, 8);\n'
+        '    print gcd(20, 12);\n'
+        '    print lcm(6, 8);\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["256", "4", "24"]
+
+
+def test_std_io_import():
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aev", delete=False) as f:
+        f.write(
+            'import "std:io";\n'
+            'func main() {\n'
+            '    print write_file("/tmp/aevtest/io_out.txt", "hello");\n'
+            '}\n'
+            'main();\n'
+        )
+        f.flush()
+        src = f.name
+    try:
+        ec, out, err = run_and_capture(open(src).read())
+        assert ec == 0, err
+        assert out == ["true"]
+        assert os.path.exists("/tmp/aevtest/io_out.txt")
+        with open("/tmp/aevtest/io_out.txt") as r:
+            assert r.read() == "hello"
+    finally:
+        os.unlink(src)
+
+
+def test_std_all_import():
+    ec, out, err = run_and_capture(
+        'import "std:";\n'
+        'func main() {\n'
+        '    print is_empty("");\n'
+        '    print pow_int(3, 3);\n'
+        '    print gcd(15, 5);\n'
+        '}\n'
+        'main();\n'
+    )
+    assert ec == 0, err
+    assert out == ["true", "27", "5"]
+
+
+# --- match statement ---
+
+def test_match_int_cases():
+    ec, out, err = run_and_capture(
+        "func main() {\n"
+        "    let x = 2;\n"
+        "    match (x) {\n"
+        "        case 1: { print \"one\"; }\n"
+        "        case 2: { print \"two\"; }\n"
+        "        default: { print \"other\"; }\n"
+        "    }\n"
+        "}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["two"]
+
+
+def test_match_default():
+    ec, out, err = run_and_capture(
+        "func main() {\n"
+        "    let x = 9;\n"
+        "    match (x) {\n"
+        "        case 1: { print \"one\"; }\n"
+        "        default: { print \"default\"; }\n"
+        "    }\n"
+        "}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["default"]
+
+
+def test_match_multi_stmt():
+    ec, out, err = run_and_capture(
+        "func main() {\n"
+        "    let x = 3;\n"
+        "    match (x) {\n"
+        "        case 3: { print \"three\"; print \"also\"; }\n"
+        "    }\n"
+        "}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["three", "also"]
+
+
+def test_match_enum_cases():
+    ec, out, err = run_and_capture(
+        "enum Color { red, green, blue }\n"
+        "func name(c: Color) : string {\n"
+        "    match (c) {\n"
+        "        case Color.red: { return \"red\"; }\n"
+        "        case Color.green: { return \"green\"; }\n"
+        "        default: { return \"blue\"; }\n"
+        "    }\n"
+        "}\n"
+        "func main() {\n    let c = Color.green;\n    print name(c);\n}\n"
+        "main();\n"
+    )
+    assert ec == 0, err
+    assert out == ["green"]
