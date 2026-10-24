@@ -9,3 +9,4 @@
 import "std:text";
 import "std:io";
 import "std:math";
+import "std:collections";

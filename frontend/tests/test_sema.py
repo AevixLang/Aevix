@@ -672,7 +672,7 @@ def test_sema_rejects_assert_wrong_arg_count():
 
 def test_sema_rejects_assert_non_int_arg():
     err = sema_rejected('func main() { assert("yes"); }')
-    assert "expects an integer argument" in err
+    assert "expects an integer or boolean argument" in err
 
 
 def test_sema_rejects_trim_non_string():

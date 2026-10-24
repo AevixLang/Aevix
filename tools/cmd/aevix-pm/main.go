@@ -294,6 +294,9 @@ func cmdAdd(args []string) error {
 				return fmt.Errorf("--version requires a value")
 			}
 			version = args[i+1]
+			if !validRange(version) {
+				return fmt.Errorf("invalid version range: %s", version)
+			}
 			i++
 		default:
 			return fmt.Errorf("unexpected argument %q", args[i])

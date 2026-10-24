@@ -833,8 +833,10 @@ std::string Checker::check_call(Call* c) {
             error("endswith() expects two arguments", c->line, c->col);
         // Type checks for specific builtins.
         if (c->args.size() >= 1) {
-            if ((name == "rand" || name == "assert" || name == "exit") && !is_int_type(infer(c->args[0].get())))
+            if ((name == "rand" || name == "exit") && !is_int_type(infer(c->args[0].get())))
                 error(name + "() expects an integer argument", c->line, c->col);
+            if (name == "assert" && !(is_int_type(infer(c->args[0].get())) || infer(c->args[0].get()) == "bool"))
+                error("assert() expects an integer or boolean argument", c->line, c->col);
             if ((name == "trim" || name == "upper" || name == "lower" || name == "read") && infer(c->args[0].get()) != "string")
                 error(name + "() expects a string argument", c->line, c->col);
             if (name == "len" && !is_slice(infer(c->args[0].get())) && !is_fixed_array(infer(c->args[0].get())) && infer(c->args[0].get()) != "string")
