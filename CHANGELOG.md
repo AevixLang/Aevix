@@ -25,6 +25,11 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Nested function ban documented** — nested `func` declarations are
   permanently rejected; `Syntax.md` now states the rule explicitly and two
   rejection fixtures pin the diagnostic.
+- **Arena-backed maps and sets** — `std:collections` gains monomorphic
+  `MapIntInt`, `MapStrInt`, `SetInt` and `SetStr` (structs with
+  `new`, `put`/`get`/`has`/`remove`, `add`/`contains`, growth helpers,
+  `keys`/`values`/`items`). Linear search over contiguous arena arrays; both
+  frontends handle the injected structs without changes.
 
 ### Documentation
 - `Syntax.md` documents alias-qualified access; `README.md` no longer lists
