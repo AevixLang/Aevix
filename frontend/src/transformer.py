@@ -262,7 +262,11 @@ class AevixTransformer(Transformer):
         return items[0]
 
     def import_stmt(self, items):
-        return Import(spec=_decode_escapes(str(items[0])[1:-1]))
+        spec = _decode_escapes(str(items[0])[1:-1])
+        alias = ""
+        if len(items) > 1:
+            alias = str(items[1])
+        return Import(spec=spec, alias=alias)
 
     def expr_stmt(self, items):
         return items[0]

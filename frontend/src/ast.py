@@ -279,6 +279,7 @@ class EnumDecl:
 @dataclass
 class Import:
     spec: str
+    alias: str = ""
     type: str = "Import"
 
 @dataclass

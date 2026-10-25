@@ -128,8 +128,13 @@ private:
     StmtPtr parse_import() {
         advance(); // import
         Token spec = expect(TokType::STRING, "expected string after import");
+        std::string alias = "";
+        if (match(TokType::KW_AS)) {
+            Token a = expect(TokType::IDENT, "expected identifier after 'as'");
+            alias = a.value;
+        }
         expect(TokType::SEMI, "expected ';'");
-        return std::make_shared<Stmt>(Import{spec.value});
+        return std::make_shared<Stmt>(Import{spec.value, alias});
     }
 
     StmtPtr parse_let() {

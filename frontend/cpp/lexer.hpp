@@ -19,7 +19,7 @@ enum class TokType {
     // Keywords
     KW_FUNC, KW_LET, KW_HOT, KW_PRINT, KW_IF, KW_ELSE,
     KW_WHILE, KW_FOR, KW_IN, KW_RETURN, KW_BREAK, KW_CONTINUE,
-    KW_STRUCT, KW_ENUM, KW_NEW, KW_IMPORT, KW_EPOCH, KW_REF,
+    KW_STRUCT, KW_ENUM, KW_NEW, KW_IMPORT, KW_AS, KW_EPOCH, KW_REF,
     KW_MATCH, KW_CASE, KW_DEFAULT,
     // Operators
     PLUS, MINUS, STAR, SLASH, MOD,
@@ -212,6 +212,7 @@ private:
         if (s == "enum")     return TokType::KW_ENUM;
         if (s == "new")      return TokType::KW_NEW;
         if (s == "import")   return TokType::KW_IMPORT;
+        if (s == "as")       return TokType::KW_AS;
         if (s == "epoch")    return TokType::KW_EPOCH;
         if (s == "ref")      return TokType::KW_REF;
         if (s == "match")    return TokType::KW_MATCH;

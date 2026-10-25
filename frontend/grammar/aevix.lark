@@ -20,7 +20,7 @@ stmt: import_stmt
     | enum_decl
     | epoch_stmt
 
-import_stmt: "import" STRING ";"
+import_stmt: "import" STRING ("as" CNAME)? ";"
 
 epoch_stmt: "epoch" block
 
