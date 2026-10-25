@@ -386,19 +386,33 @@ func detectVersion(dir string) string {
 // recomputeLock rebuilds aevix.lock from the manifest. Every dependency is
 // resolved to a pinned entry, so the lock is always a pure function of the
 // manifest plus the paths on disk — reproducible and diff-stable.
+func resolveLockVersion(root string, d Dep) string {
+	p := d.Path
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	// "update": pick the newest git tag that satisfies the declared range.
+	if cands := gitTagVersions(p); len(cands) > 0 {
+		rc := parseRange(d.Version)
+		if best, ok := PickNewest(cands, rc); ok {
+			return best.String()
+		}
+	}
+	v := strings.TrimSpace(d.Version)
+	if v == "" || v == "*" || strings.EqualFold(v, "latest") {
+		v = detectVersion(p)
+	}
+	return v
+}
+
 func recomputeLock(root string, m *Manifest) error {
 	l := &Lock{Name: m.Name, Version: m.Version, Dependencies: map[string]LockDep{}}
 	for _, name := range sortedKeys(m.Deps) {
 		d := m.Deps[name]
-		p := d.Path
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(root, p)
+		l.Dependencies[name] = LockDep{
+			Version: resolveLockVersion(root, d),
+			Path:    d.Path,
 		}
-		v := d.Version
-		if v == "" {
-			v = detectVersion(p)
-		}
-		l.Dependencies[name] = LockDep{Version: v, Path: d.Path}
 	}
 	return writeLock(root, l)
 }
@@ -534,13 +548,29 @@ func cmdUpdate(args []string) error {
 		return fmt.Errorf("cannot read %s: %w", manifestName, err)
 	}
 	var only string
-	if len(args) > 0 {
-		only = args[0]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--name" && i+1 < len(args) {
+			only = args[i+1]
+			i++
+		} else if !strings.HasPrefix(args[i], "--") {
+			only = args[i]
+		} else {
+			return fmt.Errorf("unknown option %s", args[i])
+		}
 	}
 	if only != "" {
 		if _, ok := m.Deps[only]; !ok {
 			return fmt.Errorf("dependency %q is not declared in %s", only, manifestName)
 		}
+	}
+	// Resolve each (possibly range-limited) dependency to the newest available
+	// *local* version before re-locking: if the dependency directory carries
+	// git tags that satisfy the declared range, pick the highest one.
+	for name, d := range m.Deps {
+		if only != "" && name != only {
+			continue
+		}
+		m.Deps[name] = d
 	}
 	if err := recomputeLock(root, m); err != nil {
 		return err
@@ -567,15 +597,45 @@ func cmdTree(args []string) error {
 		return nil
 	}
 	fmt.Printf("%s (%s)\n", l.Name, l.Version)
+	visited := map[string]bool{}
 	for _, name := range sortedLockKeys(l.Dependencies) {
-		dep := l.Dependencies[name]
-		if dep.Path != "" {
-			fmt.Printf("└── %s (%s) -> %s\n", name, dep.Version, dep.Path)
-		} else {
-			fmt.Printf("└── %s (%s)\n", name, dep.Version)
-		}
+		printDepTree(root, name, l.Dependencies[name], 0, visited)
 	}
 	return nil
+}
+
+func printDepTree(baseDir, name string, dep LockDep, depth int, visited map[string]bool) {
+	pad := strings.Repeat("    ", depth)
+	if dep.Path != "" {
+		fmt.Printf("%s└── %s (%s) -> %s\n", pad, name, dep.Version, dep.Path)
+	} else {
+		fmt.Printf("%s└── %s (%s)\n", pad, name, dep.Version)
+	}
+	depDir := dep.Path
+	if depDir == "" {
+		return
+	}
+	if !filepath.IsAbs(depDir) {
+		depDir = filepath.Join(baseDir, depDir)
+	}
+	if visited[depDir] {
+		return
+	}
+	visited[depDir] = true
+	m, err := readManifest(depDir)
+	if err != nil {
+		// A dependency without its own manifest is a leaf.
+		return
+	}
+	for _, childName := range sortedKeys(m.Deps) {
+		child := m.Deps[childName]
+		v := child.Version
+		if v == "" {
+			v = detectVersion(childPath(depDir, child.Path))
+		}
+		childDep := LockDep{Path: child.Path, Version: v}
+		printDepTree(depDir, childName, childDep, depth+1, visited)
+	}
 }
 
 func sortedLockKeys(m map[string]LockDep) []string {
@@ -600,15 +660,57 @@ func cmdWhy(args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", manifestName, err)
 	}
-	if d, ok := m.Deps[target]; ok {
-		if d.Path != "" {
-			fmt.Printf("%s is a direct dependency of %s: -> %s\n", target, m.Name, d.Path)
-		} else {
-			fmt.Printf("%s is a direct dependency of %s: version %s\n", target, m.Name, d.Version)
-		}
-		return nil
+	rootDep := map[string]Dep{}
+	for k, v := range m.Deps {
+		rootDep[k] = v
 	}
-	return fmt.Errorf("%s is not a dependency of %s", target, m.Name)
+	path, ok := findDepChain(rootDep, root, target, nil, map[string]bool{})
+	if !ok {
+		return fmt.Errorf("%s is not a dependency of %s", target, m.Name)
+	}
+	fmt.Printf("%s is required by %s: %s\n", target, m.Name, strings.Join(path, " -> "))
+	return nil
+}
+
+// findDepChain returns the chain of package names from the root's direct
+// dependency to target, or ok==false if target is not reachable. It guards
+// against cycles.
+func findDepChain(deps map[string]Dep, baseDir, target string, chain []string, visited map[string]bool) ([]string, bool) {
+	// DFS with root-first chain building.
+	var helper func(deps map[string]Dep, baseDir, target string, chain []string, visited map[string]bool) ([]string, bool)
+	helper = func(deps map[string]Dep, baseDir, target string, chain []string, visited map[string]bool) ([]string, bool) {
+		for _, name := range sortedKeys(deps) {
+			d := deps[name]
+			if name == target {
+				return append([]string{}, append(chain, name)...), true
+			}
+			depDir := d.Path
+			if depDir == "" {
+				continue
+			}
+			if !filepath.IsAbs(depDir) {
+				depDir = filepath.Join(baseDir, depDir)
+			}
+			if visited[depDir] {
+				continue
+			}
+			nextVisited := make(map[string]bool)
+			for k := range visited {
+				nextVisited[k] = true
+			}
+			nextVisited[depDir] = true
+			childManifest, err := readManifest(depDir)
+			if err != nil {
+				continue
+			}
+			childChain := append([]string{}, append(chain, name)...)
+			if found, ok := helper(childManifest.Deps, depDir, target, childChain, nextVisited); ok {
+				return found, ok
+			}
+		}
+		return nil, false
+	}
+	return helper(deps, baseDir, target, chain, visited)
 }
 
 
@@ -667,4 +769,10 @@ func splitTop(s string, sep byte) []string {
 	}
 	parts = append(parts, s[start:])
 	return parts
+}
+
+
+func childPath(base, p string) string {
+	if filepath.IsAbs(p) { return p }
+	return filepath.Join(base, p)
 }

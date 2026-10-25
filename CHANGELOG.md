@@ -30,6 +30,10 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `new`, `put`/`get`/`has`/`remove`, `add`/`contains`, growth helpers,
   `keys`/`values`/`items`). Linear search over contiguous arena arrays; both
   frontends handle the injected structs without changes.
+- **aevix-pm (P1)** — `update [name]` resolves each (path) dependency to
+  the newest git tag satisfying its declared semver range; `tree` and `why`
+  now traverse transitive dependency edges from nested manifests. Semver
+  solver (`PickNewest` and aliases) exposed for callers.
 
 ### Documentation
 - `Syntax.md` documents alias-qualified access; `README.md` no longer lists

@@ -199,3 +199,35 @@ var rangeRe = regexp.MustCompile(`^[0-9A-Za-z,\-+.\^~<>=* ]+$`)
 func validRange(s string) bool {
 	return rangeRe.MatchString(s)
 }
+
+// PickNewest returns the highest version in candidates that satisfies rc.
+// Exported for possible solver callers; it is the canonical selector
+// ("picks newest" in version-plan.md P1).
+func PickNewest(candidates []Version, rc RangeConstraint) (Version, bool) {
+	return pickNewest(candidates, rc)
+}
+
+func pickNewest(candidates []Version, rc RangeConstraint) (Version, bool) {
+	var best Version
+	found := false
+	for _, v := range candidates {
+		if !rc.Satisfies(v) {
+			continue
+		}
+		if !found || best.Less(v) {
+			best = v
+			found = true
+		}
+	}
+	return best, found
+}
+
+// MaxSatisfying is an alias for PickNewest kept for call-site compatibility.
+func MaxSatisfying(candidates []Version, rc RangeConstraint) (Version, bool) {
+	return PickNewest(candidates, rc)
+}
+
+// BestVersion is an alias for PickNewest kept for call-site compatibility.
+func BestVersion(candidates []Version, rc RangeConstraint) (Version, bool) {
+	return PickNewest(candidates, rc)
+}
