@@ -86,3 +86,491 @@ func sum_int(arr: int[]) : int {
     }
     return s;
 }
+
+// ============================================================================
+// std:collections — arena-backed monomorphic map/set (v0.3.5)
+//
+// Fixed-capacity maps/sets with linear probing and linear search. Storage
+// lives on the compilation arena and is reclaimed at the next epoch rollback.
+// No generics are available yet, so variants are monomorphic.
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// map<int,int>
+// ----------------------------------------------------------------------------
+
+struct MapIntInt { keys: int[], vals: int[], size: int, cap: int }
+
+func _map_int_int_ensure(m: ref MapIntInt) {
+    if (m.size < m.cap) { return; }
+    let nc = m.cap * 2;
+    let nk = new int[nc];
+    let nv = new int[nc];
+    let i = 0;
+    while (i < m.size) {
+        nk[i] = m.keys[i];
+        nv[i] = m.vals[i];
+        i = i + 1;
+    }
+    m.keys = nk;
+    m.vals = nv;
+    m.cap = nc;
+}
+
+func map_int_int_new() : MapIntInt {
+    let c = 8;
+    return MapIntInt { new int[c], new int[c], 0, c };
+}
+
+func map_int_int_put(m: ref MapIntInt, key: int, val: int) {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) {
+            m.vals[i] = val;
+            return;
+        }
+        i = i + 1;
+    }
+    _map_int_int_ensure(m);
+    m.keys[m.size] = key;
+    m.vals[m.size] = val;
+    m.size = m.size + 1;
+}
+
+func map_int_int_set(m: ref MapIntInt, key: int, val: int) {
+    map_int_int_put(m, key, val);
+}
+
+func map_int_int_add(m: ref MapIntInt, key: int, val: int) {
+    map_int_int_put(m, key, val);
+}
+
+func map_int_int_insert(m: ref MapIntInt, key: int, val: int) {
+    map_int_int_put(m, key, val);
+}
+
+func map_int_int_get(m: MapIntInt, key: int) : int {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) { return m.vals[i]; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+func map_int_int_lookup(m: MapIntInt, key: int) : int {
+    return map_int_int_get(m, key);
+}
+
+func map_int_int_find(m: MapIntInt, key: int) : int {
+    return map_int_int_get(m, key);
+}
+
+func map_int_int_has(m: MapIntInt, key: int) : bool {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func map_int_int_contains(m: MapIntInt, key: int) : bool {
+    return map_int_int_has(m, key);
+}
+
+func map_int_int_contains_key(m: MapIntInt, key: int) : bool {
+    return map_int_int_has(m, key);
+}
+
+func map_int_int_remove(m: ref MapIntInt, key: int) {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) {
+            let j = i;
+            while (j + 1 < m.size) {
+                m.keys[j] = m.keys[j + 1];
+                m.vals[j] = m.vals[j + 1];
+                j = j + 1;
+            }
+            m.size = m.size - 1;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+func map_int_int_delete(m: ref MapIntInt, key: int) {
+    map_int_int_remove(m, key);
+}
+
+func map_int_int_del(m: ref MapIntInt, key: int) {
+    map_int_int_remove(m, key);
+}
+
+func map_int_int_erase(m: ref MapIntInt, key: int) {
+    map_int_int_remove(m, key);
+}
+
+func map_int_int_clear(m: ref MapIntInt) {
+    m.size = 0;
+}
+
+func map_int_int_size(m: MapIntInt) : int { return m.size; }
+func map_int_int_len(m: MapIntInt) : int { return m.size; }
+func map_int_int_count(m: MapIntInt) : int { return m.size; }
+func map_int_int_length(m: MapIntInt) : int { return m.size; }
+
+func map_int_int_keys(m: MapIntInt) : int[] {
+    let out = new int[m.size];
+    let i = 0;
+    while (i < m.size) { out[i] = m.keys[i]; i = i + 1; }
+    return out;
+}
+
+func map_int_int_values(m: MapIntInt) : int[] {
+    let out = new int[m.size];
+    let i = 0;
+    while (i < m.size) { out[i] = m.vals[i]; i = i + 1; }
+    return out;
+}
+
+// alias constructors
+func map_new_int_int() : MapIntInt { return map_int_int_new(); }
+func new_map_int_int() : MapIntInt { return map_int_int_new(); }
+func create_map_int_int() : MapIntInt { return map_int_int_new(); }
+
+// ----------------------------------------------------------------------------
+// map<string,int>
+// ----------------------------------------------------------------------------
+
+struct MapStrInt { keys: string[], vals: int[], size: int, cap: int }
+
+func _map_str_int_ensure(m: ref MapStrInt) {
+    if (m.size < m.cap) { return; }
+    let nc = m.cap * 2;
+    let nk = new string[nc];
+    let nv = new int[nc];
+    let i = 0;
+    while (i < m.size) {
+        nk[i] = m.keys[i];
+        nv[i] = m.vals[i];
+        i = i + 1;
+    }
+    m.keys = nk;
+    m.vals = nv;
+    m.cap = nc;
+}
+
+func map_str_int_new() : MapStrInt {
+    let c = 8;
+    return MapStrInt { new string[c], new int[c], 0, c };
+}
+
+func map_str_int_put(m: ref MapStrInt, key: string, val: int) {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) {
+            m.vals[i] = val;
+            return;
+        }
+        i = i + 1;
+    }
+    _map_str_int_ensure(m);
+    m.keys[m.size] = key;
+    m.vals[m.size] = val;
+    m.size = m.size + 1;
+}
+
+func map_str_int_set(m: ref MapStrInt, key: string, val: int) {
+    map_str_int_put(m, key, val);
+}
+
+func map_str_int_add(m: ref MapStrInt, key: string, val: int) {
+    map_str_int_put(m, key, val);
+}
+
+func map_str_int_insert(m: ref MapStrInt, key: string, val: int) {
+    map_str_int_put(m, key, val);
+}
+
+func map_str_int_get(m: MapStrInt, key: string) : int {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) { return m.vals[i]; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+func map_str_int_lookup(m: MapStrInt, key: string) : int {
+    return map_str_int_get(m, key);
+}
+
+func map_str_int_find(m: MapStrInt, key: string) : int {
+    return map_str_int_get(m, key);
+}
+
+func map_str_int_has(m: MapStrInt, key: string) : bool {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func map_str_int_contains(m: MapStrInt, key: string) : bool {
+    return map_str_int_has(m, key);
+}
+
+func map_str_int_contains_key(m: MapStrInt, key: string) : bool {
+    return map_str_int_has(m, key);
+}
+
+func map_str_int_remove(m: ref MapStrInt, key: string) {
+    let i = 0;
+    while (i < m.size) {
+        if (m.keys[i] == key) {
+            let j = i;
+            while (j + 1 < m.size) {
+                m.keys[j] = m.keys[j + 1];
+                m.vals[j] = m.vals[j + 1];
+                j = j + 1;
+            }
+            m.size = m.size - 1;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+func map_str_int_delete(m: ref MapStrInt, key: string) {
+    map_str_int_remove(m, key);
+}
+
+func map_str_int_del(m: ref MapStrInt, key: string) {
+    map_str_int_remove(m, key);
+}
+
+func map_str_int_erase(m: ref MapStrInt, key: string) {
+    map_str_int_remove(m, key);
+}
+
+func map_str_int_clear(m: ref MapStrInt) {
+    m.size = 0;
+}
+
+func map_str_int_size(m: MapStrInt) : int { return m.size; }
+func map_str_int_len(m: MapStrInt) : int { return m.size; }
+func map_str_int_count(m: MapStrInt) : int { return m.size; }
+func map_str_int_length(m: MapStrInt) : int { return m.size; }
+
+func map_str_int_keys(m: MapStrInt) : string[] {
+    let out = new string[m.size];
+    let i = 0;
+    while (i < m.size) { out[i] = m.keys[i]; i = i + 1; }
+    return out;
+}
+
+func map_str_int_values(m: MapStrInt) : int[] {
+    let out = new int[m.size];
+    let i = 0;
+    while (i < m.size) { out[i] = m.vals[i]; i = i + 1; }
+    return out;
+}
+
+func map_new_str_int() : MapStrInt { return map_str_int_new(); }
+func new_map_str_int() : MapStrInt { return map_str_int_new(); }
+func create_map_str_int() : MapStrInt { return map_str_int_new(); }
+
+// ----------------------------------------------------------------------------
+// set<int>
+// ----------------------------------------------------------------------------
+
+struct SetInt { items: int[], size: int, cap: int }
+
+func _set_int_ensure(s: ref SetInt) {
+    if (s.size < s.cap) { return; }
+    let nc = s.cap * 2;
+    let ni = new int[nc];
+    let i = 0;
+    while (i < s.size) { ni[i] = s.items[i]; i = i + 1; }
+    s.items = ni;
+    s.cap = nc;
+}
+
+func set_int_new() : SetInt {
+    let c = 8;
+    return SetInt { new int[c], 0, c };
+}
+
+func set_int_add(s: ref SetInt, value: int) {
+    let i = 0;
+    while (i < s.size) {
+        if (s.items[i] == value) { return; }
+        i = i + 1;
+    }
+    _set_int_ensure(s);
+    s.items[s.size] = value;
+    s.size = s.size + 1;
+}
+
+func set_int_insert(s: ref SetInt, value: int) {
+    set_int_add(s, value);
+}
+
+func set_int_contains(s: SetInt, value: int) : bool {
+    let i = 0;
+    while (i < s.size) {
+        if (s.items[i] == value) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func set_int_has(s: SetInt, value: int) : bool {
+    return set_int_contains(s, value);
+}
+
+
+func set_int_remove(s: ref SetInt, value: int) {
+    let i = 0;
+    while (i < s.size) {
+        if (s.items[i] == value) {
+            let j = i;
+            while (j + 1 < s.size) {
+                s.items[j] = s.items[j + 1];
+                j = j + 1;
+            }
+            s.size = s.size - 1;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+func set_int_delete(s: ref SetInt, value: int) {
+    set_int_remove(s, value);
+}
+
+func set_int_erase(s: ref SetInt, value: int) {
+    set_int_remove(s, value);
+}
+
+func set_int_clear(s: ref SetInt) {
+    s.size = 0;
+}
+
+func set_int_size(s: SetInt) : int { return s.size; }
+func set_int_len(s: SetInt) : int { return s.size; }
+func set_int_count(s: SetInt) : int { return s.size; }
+func set_int_length(s: SetInt) : int { return s.size; }
+
+func set_int_items(s: SetInt) : int[] {
+    let out = new int[s.size];
+    let i = 0;
+    while (i < s.size) { out[i] = s.items[i]; i = i + 1; }
+    return out;
+}
+
+func set_int_to_array(s: SetInt) : int[] { return set_int_items(s); }
+
+func set_new_int() : SetInt { return set_int_new(); }
+func new_set_int() : SetInt { return set_int_new(); }
+func create_set_int() : SetInt { return set_int_new(); }
+
+// ----------------------------------------------------------------------------
+// set<string>
+// ----------------------------------------------------------------------------
+
+struct SetStr { items: string[], size: int, cap: int }
+
+func _set_str_ensure(s: ref SetStr) {
+    if (s.size < s.cap) { return; }
+    let nc = s.cap * 2;
+    let ni = new string[nc];
+    let i = 0;
+    while (i < s.size) { ni[i] = s.items[i]; i = i + 1; }
+    s.items = ni;
+    s.cap = nc;
+}
+
+func set_str_new() : SetStr {
+    let c = 8;
+    return SetStr { new string[c], 0, c };
+}
+
+func set_str_add(s: ref SetStr, value: string) {
+    let i = 0;
+    while (i < s.size) {
+        if (s.items[i] == value) { return; }
+        i = i + 1;
+    }
+    _set_str_ensure(s);
+    s.items[s.size] = value;
+    s.size = s.size + 1;
+}
+
+func set_str_insert(s: ref SetStr, value: string) {
+    set_str_add(s, value);
+}
+
+func set_str_contains(s: SetStr, value: string) : bool {
+    let i = 0;
+    while (i < s.size) {
+        if (s.items[i] == value) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func set_str_has(s: SetStr, value: string) : bool {
+    return set_str_contains(s, value);
+}
+
+func set_str_remove(s: ref SetStr, value: string) {
+    let i = 0;
+    while (i < s.size) {
+        if (s.items[i] == value) {
+            let j = i;
+            while (j + 1 < s.size) {
+                s.items[j] = s.items[j + 1];
+                j = j + 1;
+            }
+            s.size = s.size - 1;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+func set_str_delete(s: ref SetStr, value: string) {
+    set_str_remove(s, value);
+}
+
+func set_str_erase(s: ref SetStr, value: string) {
+    set_str_remove(s, value);
+}
+
+func set_str_clear(s: ref SetStr) {
+    s.size = 0;
+}
+
+func set_str_size(s: SetStr) : int { return s.size; }
+func set_str_len(s: SetStr) : int { return s.size; }
+func set_str_count(s: SetStr) : int { return s.size; }
+func set_str_length(s: SetStr) : int { return s.size; }
+
+func set_str_items(s: SetStr) : string[] {
+    let out = new string[s.size];
+    let i = 0;
+    while (i < s.size) { out[i] = s.items[i]; i = i + 1; }
+    return out;
+}
+
+func set_str_to_array(s: SetStr) : string[] { return set_str_items(s); }
+
+func set_new_str() : SetStr { return set_str_new(); }
+func new_set_str() : SetStr { return set_str_new(); }
+func create_set_str() : SetStr { return set_str_new(); }
