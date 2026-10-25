@@ -12,7 +12,7 @@ from typing import List, Union, Optional
 # exported JSON shape changes; the backend refuses files with a different
 # version, so a mismatch is caught at load time instead of crashing deep
 # inside the parser.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 def to_dict(obj):
     """
@@ -223,6 +223,21 @@ class Match:
     cases: list
     default_body: list | None = None
     type: str = "Match"
+
+@dataclass
+class MatchExprCase:
+    value: object
+    body: object
+    type: str = "MatchExprCase"
+
+
+@dataclass
+class MatchExpr:
+    scrutinee: object
+    cases: list
+    default_body: object | None = None
+    type: str = "MatchExpr"
+
 
 @dataclass
 class ForIn:

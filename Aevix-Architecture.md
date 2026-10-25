@@ -22,7 +22,7 @@ The frontend transforms human-readable source into a typed JSON AST.
 - **Lexer**: Hand-written tokenizer (`frontend/cpp/src/lexer.hpp`) supporting all keywords, operators, and literals.
 - **Parser**: Recursive descent parser (`frontend/cpp/src/parser.hpp`) producing a variant-based AST (`ast.hpp`).
 - **Import resolver**: Recursive module loading with cycle detection, `AEVIX_PATH` support, and `aevix.lock` package resolution (`importer.hpp`).
-- **JSON serializer**: Outputs `ast.json` with `SCHEMA_VERSION = 5` (`json_out.hpp`).
+- **JSON serializer**: Outputs `ast.json` with `SCHEMA_VERSION = 6` (`json_out.hpp`).
 
 **Rationale for C++:**
 20x faster than the Python frontend. Eliminates the Python dependency for the common build path.

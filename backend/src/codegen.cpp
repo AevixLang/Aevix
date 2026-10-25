@@ -967,6 +967,10 @@ std::string CodeGenerator::expr_type_name(const std::shared_ptr<Expr>& e) {
     if (std::dynamic_pointer_cast<And>(e)) return "bool";
     if (std::dynamic_pointer_cast<Or>(e)) return "bool";
     if (std::dynamic_pointer_cast<Not>(e)) return "bool";
+    if (auto mx = std::dynamic_pointer_cast<MatchExpr>(e)) {
+        if (!mx->cases.empty()) return expr_type_name(mx->cases[0].body);
+        if (mx->default_body) return expr_type_name(mx->default_body);
+    }
     return "";
 }
 
@@ -2207,6 +2211,7 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
     }
     if (auto and_ = std::dynamic_pointer_cast<And>(expr)) return generate_logical_and(*and_);
     if (auto or_ = std::dynamic_pointer_cast<Or>(expr)) return generate_logical_or(*or_);
+    if (auto mx = std::dynamic_pointer_cast<MatchExpr>(expr)) return generate_match_expr(*mx);
 
     return nullptr;
 }
@@ -2925,7 +2930,15 @@ void CodeGenerator::generate_match(const Match& m) {
         llvm::Value* v = generate_expr(c.value);
         if (!v) { builder->SetInsertPoint(merge_block); return; }
         llvm::Value* eq = nullptr;
-        if (scr->getType()->isDoubleTy() || scr->getType()->isFloatTy()) {
+        if (is_string_slice(scr->getType()) || is_string_slice(v->getType())) {
+            if (!is_string_slice(scr->getType()) || !is_string_slice(v->getType()))
+                error("match operands must have the same type");
+            auto sp = builder->CreateExtractValue(scr, 0, "scr.ptr");
+            auto sl = builder->CreateExtractValue(scr, 1, "scr.len");
+            auto vp = builder->CreateExtractValue(v, 0, "v.ptr");
+            auto vl = builder->CreateExtractValue(v, 1, "v.len");
+            eq = builder->CreateCall(str_eq_func, {sp, sl, vp, vl}, "streq");
+        } else if (scr->getType()->isDoubleTy() || scr->getType()->isFloatTy()) {
             if (v->getType()->isIntegerTy()) v = builder->CreateSIToFP(v, scr->getType(), "p");
             eq = builder->CreateFCmpOEQ(scr, v, "eq");
         } else {
@@ -2948,6 +2961,109 @@ void CodeGenerator::generate_match(const Match& m) {
     if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
 
     builder->SetInsertPoint(merge_block);
+}
+
+llvm::Value* CodeGenerator::generate_match_expr(const MatchExpr& m) {
+    llvm::Value* scr = generate_expr(m.scrutinee);
+    if (!scr) return nullptr;
+
+    auto current = builder->GetInsertBlock();
+    if (current->getTerminatorOrNull()) return nullptr;
+    llvm::Function* func = current->getParent();
+    auto merge_block = llvm::BasicBlock::Create(*context, "matchexpr.merge", func);
+
+    size_t n = m.cases.size();
+    std::vector<llvm::BasicBlock*> then_blocks(n);
+    std::vector<llvm::BasicBlock*> next_blocks(n);
+    for (size_t i = 0; i < n; ++i) {
+        then_blocks[i] = llvm::BasicBlock::Create(*context, "matchexpr.then", func);
+        next_blocks[i] = llvm::BasicBlock::Create(*context, "matchexpr.next", func);
+    }
+    llvm::BasicBlock* default_block = llvm::BasicBlock::Create(*context, "matchexpr.default", func);
+
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+    llvm::Type* result_ty = nullptr;
+
+    auto collect = [&](llvm::Value* v) -> bool {
+        if (!v) return false;
+        if (!result_ty) result_ty = v->getType();
+        incoming.push_back({v, builder->GetInsertBlock()});
+        return true;
+    };
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto& c = m.cases[i];
+        llvm::Value* v = generate_expr(c.value);
+        if (!v) { builder->SetInsertPoint(merge_block); return nullptr; }
+        llvm::Value* eq = nullptr;
+        if (is_string_slice(scr->getType()) || is_string_slice(v->getType())) {
+            if (!is_string_slice(scr->getType()) || !is_string_slice(v->getType()))
+                error("match operands must have the same type");
+            auto sp = builder->CreateExtractValue(scr, 0, "scr.ptr");
+            auto sl = builder->CreateExtractValue(scr, 1, "scr.len");
+            auto vp = builder->CreateExtractValue(v, 0, "v.ptr");
+            auto vl = builder->CreateExtractValue(v, 1, "v.len");
+            eq = builder->CreateCall(str_eq_func, {sp, sl, vp, vl}, "streq");
+        } else if (scr->getType()->isDoubleTy() || scr->getType()->isFloatTy()) {
+            if (v->getType()->isIntegerTy()) v = builder->CreateSIToFP(v, scr->getType(), "p");
+            eq = builder->CreateFCmpOEQ(scr, v, "eq");
+        } else {
+            if (v->getType()->getIntegerBitWidth() < scr->getType()->getIntegerBitWidth())
+                v = builder->CreateZExt(v, scr->getType(), "z");
+            else if (v->getType()->getIntegerBitWidth() > scr->getType()->getIntegerBitWidth())
+                v = builder->CreateTrunc(v, scr->getType(), "t");
+            eq = builder->CreateICmpEQ(scr, v, "eq");
+        }
+        builder->CreateCondBr(eq, then_blocks[i], next_blocks[i]);
+        builder->SetInsertPoint(then_blocks[i]);
+        llvm::Value* bv = generate_expr(c.body);
+        if (!collect(bv)) { builder->SetInsertPoint(merge_block); return nullptr; }
+        if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
+        builder->SetInsertPoint(next_blocks[i]);
+    }
+
+    builder->CreateBr(default_block);
+    builder->SetInsertPoint(default_block);
+    if (m.default_body) {
+        llvm::Value* bv = generate_expr(m.default_body);
+        if (!collect(bv)) { builder->SetInsertPoint(merge_block); return nullptr; }
+    }
+    if (!block_has_terminator(builder->GetInsertBlock())) builder->CreateBr(merge_block);
+
+    // Sema guarantees identical arm types. Coerce here only to keep the IR
+    // valid if a literal reached us with a narrower integer type.
+    bool has_default_value = m.default_body != nullptr;
+    builder->SetInsertPoint(merge_block);
+    if (!result_ty || incoming.empty()) return nullptr;
+    unsigned preds = (unsigned)incoming.size() + (has_default_value ? 0u : 1u);
+    auto* phi = builder->CreatePHI(result_ty, preds, "matchexpr.phi");
+    for (auto& in : incoming) {
+        llvm::Value* v = in.first;
+        if (v->getType() != result_ty) {
+            builder->SetInsertPoint(in.second->getTerminator());
+            if (v->getType()->isIntegerTy() && result_ty->isIntegerTy()) {
+                unsigned vw = v->getType()->getIntegerBitWidth();
+                unsigned rw = result_ty->getIntegerBitWidth();
+                v = vw < rw ? builder->CreateSExt(v, result_ty, "sx")
+                            : builder->CreateTrunc(v, result_ty, "tr");
+            } else if (v->getType()->isIntegerTy() && result_ty->isFloatingPointTy()) {
+                v = builder->CreateSIToFP(v, result_ty, "itof");
+            } else if (v->getType()->isFloatingPointTy() && result_ty->isIntegerTy()) {
+                v = builder->CreateFPToSI(v, result_ty, "ftoi");
+            } else if (v->getType()->isFloatTy() && result_ty->isDoubleTy()) {
+                v = builder->CreateFPExt(v, result_ty, "fpext");
+            } else {
+                v = nullptr;
+            }
+        }
+        if (!v) { error("match expression branches have incompatible runtime types"); return nullptr; }
+        phi->addIncoming(v, in.second);
+    }
+    // Without a default body the runtime fallthrough is unreachable: sema only
+    // accepts an exhaustive enum match. The edge still exists in the CFG.
+    if (!has_default_value) phi->addIncoming(llvm::UndefValue::get(result_ty), default_block);
+    builder->SetInsertPoint(merge_block);
+    return phi;
 }
 
 void CodeGenerator::generate_if(const If& if_stmt) {

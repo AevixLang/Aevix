@@ -230,6 +230,32 @@ private:
         return std::make_shared<Stmt>(Match{scrutinee, cases, default_body});
     }
 
+    ExprPtr parse_match_expr(int sl, int sc) {
+        advance(); // match
+        expect(TokType::LPAREN, "expected '(' after match");
+        ExprPtr scrutinee = parse_expr();
+        expect(TokType::RPAREN, "expected ')'");
+        expect(TokType::LBRACE, "expected '{'");
+        std::vector<MatchExprCase> cases;
+        std::optional<ExprPtr> default_body;
+        while (!check(TokType::RBRACE)) {
+            if (match(TokType::KW_CASE)) {
+                ExprPtr val = parse_expr();
+                expect(TokType::ARROW, "expected '=>' after case value");
+                ExprPtr body = parse_expr();
+                cases.push_back(MatchExprCase{val, body});
+            } else if (match(TokType::KW_DEFAULT)) {
+                expect(TokType::ARROW, "expected '=>' after default");
+                default_body = parse_expr();
+            } else {
+                throw std::runtime_error("expected 'case' or 'default' in match expression");
+            }
+            match(TokType::COMMA);
+        }
+        expect(TokType::RBRACE, "expected '}' after match expression");
+        return std::make_shared<Expr>(Expr{MatchExpr{scrutinee, cases, default_body}, sl, sc});
+    }
+
     StmtPtr parse_while() {
         advance(); // while
         expect(TokType::LPAREN, "expected '('");
@@ -561,6 +587,11 @@ private:
     ExprPtr parse_atom(bool stop_before_brace) {
         int sl = peek().line, sc = peek().col;
 
+        // match expression: match (x) { case 1 => 10, default => 0 }
+        if (check(TokType::KW_MATCH)) {
+            return parse_match_expr(sl, sc);
+        }
+
         // Parenthesized expression
         if (match(TokType::LPAREN)) {
             ExprPtr e = parse_expr();
@@ -576,6 +607,9 @@ private:
                 base = advance().value;
             } else {
                 base = expect(TokType::IDENT, "expected type name").value;
+                while (match(TokType::DOT)) {
+                    base += "." + expect(TokType::IDENT, "expected type name after '.'").value;
+                }
             }
             expect(TokType::LBRACKET, "expected '['");
             ExprPtr size = parse_expr();

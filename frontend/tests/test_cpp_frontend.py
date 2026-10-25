@@ -236,3 +236,17 @@ def test_cpp_import_alias_qualified_struct_literal():
         assert let["var_type"] == "s__Point"
         assert let["value"]["type"] == "StructLiteral"
         assert let["value"]["name"] == "s__Point"
+
+
+def test_cpp_match_expr_emitted():
+    ast = parse_with_cpp(
+        "func main() {\n"
+        "    let x = 1;\n"
+        "    let y = match (x) { case 1 => 10, default => 20 };\n"
+        "    print(y);\n"
+        "}\nmain();\n"
+    )
+    main_decl = [s for s in ast["body"] if s.get("name") == "main"][0]
+    lets = [s for s in main_decl["body"] if s["type"] == "Let"]
+    assert lets[1]["value"]["type"] == "MatchExpr"
+    assert lets[1]["value"]["cases"][0]["value"]["value"] == 1
