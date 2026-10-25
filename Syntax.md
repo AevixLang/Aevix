@@ -186,6 +186,7 @@ A source file can pull declarations (`func` / `struct`) from other files:
 import "utils.aev";            // path relative to the importing file
 import "geometry/circle";      // ".aev" is appended when missing
 import "submit:io";            // package "submit", module "io" (via aevix.lock)
+import "utils.aev" as u;       // namespace the module behind an alias
 ```
 
 Rules:
@@ -195,13 +196,19 @@ Rules:
 - A spec with `:` is a package import (`package:module`); the compiler finds
   the package through the project's `aevix.lock` (written by the package
   manager). `std:` is reserved for the future standard library.
-- Imported **declarations** are merged into one flat program. Top-level
-  statements of a module (its side effects) are dropped.
+- Without `as`, imported **declarations** are merged into one flat program.
+  Top-level statements of a module (its side effects) are dropped.
+- With `as alias`, every exported declaration is scoped behind that alias:
+  call it as `alias.fn(...)`, name its types as `alias.Point`, construct them
+  as `alias.Point { ... }`, and reach enum variants as `alias.Color.red`.
+  Two modules may therefore export the same name under different aliases.
+  A module may be imported under more than one alias, and a module imported
+  without `as` still merges flat.
 - A file imported more than once is included only once (dedup by real path).
 - Circular imports are an error.
-- A name defined in two different files is a conflict — an error. There are no
-  namespaces yet; everything merges globally.
-- `import` is a reserved word (it cannot be used as an identifier).
+- A name defined in two different files is a conflict — an error — unless both
+  modules are imported under aliases, which keeps them separate.
+- `as` and `import` are reserved words (they cannot be used as identifiers).
 
 ### Package manager (`aevix-pm`)
 

@@ -15,7 +15,12 @@ import sys
 import json
 
 from .parser import parse, format_parse_error
-from .ast import Program, Import, FuncDecl, StructDecl
+from .ast import (
+    Program, Import, FuncDecl, StructDecl, EnumDecl, Param, StructField,
+    Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, Match,
+    Call, Variable, MemberAccess, StructLiteral, New, Index, ArrayLit,
+    Neg, Not, Add, Sub, Mul, Div, Mod, CmpOp, And, Or,
+)
 
 PACKAGE_ROOT_ENV = "AEVIX_PATH"
 GLOBAL_ROOT = os.path.expanduser(os.path.join("~", ".aevix"))
@@ -225,18 +230,169 @@ def _parse_file(path):
         raise SourceParseError(path, code, e)
 
 
-def _visit(path, stack, loaded, out, origins):
-    """Loads `path` and appends its declarations (and those of its imports,
-    depth-first, deduplicated) to `out`. `origins` maps name -> (kind, file)
-    for cross-file conflict detection."""
+def _rename_type(fn, name):
+    """Applies `fn` to a type name's base, keeping any array suffix."""
+    if not name:
+        return name
+    bracket = name.find("[")
+    base = name if bracket < 0 else name[:bracket]
+    rest = "" if bracket < 0 else name[bracket:]
+    mapped = fn(base)
+    return mapped + rest if mapped else name
+
+
+def _rename_expr(e, fn):
+    """Rewrites declaration references inside an expression in place.
+    Returns the (possibly replaced) node."""
+    if isinstance(e, MemberAccess):
+        if isinstance(e.object, Variable):
+            qualified = e.object.value + "." + e.member
+            mapped = fn(qualified)
+            if mapped:
+                return Variable(value=mapped)
+            base = fn(e.object.value)
+            if base:
+                e.object.value = base
+            return e
+        e.object = _rename_expr(e.object, fn)
+    elif isinstance(e, Call):
+        mapped = fn(e.callee)
+        if mapped:
+            e.callee = mapped
+        e.args = [_rename_expr(a, fn) for a in e.args]
+    elif isinstance(e, ArrayLit):
+        e.elements = [_rename_expr(x, fn) for x in e.elements]
+    elif isinstance(e, New):
+        e.base = _rename_type(fn, e.base)
+        e.size = _rename_expr(e.size, fn)
+    elif isinstance(e, Index):
+        e.object = _rename_expr(e.object, fn)
+        e.index = _rename_expr(e.index, fn)
+    elif isinstance(e, StructLiteral):
+        mapped = fn(e.name)
+        if mapped:
+            e.name = mapped
+        e.args = [_rename_expr(a, fn) for a in e.args]
+    elif isinstance(e, (Neg, Not)):
+        e.value = _rename_expr(e.value, fn)
+    elif isinstance(e, (Add, Sub, Mul, Div, Mod, CmpOp, And, Or)):
+        e.left = _rename_expr(e.left, fn)
+        e.right = _rename_expr(e.right, fn)
+    return e
+
+
+def _rename_stmt(s, fn):
+    """Rewrites declaration references inside a statement in place.
+    Returns the (possibly replaced) node."""
+    if isinstance(s, Let):
+        s.value = _rename_expr(s.value, fn)
+        s.var_type = _rename_type(fn, s.var_type)
+    elif isinstance(s, (Hot, Epoch)):
+        s.body = [_rename_stmt(x, fn) for x in s.body]
+    elif isinstance(s, Print):
+        s.args = [_rename_expr(a, fn) for a in s.args]
+    elif isinstance(s, If):
+        s.condition = _rename_expr(s.condition, fn)
+        s.then_body = [_rename_stmt(x, fn) for x in s.then_body]
+        if s.else_body is not None:
+            s.else_body = [_rename_stmt(x, fn) for x in s.else_body]
+    elif isinstance(s, While):
+        s.condition = _rename_expr(s.condition, fn)
+        s.body = [_rename_stmt(x, fn) for x in s.body]
+    elif isinstance(s, For):
+        if s.init is not None:
+            s.init = _rename_stmt(s.init, fn)
+        if s.condition is not None:
+            s.condition = _rename_expr(s.condition, fn)
+        if s.step is not None:
+            s.step = _rename_stmt(s.step, fn)
+        s.body = [_rename_stmt(x, fn) for x in s.body]
+    elif isinstance(s, ForIn):
+        s.iterable = _rename_expr(s.iterable, fn)
+        s.body = [_rename_stmt(x, fn) for x in s.body]
+    elif isinstance(s, Return):
+        if s.value is not None:
+            s.value = _rename_expr(s.value, fn)
+    elif isinstance(s, Assign):
+        s.name = _rename_expr(s.name, fn)
+        s.value = _rename_expr(s.value, fn)
+    elif isinstance(s, Match):
+        s.scrutinee = _rename_expr(s.scrutinee, fn)
+        for c in s.cases:
+            c.value = _rename_expr(c.value, fn)
+            c.body = [_rename_stmt(x, fn) for x in c.body]
+        if s.default_body is not None:
+            s.default_body = [_rename_stmt(x, fn) for x in s.default_body]
+    elif isinstance(s, FuncDecl):
+        mapped = fn(s.name)
+        if mapped:
+            s.name = mapped
+        for p in s.params:
+            p.var_type = _rename_type(fn, p.var_type)
+        s.return_type = _rename_type(fn, s.return_type)
+        s.body = [_rename_stmt(x, fn) for x in s.body]
+    elif isinstance(s, StructDecl):
+        mapped = fn(s.name)
+        if mapped:
+            s.name = mapped
+        for fld in s.fields:
+            fld.var_type = _rename_type(fn, fld.var_type)
+    elif isinstance(s, EnumDecl):
+        mapped = fn(s.name)
+        if mapped:
+            s.name = mapped
+    else:
+        return _rename_expr(s, fn)
+    return s
+
+
+def _prefix_module(decls, alias):
+    """Renames a module's exported declarations to `<alias>__<name>` and rewrites
+    the module's internal references. Returns original -> prefixed."""
+    exported = {}
+    for s in decls:
+        if isinstance(s, (FuncDecl, StructDecl, EnumDecl)):
+            exported[s.name] = alias + "__" + s.name
+    fn = lambda n: exported.get(n, "")
+    decls[:] = [_rename_stmt(s, fn) for s in decls]
+    return exported
+
+
+def _rewrite_qualified(stmts, nsmap):
+    """Resolves `alias.name` references in the importing module."""
+    if not nsmap:
+        return
+    def fn(name):
+        if "." not in name:
+            return ""
+        alias, rest = name.split(".", 1)
+        return nsmap.get(alias, {}).get(rest, "")
+    stmts[:] = [_rename_stmt(s, fn) for s in stmts]
+
+
+def _check_conflict(s, file, origins, checked):
+    # Nested levels hand the same node to every caller; validate it once.
+    if id(s) in checked:
+        return
+    checked.add(id(s))
+    prev = origins.get(s.name)
+    if prev is not None and prev[1] != file:
+        raise ImportResolveError(
+            f"name conflict: '{s.name}' is defined in both "
+            f"'{_display(prev[1])}' and '{_display(file)}'"
+        )
+    origins[s.name] = (s.type, file)
+
+
+def _visit(path, stack, loaded, origins, checked, is_main=False):
+    """Returns the flattened, internally consistent statement list of `path`.
+    `is_main` keeps top-level code; imported modules contribute declarations."""
     key = os.path.realpath(os.path.abspath(path))
     if key in stack:
         chain = stack[stack.index(key):] + [key]
         raise ImportResolveError(
             "circular import detected: " + " -> ".join(_display(p) for p in chain)
         )
-    if key in loaded:
-        return
     program = _parse_file(key)
     nested = _find_nested_import(program)
     if nested is not None:
@@ -244,56 +400,44 @@ def _visit(path, stack, loaded, out, origins):
             f"import is only allowed at the top level of a file: '{_display(key)}'"
         )
     stack.append(key)
+    own, nsmap = [], {}
     for s in program.body:
         if isinstance(s, Import):
             sub = _resolve_import(s.spec, os.path.dirname(key), key)
-            _visit(sub, stack, loaded, out, origins)
-        elif isinstance(s, (FuncDecl, StructDecl)):
-            prev = origins.get(s.name)
-            if prev is not None and prev[1] != key:
-                raise ImportResolveError(
-                    f"name conflict: '{s.name}' is defined in both "
-                    f"'{_display(prev[1])}' and '{_display(key)}'"
-                )
-            origins[s.name] = (s.type, key)
-            out.append(s)
-        # top-level statements of an imported module are dropped: modules
-        # must not execute side effects just by being imported.
+            sub_key = os.path.realpath(os.path.abspath(sub))
+            if not s.alias:
+                if sub_key in loaded:
+                    continue
+                decls = _visit(sub, stack, loaded, origins, checked, False)
+                loaded.add(sub_key)
+                for d in decls:
+                    _check_conflict(d, sub_key, origins, checked)
+                    own.append(d)
+            else:
+                decls = _visit(sub, stack, loaded, origins, checked, False)
+                nsmap[s.alias] = _prefix_module(decls, s.alias)
+                for d in decls:
+                    _check_conflict(d, sub_key, origins, checked)
+                    own.append(d)
+        elif isinstance(s, (FuncDecl, StructDecl, EnumDecl)):
+            # Imported declarations are checked by the caller after prefixing.
+            if is_main:
+                _check_conflict(s, key, origins, checked)
+            own.append(s)
+        elif is_main:
+            own.append(s)  # the main file keeps its top-level statements
     stack.pop()
-    loaded.add(key)
+    _rewrite_qualified(own, nsmap)
+    return own
 
 
 def load_program(path):
-    """Parses `path`, recursively resolves its top-level imports, and returns
-    a single flat Program containing the merged declarations."""
+    """Parses `path`, recursively resolves its top-level imports (honouring
+    `import ... as alias`), and returns one flat Program."""
     main_path = os.path.realpath(os.path.abspath(path))
-    program = _parse_file(main_path)
-    nested = _find_nested_import(program)
-    if nested is not None:
-        raise ImportResolveError(
-            f"import is only allowed at the top level of a file: "
-            f"'{_display(main_path)}'"
-        )
-
     stack = []
     loaded = set()
     origins = {}
-    out = []
-    for s in program.body:
-        if isinstance(s, Import):
-            sub = _resolve_import(s.spec, os.path.dirname(main_path), main_path)
-            _visit(sub, stack, loaded, out, origins)
-        elif isinstance(s, (FuncDecl, StructDecl)):
-            prev = origins.get(s.name)
-            if prev is not None and prev[1] != main_path:
-                raise ImportResolveError(
-                    f"name conflict: '{s.name}' is defined in both "
-                    f"'{_display(prev[1])}' and '{_display(main_path)}'"
-                )
-            origins[s.name] = (s.type, main_path)
-            out.append(s)
-        else:
-            out.append(s)  # the main file keeps its top-level statements
-
-    program.body = out
-    return program
+    checked = set()
+    out = _visit(main_path, stack, loaded, origins, checked, True)
+    return Program(body=out)

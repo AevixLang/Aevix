@@ -1,0 +1,14 @@
+// snake: the player's body. Deliberately reuses the name `Entity`.
+struct Entity {
+    length: int,
+    head_x: int,
+    head_y: int,
+}
+
+func born(x: int, y: int): Entity {
+    return Entity { length: 1, head_x: x, head_y: y };
+}
+
+func grow(s: Entity): Entity {
+    return Entity { length: s.length + 1, head_x: s.head_x, head_y: s.head_y };
+}

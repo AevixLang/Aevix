@@ -12,6 +12,17 @@ from .ast import (
     New, Epoch, Break, Continue, Match, MatchCase
 )
 
+def _qualified_name(expr):
+    """Flattens `a`, `a.b`, `a.b.c` into a dotted call target."""
+    if isinstance(expr, Call):
+        return expr.callee
+    if isinstance(expr, Variable):
+        return expr.value
+    if isinstance(expr, MemberAccess):
+        base = _qualified_name(expr.object)
+        return f"{base}.{expr.member}" if base else ""
+    return ""
+
 def _decode_escapes(raw):
     """Decodes string-literal escapes (\\n, \\t, \\r, \\\\, \\") into bytes.
     Unknown sequences keep the backslash so old verbatim strings stay valid."""
@@ -135,10 +146,7 @@ class AevixTransformer(Transformer):
             result = first
         for suffix in items[1:]:
             if isinstance(suffix, list):  # call argument list
-                if isinstance(result, Call):
-                    callee_name = result.callee
-                else:
-                    callee_name = result.value
+                callee_name = _qualified_name(result)
                 result = Call(callee=callee_name, args=suffix)
             elif isinstance(suffix, str):  # dot access -> member name
                 result = MemberAccess(object=result, member=suffix)
@@ -248,6 +256,12 @@ class AevixTransformer(Transformer):
         base = items[0]
         size = str(items[1]) if len(items) > 1 else ""
         return f"{base}[{size}]"
+
+    def qualified_type(self, items):
+        return items[0]
+
+    def qualified_name(self, items):
+        return ".".join(str(x) for x in items)
 
     def param_type(self, items):
         is_ref = False

@@ -68,7 +68,7 @@ arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: MINUS factor | BANG factor | atom
 atom: NUMBER | FLOAT | BOOL | STRING | FSTRING | array_lit | struct_lit | primary | "(" expr ")" | new_expr
-new_expr: "new" (scalar_type | CNAME) "[" expr "]"
+new_expr: "new" (scalar_type | qualified_type | CNAME) "[" expr "]"
 primary: CNAME suffix*
 suffix: call_suffix | index_suffix | dot_suffix
 call_suffix: "(" arg_list? ")"
@@ -77,7 +77,7 @@ index_suffix: "[" expr "]"
 dot_suffix: "." CNAME
 array_lit: "[" array_items? "]"
 array_items: expr ("," expr)*
-struct_lit: CNAME "{" struct_lit_items? "}"
+struct_lit: qualified_name "{" struct_lit_items? "}"
 struct_lit_items: struct_lit_item ("," struct_lit_item)* ","?
 struct_lit_item: CNAME ":" expr | expr
 
@@ -85,8 +85,10 @@ OROP: "||"
 ANDOP: "&&"
 CMPOP: "==" | "!=" | "<" | ">" | "<=" | ">="
 
-type_name: array_type | scalar_type | CNAME
-array_type: (scalar_type | CNAME) "[" NUMBER? "]"
+type_name: array_type | qualified_type | scalar_type | CNAME
+array_type: (scalar_type | qualified_type | CNAME) "[" NUMBER? "]"
+qualified_type: qualified_name
+qualified_name: CNAME ("." CNAME)*
 scalar_type: T_INT | T_FLOAT | T_BOOL | T_STRING
     | T_I8 | T_I16 | T_I32 | T_I64
     | T_U8 | T_U16 | T_U32 | T_U64

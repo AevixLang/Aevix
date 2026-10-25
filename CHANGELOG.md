@@ -7,10 +7,19 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- **Import alias parsing** — `import "mod.aev" as mod;` now parses in both
-  frontends and the alias is carried in the AST (`Import.alias`, emitted as
-  `"alias"` in JSON). This is step 1 of namespaces; qualified access
-  (`mod.fn()`) is not yet resolved by sema/codegen.
+- **Import aliases / namespaces** — `import "mod.aev" as mod;` scopes the
+  module's declarations behind the alias: `mod.fn(...)`, `mod.Point` types,
+  `mod.Point { ... }` literals, and `mod.Color.variant` enum access. Modules
+  that export the same names can now compose; each is renamed internally to
+  `alias__name` and its references rewritten, then the importing file's
+  qualified references are resolved to those names. Flat imports keep merging
+  as before. Both frontends implement the same rule.
+- **Three-package example** — `examples/packages/` builds three local packages
+  that all export an `Entity`, imported under separate aliases.
+
+### Documentation
+- `Syntax.md` documents alias-qualified access; `README.md` no longer lists
+  namespaces as a limitation.
 
 ## [0.3.1] — 2026-10-24
 

@@ -1,0 +1,17 @@
+// board: grid coordinates.
+struct Entity {
+    x: int,
+    y: int,
+}
+
+func at(x: int, y: int): Entity {
+    return Entity { x: x, y: y };
+}
+
+func right(e: Entity, step: int): Entity {
+    return at(e.x + step, e.y);
+}
+
+func same(a: Entity, b: Entity): bool {
+    return a.x == b.x && a.y == b.y;
+}
