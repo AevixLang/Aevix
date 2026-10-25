@@ -22,6 +22,9 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matches; duplicate enum variants are rejected. Numeric, float, string and
   enum scrutinees are supported. Implemented in both frontends and lowered to
   the `MatchExpr` node (new AST schema v6).
+- **Nested function ban documented** — nested `func` declarations are
+  permanently rejected; `Syntax.md` now states the rule explicitly and two
+  rejection fixtures pin the diagnostic.
 
 ### Documentation
 - `Syntax.md` documents alias-qualified access; `README.md` no longer lists

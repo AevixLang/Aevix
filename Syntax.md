@@ -168,6 +168,9 @@ for (let i = 0; i < 10; i += 1) {
 
 ## 5. Functions
 Functions are defined using the `func` keyword. The return type is optional (defaults to `void`).
+Nested `func` declarations are **permanently rejected** — they may appear only at
+the top level of a file, and the compiler reports
+`function declarations are only allowed at the top level`.
 
 ```aev
 func power(base: float, exp: float) : float {
