@@ -9,7 +9,7 @@ from .ast import (
     Program, Let, Hot, Print, If, While, For, ForIn, Return, Assign, FuncDecl, Param, Call,
     Number, Variable, Float, Bool, String, ArrayLit, Index, Add, Sub, Mul, Div, Mod, Neg,
     CmpOp, And, Or, Not, MemberAccess, StructLiteral, StructDecl, StructField, EnumDecl, Import,
-    New, Epoch, Break, Continue, Match, MatchCase
+    New, Epoch, Break, Continue, Match, MatchCase, MatchExpr, MatchExprCase
 )
 
 def _qualified_name(expr):
@@ -346,6 +346,23 @@ class AevixTransformer(Transformer):
         if len(items) >= 2:
             return ("case", items[0], items[1])
         return items
+
+    def match_case_stmt(self, items):
+        return self.match_case(items)
+
+    def match_expr(self, items):
+        scrutinee = items[0]
+        cases = []
+        default_body = None
+        for c in items[1:]:
+            if isinstance(c, tuple) and c and c[0] == "default":
+                default_body = c[1]
+            elif isinstance(c, tuple) and c and c[0] == "case":
+                cases.append(MatchExprCase(value=c[1], body=c[2]))
+        return MatchExpr(scrutinee=scrutinee, cases=cases, default_body=default_body)
+
+    def match_case_expr(self, items):
+        return self.match_case(items)
 
     def for_stmt(self, items):
         # Named SEMI keeps the clause separators in the parse tree, so empty

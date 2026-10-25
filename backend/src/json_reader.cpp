@@ -10,7 +10,7 @@
 
 // Version of the frontend -> backend AST JSON schema. The frontend stamps
 // every ast.json with this value; anything else is rejected up front.
-constexpr int SCHEMA_VERSION = 5;
+constexpr int SCHEMA_VERSION = 6;
 
 static std::shared_ptr<Expr> parse_expr(const json& j);
 
@@ -158,6 +158,19 @@ static std::shared_ptr<Expr> parse_expr_inner(const json& j) {
         n->base = j["base"];
         n->size = parse_expr(j["size"]);
         return n;
+    }
+    else if (type == "MatchExpr") {
+        auto m = std::make_shared<MatchExpr>();
+        m->scrutinee = parse_expr(j["scrutinee"]);
+        for (const auto& c : j["cases"]) {
+            MatchExprCase mc;
+            mc.value = parse_expr(c["value"]);
+            mc.body = parse_expr(c["body"]);
+            m->cases.push_back(mc);
+        }
+        if (j.contains("default_body") && !j["default_body"].is_null())
+            m->default_body = parse_expr(j["default_body"]);
+        return m;
     }
 
     return nullptr;

@@ -101,6 +101,10 @@ inline void rename_expr_node(ExprVariant& node, const RenameFn& fn) {
         rename_expr(b->left, fn); rename_expr(b->right, fn);
     } else if (auto* b = std::get_if<Or>(&node)) {
         rename_expr(b->left, fn); rename_expr(b->right, fn);
+    } else if (auto* m = std::get_if<MatchExpr>(&node)) {
+        rename_expr(m->scrutinee, fn);
+        for (auto& c : m->cases) { rename_expr(c.value, fn); rename_expr(c.body, fn); }
+        if (m->default_body) rename_expr(*m->default_body, fn);
     }
 }
 

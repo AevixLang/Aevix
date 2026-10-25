@@ -18,6 +18,7 @@ from .parser import parse, format_parse_error
 from .ast import (
     Program, Import, FuncDecl, StructDecl, EnumDecl, Param, StructField,
     Let, Hot, Epoch, Print, If, While, For, ForIn, Return, Assign, Match,
+    MatchExpr, MatchExprCase,
     Call, Variable, MemberAccess, StructLiteral, New, Index, ArrayLit,
     Neg, Not, Add, Sub, Mul, Div, Mod, CmpOp, And, Or,
 )
@@ -278,6 +279,13 @@ def _rename_expr(e, fn):
     elif isinstance(e, (Add, Sub, Mul, Div, Mod, CmpOp, And, Or)):
         e.left = _rename_expr(e.left, fn)
         e.right = _rename_expr(e.right, fn)
+    elif isinstance(e, MatchExpr):
+        e.scrutinee = _rename_expr(e.scrutinee, fn)
+        for c in e.cases:
+            c.value = _rename_expr(c.value, fn)
+            c.body = _rename_expr(c.body, fn)
+        if e.default_body is not None:
+            e.default_body = _rename_expr(e.default_body, fn)
     return e
 
 

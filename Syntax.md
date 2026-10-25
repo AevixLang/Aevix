@@ -112,6 +112,21 @@ match (expr) {
 branch's body; `default` is optional. Each branch must wrap its body in
 braces. Values may be literals, variables, or enum-qualified names
 (`Color.red`).
+
+`match` also has an expression form that yields a value:
+
+```aev
+let y = match (x) {
+    case 1 => 10,
+    case 2 => 20,
+    default => 30
+};
+```
+
+Each arm uses `=>` and yields a single expression; all branches must
+have the same type. `default` is required for non-enum scrutinees and
+may be omitted when all enum variants are covered.
+
 ```aev
 while (condition) {
     // body

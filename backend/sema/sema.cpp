@@ -518,6 +518,54 @@ std::string Checker::infer(Expr* e) {
             error("|| requires bools", e->line, e->col);
         return "bool";
     }
+    if (auto* mx = dynamic_cast<MatchExpr*>(e)) {
+        std::string scrut = infer(mx->scrutinee.get());
+        bool is_enum = !scrut.empty() && enums_.count(scrut) > 0;
+        std::vector<std::string> covered;
+        std::string result;
+        auto check_arm = [&](Expr* body) {
+            std::string bt = infer(body);
+            if (result.empty()) result = bt;
+            else if (!bt.empty() && bt != result)
+                error("match expression branches have different types", body->line, body->col);
+        };
+        for (auto& c : mx->cases) {
+            std::string vt = infer(c.value.get());
+            if (!vt.empty() && !scrut.empty() && vt != scrut)
+                error("match case type mismatch", c.value->line, c.value->col);
+            if (is_enum) {
+                if (auto* ma = dynamic_cast<MemberAccess*>(c.value.get())) {
+                    if (auto* v = dynamic_cast<Variable*>(ma->object.get()))
+                        if (v->name == scrut)
+                            covered.push_back(ma->member);
+                }
+            }
+            check_arm(c.body.get());
+        }
+        if (mx->default_body) check_arm(mx->default_body.get());
+        if (is_enum) {
+            auto it = enums_.find(scrut);
+            if (mx->default_body == nullptr && it != enums_.end()) {
+                for (const auto& v : it->second) {
+                    if (std::find(covered.begin(), covered.end(), v) == covered.end()) {
+                        error("non-exhaustive match on " + scrut + ": missing variant '" + v + "'", e->line, e->col);
+                        break;
+                    }
+                }
+            }
+            std::set<std::string> seen;
+            for (const auto& v : covered) {
+                if (seen.count(v)) {
+                    error("duplicate case '" + v + "' in match", e->line, e->col);
+                    break;
+                }
+                seen.insert(v);
+            }
+        } else if (mx->default_body == nullptr) {
+            error("match expression requires a default branch", e->line, e->col);
+        }
+        return result;
+    }
     if (auto* ix = dynamic_cast<Index*>(e)) {
         std::string obj = infer(ix->object.get());
         std::string idx = infer(ix->index.get());

@@ -114,6 +114,17 @@ struct New : public Expr {
     std::shared_ptr<Expr> size;   // Number for new int[3]; any int expr for new int[n]
 };
 
+struct MatchExprCase {
+    std::shared_ptr<Expr> value;
+    std::shared_ptr<Expr> body;
+};
+
+struct MatchExpr : public Expr {
+    std::shared_ptr<Expr> scrutinee;
+    std::vector<MatchExprCase> cases;
+    std::shared_ptr<Expr> default_body;   // may be null
+};
+
 // Statements
 struct Stmt;
 

@@ -16,6 +16,12 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as before. Both frontends implement the same rule.
 - **Three-package example** — `examples/packages/` builds three local packages
   that all export an `Entity`, imported under separate aliases.
+- **Match expression** — `match (x) { case 1 => 10, case 2 => 20, default => 30 }`
+  yields a value of the arm type. All arms must agree on type; `default` is
+  required for non-enum scrutinees and may be omitted for exhaustive enum
+  matches; duplicate enum variants are rejected. Numeric, float, string and
+  enum scrutinees are supported. Implemented in both frontends and lowered to
+  the `MatchExpr` node (new AST schema v6).
 
 ### Documentation
 - `Syntax.md` documents alias-qualified access; `README.md` no longer lists

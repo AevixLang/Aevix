@@ -45,8 +45,10 @@ break_stmt: "break" ";"
 continue_stmt: "continue" ";"
 if_stmt: "if" "(" expr ")" block ("else" else_branch)?
 else_branch: if_stmt | block
-match_stmt: "match" "(" expr ")" "{" match_case* "}"
-match_case: ("case" expr ":" block) | ("default" ":" block)
+match_stmt: "match" "(" expr ")" "{" match_case_stmt* "}"
+match_expr: "match" "(" expr ")" "{" (match_case_expr ("," match_case_expr)* ","?)? "}"
+match_case_stmt: ("case" expr ":" block) | ("default" ":" block)
+match_case_expr: ("case" expr "=>" expr) | ("default" "=>" expr)
 while_stmt: "while" "(" expr ")" block
 for_stmt: "for" "(" for_init? SEMI expr? SEMI for_step? ")" block
 for_in_stmt: "for" CNAME "in" expr block
@@ -67,7 +69,7 @@ comparison: arith (CMPOP arith)*
 arith: term (ADDOP term)*
 term: factor (MULOP factor)*
 factor: MINUS factor | BANG factor | atom
-atom: NUMBER | FLOAT | BOOL | STRING | FSTRING | array_lit | struct_lit | primary | "(" expr ")" | new_expr
+atom: NUMBER | FLOAT | BOOL | STRING | FSTRING | array_lit | struct_lit | primary | "(" expr ")" | new_expr | match_expr
 new_expr: "new" (scalar_type | qualified_type | CNAME) "[" expr "]"
 primary: CNAME suffix*
 suffix: call_suffix | index_suffix | dot_suffix

@@ -87,12 +87,24 @@ struct CmpOp {
 struct And { ExprPtr left, right; };
 struct Or  { ExprPtr left, right; };
 
+struct MatchExprCase {
+    ExprPtr value;
+    ExprPtr body;
+};
+
+struct MatchExpr {
+    ExprPtr scrutinee;
+    std::vector<MatchExprCase> cases;
+    std::optional<ExprPtr> default_body;
+};
+
 using ExprVariant = std::variant<
     Number, FloatLit, BoolLit, StringLit, Variable,
     ArrayLit, NewExpr, Call, MemberAccess, Index, StructLiteral,
     UnaryMinus, LogicalNot,
     Add, Sub, Mul, Div, Mod,
-    CmpOp, And, Or
+    CmpOp, And, Or,
+    MatchExpr
 >;
 
 struct Expr {

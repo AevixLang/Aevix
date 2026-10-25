@@ -25,7 +25,7 @@ enum class TokType {
     PLUS, MINUS, STAR, SLASH, MOD,
     EQ, PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ, MOD_EQ,
     EQ_EQ, BANG_EQ, LT, GT, LT_EQ, GT_EQ,
-    AMP_AMP, PIPE_PIPE, BANG,
+    AMP_AMP, PIPE_PIPE, BANG, ARROW,
     // Delimiters
     LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
     SEMI, COMMA, DOT, COLON,
@@ -257,6 +257,7 @@ private:
                 return {TokType::MOD, "%", sl, sc};
             case '=':
                 if (peek() == '=') { advance(); return {TokType::EQ_EQ, "==", sl, sc}; }
+                if (peek() == '>') { advance(); return {TokType::ARROW, "=>", sl, sc}; }
                 return {TokType::EQ, "=", sl, sc};
             case '!':
                 if (peek() == '=') { advance(); return {TokType::BANG_EQ, "!=", sl, sc}; }

@@ -272,6 +272,7 @@ public:
     void generate_block(const std::shared_ptr<Block>& block);
     void generate_if(const If& if_stmt);
     void generate_match(const Match& match_stmt);
+    llvm::Value* generate_match_expr(const MatchExpr& m);
     void generate_while(const While& w);
     void generate_for(const For& f);
     void generate_for_in(const ForIn& f);

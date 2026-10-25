@@ -16,7 +16,7 @@ public:
     }
 
 private:
-    static constexpr int SCHEMA_VERSION = 5;
+    static constexpr int SCHEMA_VERSION = 6;
 
     static void indent(std::ostringstream& os, int depth) {
         os << std::string(depth, ' ');
@@ -306,6 +306,21 @@ private:
     static void write_expr_node(std::ostringstream& os, const Mod& n, int d) { write_binary(os, "Mod", n.left, n.right, d); }
     static void write_expr_node(std::ostringstream& os, const And& n, int d) { write_binary(os, "And", n.left, n.right, d); }
     static void write_expr_node(std::ostringstream& os, const Or& n, int d)  { write_binary(os, "Or", n.left, n.right, d); }
+
+    static void write_expr_node(std::ostringstream& os, const MatchExpr& n, int d) {
+        os << "{\"type\": \"MatchExpr\", \"scrutinee\": "; write_expr(os, *n.scrutinee, d);
+        os << ", \"cases\": [";
+        for (size_t i = 0; i < n.cases.size(); ++i) {
+            if (i > 0) os << ", ";
+            os << "{\"value\": "; write_expr(os, *n.cases[i].value, d);
+            os << ", \"body\": "; write_expr(os, *n.cases[i].body, d); os << "}";
+        }
+        os << "]";
+        if (n.default_body) {
+            os << ", \"default_body\": "; write_expr(os, *(*n.default_body), d);
+        }
+        os << "}";
+    }
 
     static void write_expr_node(std::ostringstream& os, const CmpOp& n, int d) {
         os << "{\"type\": \"CmpOp\", \"op\": \"" << escape(n.op) << "\"";
