@@ -493,17 +493,21 @@ func cmdVendor(args []string) error {
 		if dep.Path == "" {
 			continue
 		}
-		target := filepath.Join(vendorDir, name)
 		srcPath := dep.Path
 		if !filepath.IsAbs(srcPath) {
 			srcPath = filepath.Join(root, srcPath)
 		}
+		target := filepath.Join(vendorDir, name)
 		if err := copyTree(srcPath, target); err != nil {
 			return fmt.Errorf("vendor %s: %w", name, err)
 		}
 		fmt.Printf("vendored %s -> %s\n", name, target)
+		// Point the lock at the vendored copy so the project stays buildable
+		// after the source tree is removed: offline, self-contained builds.
+		dep.Path = filepath.ToSlash(filepath.Join("lib", "vendor", name))
+		l.Dependencies[name] = dep
 	}
-	return nil
+	return writeLock(root, l)
 }
 
 func copyTree(src, dst string) error {

@@ -6,6 +6,50 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-10-26
+
+### Added
+- **aevix-pm vendor (hardening)** — vendor now rewrites `aevix.lock` to
+  point at the copied `lib/vendor/<name>` tree, so a vendored project builds
+  and runs fully offline even if the original dependency source disappears.
+  `copyTree` also skips `.git` metadata and refuses symlinks.
+
+## [0.3.6] — 2026-10-26
+
+### Added
+- **aevix-pm (P1)** — `update [name]` resolves each (path) dependency to
+  the newest git tag satisfying its declared semver range; `tree` and `why`
+  now traverse transitive dependency edges from nested manifests. Semver
+  solver (`PickNewest` and aliases) exposed for callers.
+
+## [0.3.5] — 2026-10-26
+
+### Added
+- **Arena-backed maps and sets** — `std:collections` gains monomorphic
+  `MapIntInt`, `MapStrInt`, `SetInt` and `SetStr` (structs with
+  `new`, `put`/`get`/`has`/`remove`, `add`/`contains`, growth helpers,
+  `keys`/`values`/`items`). Linear search over contiguous arena arrays; both
+  frontends handle the injected structs without changes.
+
+## [0.3.4] — 2026-10-26
+
+### Added
+- **Nested function ban documented** — nested `func` declarations are
+  permanently rejected; `Syntax.md` now states the rule explicitly and two
+  rejection fixtures pin the diagnostic.
+
+## [0.3.3] — 2026-10-26
+
+### Added
+- **Match expression** — `match (x) { case 1 => 10, case 2 => 20, default => 30 }`
+  yields a value of the arm type. All arms must agree on type; `default` is
+  required for non-enum scrutinees and may be omitted for exhaustive enum
+  matches; duplicate enum variants are rejected. Numeric, float, string and
+  enum scrutinees are supported. Implemented in both frontends and lowered to
+  the `MatchExpr` node (new AST schema v6).
+
+## [0.3.2] — 2026-10-25
+
 ### Added
 - **Import aliases / namespaces** — `import "mod.aev" as mod;` scopes the
   module's declarations behind the alias: `mod.fn(...)`, `mod.Point` types,
@@ -16,24 +60,6 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as before. Both frontends implement the same rule.
 - **Three-package example** — `examples/packages/` builds three local packages
   that all export an `Entity`, imported under separate aliases.
-- **Match expression** — `match (x) { case 1 => 10, case 2 => 20, default => 30 }`
-  yields a value of the arm type. All arms must agree on type; `default` is
-  required for non-enum scrutinees and may be omitted for exhaustive enum
-  matches; duplicate enum variants are rejected. Numeric, float, string and
-  enum scrutinees are supported. Implemented in both frontends and lowered to
-  the `MatchExpr` node (new AST schema v6).
-- **Nested function ban documented** — nested `func` declarations are
-  permanently rejected; `Syntax.md` now states the rule explicitly and two
-  rejection fixtures pin the diagnostic.
-- **Arena-backed maps and sets** — `std:collections` gains monomorphic
-  `MapIntInt`, `MapStrInt`, `SetInt` and `SetStr` (structs with
-  `new`, `put`/`get`/`has`/`remove`, `add`/`contains`, growth helpers,
-  `keys`/`values`/`items`). Linear search over contiguous arena arrays; both
-  frontends handle the injected structs without changes.
-- **aevix-pm (P1)** — `update [name]` resolves each (path) dependency to
-  the newest git tag satisfying its declared semver range; `tree` and `why`
-  now traverse transitive dependency edges from nested manifests. Semver
-  solver (`PickNewest` and aliases) exposed for callers.
 
 ### Documentation
 - `Syntax.md` documents alias-qualified access; `README.md` no longer lists
@@ -137,6 +163,3 @@ First working end-to-end pipeline: source → native binary through LLVM.
 - **Go CLI** — `build`, `run`, `selftest`, `bench`, `clean` orchestration.
 - **LLVM backend** — IR generation, `llc`, `clang` + runtime linking.
 
-[Unreleased]: https://github.com/aevix-lang/aevix/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/aevix-lang/aevix/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/aevix-lang/aevix/releases/tag/v0.1.0
