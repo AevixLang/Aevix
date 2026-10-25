@@ -81,6 +81,12 @@ private:
             name = advance().value;
         } else if (check(TokType::IDENT)) {
             name = advance().value;
+            // Qualified type from an aliased import: `ns.Type`. The importer
+            // rewrites it to the prefixed declaration name before sema.
+            while (check(TokType::DOT)) {
+                advance();
+                name += "." + expect(TokType::IDENT, "expected type name after '.'").value;
+            }
         } else {
             throw std::runtime_error("expected type name");
         }
@@ -128,8 +134,13 @@ private:
     StmtPtr parse_import() {
         advance(); // import
         Token spec = expect(TokType::STRING, "expected string after import");
+        std::string alias = "";
+        if (match(TokType::KW_AS)) {
+            Token a = expect(TokType::IDENT, "expected identifier after 'as'");
+            alias = a.value;
+        }
         expect(TokType::SEMI, "expected ';'");
-        return std::make_shared<Stmt>(Import{spec.value});
+        return std::make_shared<Stmt>(Import{spec.value, alias});
     }
 
     StmtPtr parse_let() {
@@ -607,31 +618,41 @@ private:
             return build_fstring(t.value, sl, sc);
         }
 
-        // Primary: identifier with optional suffixes
-        // Check for struct literal: IDENT { ... }
-        if (!stop_before_brace && check(TokType::IDENT) && pos + 1 < tokens.size() && tokens[pos + 1].type == TokType::LBRACE) {
-            Token name = advance();
-            expect(TokType::LBRACE, "expected '{'");
-            std::vector<ExprPtr> args;
-            std::vector<std::string> field_names;
-            if (!check(TokType::RBRACE)) {
-                while (true) {
-                    if (check(TokType::IDENT) && pos + 1 < tokens.size()
-                        && tokens[pos + 1].type == TokType::COLON) {
-                        Token fld = advance();
-                        expect(TokType::COLON, "expected ':'");
-                        args.push_back(parse_expr());
-                        field_names.push_back(fld.value);
-                    } else {
-                        args.push_back(parse_expr());
-                        field_names.push_back("");
-                    }
-                    if (!match(TokType::COMMA)) break;
-                    if (check(TokType::RBRACE)) break;
-                }
+        // Primary: identifier with optional suffixes.
+        // Struct literal: NAME { ... }, where NAME may be qualified by an
+        // import alias (`ns.Point { ... }`).
+        if (!stop_before_brace && check(TokType::IDENT)) {
+            size_t q = pos;
+            std::string lit_name = tokens[q].value;
+            q += 1;
+            while (q + 1 < tokens.size() && tokens[q].type == TokType::DOT &&
+                   tokens[q + 1].type == TokType::IDENT) {
+                lit_name += "." + tokens[q + 1].value;
+                q += 2;
             }
-            expect(TokType::RBRACE, "expected '}'");
-            return std::make_shared<Expr>(Expr{StructLiteral{name.value, args, field_names}, sl, sc});
+            if (q < tokens.size() && tokens[q].type == TokType::LBRACE) {
+                pos = q + 1; // consume the name and '{'
+                std::vector<ExprPtr> args;
+                std::vector<std::string> field_names;
+                if (!check(TokType::RBRACE)) {
+                    while (true) {
+                        if (check(TokType::IDENT) && pos + 1 < tokens.size()
+                            && tokens[pos + 1].type == TokType::COLON) {
+                            Token fld = advance();
+                            expect(TokType::COLON, "expected ':'");
+                            args.push_back(parse_expr());
+                            field_names.push_back(fld.value);
+                        } else {
+                            args.push_back(parse_expr());
+                            field_names.push_back("");
+                        }
+                        if (!match(TokType::COMMA)) break;
+                        if (check(TokType::RBRACE)) break;
+                    }
+                }
+                expect(TokType::RBRACE, "expected '}'");
+                return std::make_shared<Expr>(Expr{StructLiteral{lit_name, args, field_names}, sl, sc});
+            }
         }
         return parse_primary();
     }
@@ -644,16 +665,26 @@ private:
         return parse_suffixes(result);
     }
 
+    // qualified_name flattens `a`, `a.b`, `a.b.c` into a dotted string; used
+    // only to recover a call target from a member-access base.
+    static std::string qualified_name(const ExprPtr& e) {
+        if (auto* v = std::get_if<Variable>(&e->node)) return v->name;
+        if (auto* m = std::get_if<MemberAccess>(&e->node)) {
+            std::string base = qualified_name(m->object);
+            if (base.empty()) return "";
+            return base + "." + m->member;
+        }
+        return "";
+    }
+
     ExprPtr parse_suffixes(ExprPtr base) {
         while (true) {
             int sl = peek().line, sc = peek().col;
             if (check(TokType::LPAREN)) {
-                // Call
+                // Call. A qualified callee (`ns.fn`) keeps the full name so the
+                // import resolver can map it onto the aliased declaration.
                 advance();
-                std::string callee;
-                if (auto* v = std::get_if<Variable>(&base->node)) {
-                    callee = v->name;
-                }
+                std::string callee = qualified_name(base);
                 std::vector<ExprPtr> args;
                 if (!check(TokType::RPAREN)) {
                     args.push_back(parse_expr());

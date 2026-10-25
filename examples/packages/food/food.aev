@@ -1,0 +1,14 @@
+// food: pickups. Also reuses `Entity`.
+struct Entity {
+    x: int,
+    y: int,
+    value: int,
+}
+
+func spawn(x: int, y: int, value: int): Entity {
+    return Entity { x: x, y: y, value: value };
+}
+
+func eaten(f: Entity): int {
+    return f.value;
+}

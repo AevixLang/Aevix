@@ -81,7 +81,9 @@ private:
     // ---- Statement writers ----
 
     static void write_stmt_node(std::ostringstream& os, const Import& n, int d) {
-        os << "{\"type\": \"Import\", \"spec\": \"" << escape(n.spec) << "\"}";
+        os << "{\"type\": \"Import\", \"spec\": \"" << escape(n.spec) << "\"";
+        if (!n.alias.empty()) os << ", \"alias\": \"" << escape(n.alias) << "\"";
+        os << "}";
     }
 
     static void write_stmt_node(std::ostringstream& os, const Let& n, int d) {

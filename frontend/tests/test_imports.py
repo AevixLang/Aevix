@@ -338,3 +338,132 @@ def test_parser_import_node():
     assert prog.body[0].type == "Import"
     assert prog.body[0].spec == "abc.def"
     assert prog.body[1].type == "Let"
+
+
+def test_parser_import_alias():
+    prog = parse('import "abc.def" as abc;\nlet x = 1;\n')
+    assert prog.body[0].type == "Import"
+    assert prog.body[0].spec == "abc.def"
+    assert prog.body[0].alias == "abc"
+
+
+# ---------------------------------------------------------------------------
+# import aliases / namespaces
+# ---------------------------------------------------------------------------
+
+def _write_file(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+MATH_MODULE = """\
+struct Point {
+    x: int,
+    y: int,
+}
+
+func make(x: int, y: int): Point {
+    return Point { x: x, y: y };
+}
+
+func addx(p: Point, d: int): Point {
+    return make(p.x + d, p.y);
+}
+"""
+
+
+def test_import_alias_qualified_access(tmp_path):
+    _write_file(str(tmp_path / "mathmod.aev"), MATH_MODULE)
+    _write_file(str(tmp_path / "main.aev"), """\
+import "mathmod.aev" as m;
+
+func main() {
+    let p: m.Point = m.make(2, 3);
+    let q: m.Point = m.addx(p, 5);
+    print(q.x);
+    print(q.y);
+}
+
+main();
+""")
+    assert full_program(str(tmp_path)) == ["7", "3"]
+
+
+def test_import_alias_resolves_colliding_names(tmp_path):
+    _write_file(str(tmp_path / "a.aev"), """\
+struct Entity {
+    id: int,
+}
+
+enum Color {
+    red,
+    green,
+}
+
+func make(id: int): Entity {
+    return Entity { id: id };
+}
+
+func paint(): int {
+    return 1;
+}
+""")
+    _write_file(str(tmp_path / "b.aev"), """\
+struct Entity {
+    name: string,
+}
+
+func make(name: string): Entity {
+    return Entity { name: name };
+}
+
+func paint(): int {
+    return 2;
+}
+""")
+    _write_file(str(tmp_path / "main.aev"), """\
+import "a.aev" as a;
+import "b.aev" as b;
+
+func main() {
+    let e1: a.Entity = a.make(11);
+    let e2: b.Entity = b.make("bee");
+    print(e1.id);
+    print(e2.name);
+    print(a.paint() + b.paint());
+    print(a.Color.green);
+}
+
+main();
+""")
+    assert full_program(str(tmp_path)) == ["11", "bee", "3", "green"]
+
+
+def test_import_alias_struct_literal(tmp_path):
+    """A qualified struct literal `ns.Point { ... }` uses the aliased type."""
+    _write_file(str(tmp_path / "shapes.aev"), """\
+struct Point {
+    x: int,
+    y: int,
+}
+""")
+    _write_file(str(tmp_path / "main.aev"), """\
+import "shapes.aev" as s;
+
+func main() {
+    let p: s.Point = s.Point { x: 42, y: 7 };
+    print(p.x);
+    print(p.y);
+}
+
+main();
+""")
+    assert full_program(str(tmp_path)) == ["42", "7"]
+
+def test_example_three_packages_compose(tmp_path):
+    """The committed example: three local packages, all exporting `Entity`."""
+    src = os.path.join(ROOT, "examples", "packages")
+    dst = str(tmp_path / "packages")
+    shutil.copytree(src, dst)
+    assert full_program(dst) == ["true", "1", "10", "2"]

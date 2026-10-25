@@ -105,7 +105,7 @@ struct Expr {
 // Statements
 // ============================================================================
 
-struct Import { std::string spec; };
+struct Import { std::string spec; std::string alias; }; // alias empty = flat merge
 
 struct Let {
     std::string name;

@@ -1,0 +1,21 @@
+// Three interdependent packages, each exporting an `Entity`. They compose
+// only because each import carries its own namespace.
+import "board:board" as board;
+import "snake:snake" as snake;
+import "food:food" as food;
+
+func main() {
+    let start: board.Entity = board.at(1, 1);
+    let head: board.Entity = board.right(start, 3);
+    let s: snake.Entity = snake.born(head.x, head.y);
+    let apple: food.Entity = food.spawn(5, 1, 10);
+
+    print(board.same(head, board.at(4, 1)));
+    print(s.length);
+    print(food.eaten(apple));
+
+    let grown: snake.Entity = snake.grow(s);
+    print(grown.length);
+}
+
+main();

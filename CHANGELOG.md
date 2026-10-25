@@ -7,6 +7,37 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Import aliases / namespaces** — `import "mod.aev" as mod;` scopes the
+  module's declarations behind the alias: `mod.fn(...)`, `mod.Point` types,
+  `mod.Point { ... }` literals, and `mod.Color.variant` enum access. Modules
+  that export the same names can now compose; each is renamed internally to
+  `alias__name` and its references rewritten, then the importing file's
+  qualified references are resolved to those names. Flat imports keep merging
+  as before. Both frontends implement the same rule.
+- **Three-package example** — `examples/packages/` builds three local packages
+  that all export an `Entity`, imported under separate aliases.
+
+### Documentation
+- `Syntax.md` documents alias-qualified access; `README.md` no longer lists
+  namespaces as a limitation.
+
+## [0.3.1] — 2026-10-24
+
+### Added
+- **`std:collections`** — `sort_int` (in-place), `reverse_int`, `index_of_int`,
+  `contains_int`, `min_int`, `max_int`, `sum_int`.
+- **SemVer ranges in `aevix-pm`** — `add --version` validates `^`, `~`, `=`,
+  `>=`, `<=`, `<`, `>` and comma-separated ranges.
+
+### Fixed
+- **Short-circuit `&&` / `||`** — the result phi recorded the wrong predecessor
+  block, so an operand evaluated in a nested block (e.g. `while (j >= 0 && arr[j] > v)`)
+  read an undef value. Issue #12.
+- **`assert()`** — accepts `bool` conditions in addition to integers.
+
+## [0.3.0] — 2026-10-24
+
+### Added
 - **Standard library (`std:`)** — `std:text`, `std:io`, `std:math` ship *with*
   the toolchain and bypass `aevix.lock`. `import "std:"` loads the full surface;
   individual modules available as `std:text` etc.

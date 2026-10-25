@@ -179,3 +179,60 @@ def test_cpp_package_module_not_found():
         rc, err = _run_cpp_project(proj)
         assert rc != 0
         assert "not found in package 'calc'" in err
+
+
+# ---------------------------------------------------------------------------
+# import aliases / namespaces
+# ---------------------------------------------------------------------------
+
+def test_cpp_import_alias_prefixes_declarations():
+    with tempfile.TemporaryDirectory() as proj:
+        with open(os.path.join(proj, "a.aev"), "w") as f:
+            f.write("struct Entity { id: int }\nfunc make(id: int): Entity { return Entity { id: id }; }\n")
+        with open(os.path.join(proj, "b.aev"), "w") as f:
+            f.write("struct Entity { name: string }\nfunc make(name: string): Entity { return Entity { name: name }; }\n")
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write(
+                'import "a.aev" as a;\n'
+                'import "b.aev" as b;\n'
+                'func main() {\n'
+                '    let x: a.Entity = a.make(1);\n'
+                '    let y: b.Entity = b.make("z");\n'
+                '    print(x.id);\n'
+                '    print(y.name);\n'
+                '}\n'
+                'main();\n'
+            )
+        rc, err = _run_cpp_project(proj)
+        assert rc == 0, err
+        with open(os.path.join(proj, "ast.json")) as f:
+            ast = json.load(f)
+        names = {s.get("name") for s in ast["body"] if "name" in s}
+        assert {"a__Entity", "a__make", "b__Entity", "b__make"} <= names
+        assert "main" in names
+
+        main_decl = [s for s in ast["body"] if s.get("name") == "main"][0]
+        lets = [s for s in main_decl["body"] if s["type"] == "Let"]
+        assert lets[0]["var_type"] == "a__Entity"
+        assert lets[0]["value"]["callee"] == "a__make"
+        assert lets[1]["value"]["callee"] == "b__make"
+
+
+def test_cpp_import_alias_qualified_struct_literal():
+    with tempfile.TemporaryDirectory() as proj:
+        with open(os.path.join(proj, "shapes.aev"), "w") as f:
+            f.write("struct Point { x: int, y: int }\n")
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write(
+                'import "shapes.aev" as s;\n'
+                'let p: s.Point = s.Point { x: 1, y: 2 };\n'
+                'print(p.x);\n'
+            )
+        rc, err = _run_cpp_project(proj)
+        assert rc == 0, err
+        with open(os.path.join(proj, "ast.json")) as f:
+            ast = json.load(f)
+        let = [s for s in ast["body"] if s["type"] == "Let"][0]
+        assert let["var_type"] == "s__Point"
+        assert let["value"]["type"] == "StructLiteral"
+        assert let["value"]["name"] == "s__Point"

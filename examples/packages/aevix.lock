@@ -1,0 +1,18 @@
+{
+  "name": "snake-packages",
+  "version": "0.1.0",
+  "dependencies": {
+    "board": {
+      "version": "0.1.0",
+      "path": "board"
+    },
+    "snake": {
+      "version": "0.1.0",
+      "path": "snake"
+    },
+    "food": {
+      "version": "0.1.0",
+      "path": "food"
+    }
+  }
+}
