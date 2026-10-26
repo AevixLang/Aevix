@@ -1,6 +1,6 @@
 # Aevix Language Syntax
 
-This document provides the complete specification for the Aevix language (v0.1).
+This document provides the complete specification for the Aevix language (v0.3.9).
 
 ## ⚡ Quick Start
 ```aev
@@ -71,7 +71,7 @@ assignment on strings, booleans or open arrays (slices) is rejected.
 ### Operators
 | Category | Operators | Description |
 | :--- | :--- | :--- |
-| **Arithmetic** | `+`, `-`, `*`, `/` | Basic math |
+| **Arithmetic** | `+`, `-`, `*`, `/`, `%` | Basic math; `%` is remainder (int or float) |
 | **Comparison** | `==`, `!=`, `<`, `>`, `<=`, `>=` | Boolean results |
 | **Logic** | `&&`, `||`, `!` | Boolean algebra |
 | **Unary** | `-`, `!` | Negation / Inversion |
@@ -80,7 +80,7 @@ assignment on strings, booleans or open arrays (slices) is rejected.
 Ordered from highest to lowest priority:
 1. `()` Parentheses
 2. `!`, `-` Unary operators
-3. `*`, `/` Multiplication and Division
+3. `*`, `/`, `%` Multiplication, Division and Remainder
 4. `+`, `-` Addition and Subtraction
 5. `==`, `!=`, `<`, `>`, `<=`, `>=` Comparisons
 6. `&&` Logical AND
@@ -213,7 +213,11 @@ Rules:
   `lib/` directory → the directories in `$AEVIX_PATH`.
 - A spec with `:` is a package import (`package:module`); the compiler finds
   the package through the project's `aevix.lock` (written by the package
-  manager). `std:` is reserved for the future standard library.
+  manager).
+- `std:` is the standard library that ships with the toolchain. It bypasses
+  `aevix.lock` and resolves against the compiler's `stdlib/` directory (or
+  `$AEVIX_STDLIB`). `import "std:"` loads every module; `import "std:text"`
+  loads one. See [Standard Library](#14-standard-library).
 - Without `as`, imported **declarations** are merged into one flat program.
   Top-level statements of a module (its side effects) are dropped.
 - With `as alias`, every exported declaration is scoped behind that alias:
@@ -239,17 +243,36 @@ The compiler only *reads* the package graph; the `aevix-pm` tool *writes* it.
   of every dependency. This is what the compiler consumes.
 
 ```bash
-aevix-pm init myapp                    # scaffold aevix.toml + aevix.lock
-aevix-pm add calc --path ../calc       # add a local path dependency
-aevix-pm remove calc                   # drop it and re-resolve the lock
-aevix-pm list                          # show declared dependencies
+aevix-pm init myapp                          # scaffold aevix.toml + aevix.lock
+aevix-pm add calc --path ../calc             # local working-tree dependency
+aevix-pm add remote --git https://host/repo --version "^1.2"
+aevix-pm remove calc                         # drop it and re-resolve the lock
+aevix-pm list                                # show declared dependencies
+aevix-pm install                             # materialize git deps from the lock
+aevix-pm update [name]                       # newest tag in the declared range
+aevix-pm vendor                              # copy deps into lib/vendor/
+aevix-pm tree                                # print the resolved graph
+aevix-pm why calc                            # explain why a package is present
 ```
 
-`aevix add` records the dependency in `aevix.toml` and regenerates `aevix.lock`
-(deterministically, so diffs stay minimal). A package is a directory of `.aev`
-files; `import "calc:"` (empty module) loads its entry point `lib.aev`, while
-`import "calc:num"` loads `num.aev` inside it. Local `path` dependencies are
-supported in this release; version-based registry fetching lands later.
+`aevix-pm add` records the dependency in `aevix.toml` and regenerates
+`aevix.lock` deterministically, so diffs stay minimal. A package is a
+directory of `.aev` files; `import "calc:"` (empty module) loads its entry
+point `lib.aev`, while `import "calc:num"` loads `num.aev` inside it.
+
+Two dependency sources are supported:
+
+- **`path`** — a local directory, relative to the project root. Useful for
+  monorepos; no copy is made.
+- **`git`** — a clone URL. `add --git` picks the newest semver tag that
+  satisfies `--version` (or an explicit `--rev`), materializes it under
+  `lib/<name>/`, and pins the exact commit SHA in `aevix.lock`. `install`
+  reproduces that pinned tree on another machine without re-resolving.
+  `vendor` copies every dependency into `lib/vendor/<name>/` for a fully
+  offline checkout.
+
+A central HTTP registry is **not** part of the 0.3 line; git tags are the
+supported remote version source. Registry publish/fetch is planned for 0.4.
 
 ---
 
@@ -323,6 +346,24 @@ backslash sequence is kept verbatim:
 ```aev
 let msg = "line 1\nline 2\t-tabbed";
 ```
+
+### Interpolated strings (f-strings)
+
+An `f` immediately before the opening quote marks an interpolated string.
+`{expr}` inserts the value of any expression; `{{` and `}}` emit literal
+braces. Interpolation desugars to concatenation plus `to_str`, so strings pass
+through unchanged and numbers are formatted exactly as `to_str`/`print` do:
+
+```aev
+let name = "Aevix";
+let n = 3;
+print f"hello, {name}! n={n}, n+1={n + 1}";   // hello, Aevix! n=3, n+1=4
+print f"{{literal braces}}";                  // {literal braces}
+```
+
+A lone `f` is still a normal identifier. Empty `{}` and an unterminated `{`
+are parse errors. Both the C++ frontend and the Python fallback desugar to the
+same `+`/`to_str` shape.
 
 `to_int`/`to_float` parse the leading number of a string; `to_str` formats
 int/float values back into strings, so numbers and text compose freely:
@@ -443,6 +484,7 @@ Built-in functions:
 | `endswith(h, p)` | `endswith(h: string, p: string) -> bool` | `true` if `h` ends with `p` |
 | `replace(s, old, new)` | `replace(s: string, old: string, new: string) -> string` | Replace all `old` with `new` |
 | `char_at(s, i)` | `char_at(s: string, i: int) -> string` | Single-character slice at index `i` |
+| `str_hash(s)` | `str_hash(s: string) -> int` | Stable non-negative FNV-1a hash; used by `std:collections` |
 
 ```aev
 hot {
@@ -506,3 +548,59 @@ hot {
     print total;
 }
 ```
+
+---
+
+## 14. Standard Library
+
+The standard library ships with the compiler, is written in Aevix where
+possible, and bypasses `aevix.lock`:
+
+```aev
+import "std:";          // all modules, flat into the current program
+import "std:text";      // only one module
+```
+
+| Module | Contents |
+| :--- | :--- |
+| `std:text` | `is_empty`, `repeat`, `pad_left`, `pad_right`, `index_of`, `last_index_of`, `count`, `strip_prefix`, `strip_suffix`, `equals_ignore_case` |
+| `std:io` | `read_file`, `write_file`, `read_line`, `read_all`, `print_line`, `print_lines` |
+| `std:math` | `clamp`, `pow_int`, `fact`, `gcd`, `lcm`, `is_even`, `is_odd`, `pi`, `e` (float `sqrt`/`sin`/`cos`/`tan`/`log`/`exp`/`floor`/`ceil`/`pow` are builtins) |
+| `std:collections` | slice helpers and monomorphic hash maps/sets |
+
+### Collections
+
+`std:collections` provides in-place slice utilities (`sort_int`,
+`reverse_int`, `index_of_int`, `contains_int`, `min_int`, `max_int`,
+`sum_int`) and four arena-backed hash containers:
+
+```aev
+import "std:collections";
+
+let m = new_map_str_int();
+map_str_int_put(m, "hits", 7);
+map_str_int_put(m, "misses", 2);
+print(map_str_int_get(m, "hits"));     // 7
+print(map_str_int_has(m, "misses"));   // true
+map_str_int_remove(m, "misses");
+
+let s = new_set_int();
+set_int_add(s, 1);
+set_int_add(s, 2);
+set_int_add(s, 1);
+print(set_int_size(s));                // 2
+print(set_int_contains(s, 2));         // true
+```
+
+| Type | Constructor | Operations |
+| :--- | :--- | :--- |
+| `MapIntInt` | `new_map_int_int()` | `map_int_int_put/get/has/remove`, `keys`, `values`, `size`, `clear` |
+| `MapStrInt` | `new_map_str_int()` | `map_str_int_put/get/has/remove`, `keys`, `values`, `size`, `clear` |
+| `SetInt` | `new_set_int()` | `set_int_add/contains/remove`, `items`, `to_array`, `size`, `clear` |
+| `SetStr` | `new_set_str()` | `set_str_add/contains/remove`, `items`, `to_array`, `size`, `clear` |
+
+Keys are hashed with open addressing and the table grows past a 70% load
+factor; string keys use `str_hash`. The containers are **monomorphic** — there
+are no generics in the language yet, so `int` and `string` variants are
+provided explicitly. No `free` is needed: storage lives on the arena and is
+reclaimed by epoch rollback.

@@ -1,4 +1,4 @@
-# AEVIX LANGUAGE MANIFEST (v0.1)
+# AEVIX LANGUAGE MANIFEST (v0.3.9)
 
 > **Vision:** To bridge the gap between high-level developer productivity and low-level hardware control, delivering deterministic, extreme-performance software without the cognitive overhead of manual memory safety proofs.
 
@@ -44,10 +44,10 @@ The overarching objective of Aevix is to provide **C/ASM-level speed** and **abs
 
 ---
 
-## Current Status (v0.1)
+## Current Status (v0.3.9)
 
-**Implemented:** Static type system (int, float, bool, string, fixed-width types, structs, enums), arena-based epochs with escape analysis, reference parameters, arrays/slices, string builtins, hot region scope markers, multi-file imports, C++ frontend.
+**Implemented:** Static type system (int, float, bool, string, fixed-width types, structs, enums), arena-based epochs with escape analysis, reference parameters, arrays/slices, string builtins and `str_hash`, f-strings, `%`, `match`, hot regions, multi-file imports with namespaces, a shipped standard library (`std:text`, `std:io`, `std:math`, `std:collections` with hash maps/sets), and a package manager with path and git dependencies.
 
-**In progress:** Full escape analysis for parameters, hot region L1 optimization.
+**In progress:** Central package registry, language generics, full escape analysis for parameters.
 
 **Roadmap:** SOS transformations, context polymorphism, proof-carrying safety.
