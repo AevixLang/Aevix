@@ -1,5 +1,7 @@
 # Aevix
 
+🌍 Languages: **English** · [Русский](docs/ru/README.ru.md)
+
 **Aevix** is a high-performance systems programming language designed to deliver C/C++-level speed with stronger safety guarantees.
 
 ## Philosophy

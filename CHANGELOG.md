@@ -6,6 +6,15 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-10-26
+
+### Added
+- **Russian documentation localization** — full Russian translations of the
+  official docs under `docs/ru/` (`README.ru.md`, `Syntax.ru.md`,
+  `Aevix-Architecture.ru.md`, `Aevix-Manifest.ru.md`,
+  `CONTRIBUTING.ru.md`, `CHANGELOG.ru.md`). The main `README.md` keeps an
+  English/Russian language switcher at the top.
+
 ## [0.3.7] — 2026-10-26
 
 ### Added
