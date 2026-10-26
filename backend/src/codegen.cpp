@@ -254,6 +254,10 @@ void CodeGenerator::build_conv_runtime() {
     auto char_at_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, i32, pp_ty, pp_ty}, false);
     char_at_func = llvm::Function::Create(char_at_ft, llvm::Function::ExternalLinkage, "__aevix_char_at", module.get());
 
+    // __aevix_str_hash(ptr s, i32 len) -> i32 (FNV-1a, non-negative)
+    auto str_hash_ft = llvm::FunctionType::get(i32, {ptr_ty, i32}, false);
+    str_hash_func = llvm::Function::Create(str_hash_ft, llvm::Function::ExternalLinkage, "__aevix_str_hash", module.get());
+
     // __aevix_join(ptr sep, i32 seplen, ptr arr, i32 count, ptr* out, i32* out_len)
     auto join_ft = llvm::FunctionType::get(void_ty, {ptr_ty, i32, ptr_ty, i32, pp_ty, pp_ty}, false);
     join_func = llvm::Function::Create(join_ft, llvm::Function::ExternalLinkage, "__aevix_join", module.get());
@@ -1784,6 +1788,16 @@ llvm::Value* CodeGenerator::generate_expr(const std::shared_ptr<Expr>& expr) {
             auto rp = builder->CreateLoad(llvm::PointerType::getUnqual(*context), p_out, "ca.rp");
             auto rl = builder->CreateLoad(builder->getInt32Ty(), l_out, "ca.rl");
             return make_string_slice(rp, rl);
+        }
+
+        // str_hash(s) -> int: stable FNV-1a hash for stdlib map/set keys
+        if (call->callee == "str_hash" && call->args.size() == 1) {
+            auto sv = generate_expr(call->args[0]);
+            if (!sv) return nullptr;
+            if (!is_string_slice(sv->getType())) error("str_hash() requires a string");
+            auto sp = builder->CreateExtractValue(sv, 0, "sh.sp");
+            auto sl = builder->CreateExtractValue(sv, 1, "sh.sl");
+            return builder->CreateCall(str_hash_func, {sp, sl}, "strhash");
         }
 
         // join(sep, arr) -> string: join string array with separator

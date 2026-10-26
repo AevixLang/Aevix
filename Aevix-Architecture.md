@@ -9,7 +9,7 @@ This document outlines the internal design and technical implementation of the A
 Aevix employs a multi-stage, multi-language pipeline to balance rapid prototyping of language features with extreme backend performance.
 
 **High-Level Data Flow:**
-`Source (.aev)` → `Frontend (C++)` → `AST (JSON v4)` → `Sema (C++)` → `Codegen (C++/LLVM)` → `LLVM IR` → `Machine Code`
+`Source (.aev)` → `Frontend (C++)` → `AST (JSON v6)` → `Sema (C++)` → `Codegen (C++/LLVM)` → `LLVM IR` → `Machine Code`
 
 ---
 
@@ -97,7 +97,7 @@ When adding a new language feature:
 | :--- | :--- | :--- |
 | Grammar | Lark (EBNF) | Syntax reference |
 | Frontend | C++17 (primary), Python (fallback) | Lexing, parsing, AST generation |
-| Intermediate | JSON (schema v5) | Frontend ↔ Backend bridge |
+| Intermediate | JSON (schema v6) | Frontend ↔ Backend bridge |
 | Static Analysis | C++17 | Type/scope/escape validation |
 | Code Generation | C++17 + LLVM | IR generation |
 | Runtime | C | Arena, epochs, builtins, I/O |

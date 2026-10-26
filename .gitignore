@@ -23,6 +23,7 @@ CMakeFiles/
 
 # Go
 /aevix
+/aevix-pm
 aevix.exe
 /tools/aevix
 *.exe
@@ -51,3 +52,7 @@ notes/
 
 # temp harness sources (run_and_capture leaves tmpXXXX.aev if the run is aborted)
 frontend/tmp*.aev
+
+# Built Go binaries (bootstrap builds these; never commit them)
+/tools/cmd/aevix/aevix
+/tools/cmd/aevix-pm/aevix-pm

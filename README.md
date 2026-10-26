@@ -14,26 +14,34 @@ Aevix aims to push beyond existing languages by combining:
 
 ## Key Features
 
-### Implemented (v0.1)
+### Implemented (v0.3.9)
 - **Static type system** — int, float, bool, string, fixed-width types (i8–u64, f32/f64), structs, enums
 - **Arena-based memory (Epochs)** — O(1) rollback, no GC, no borrow checker
 - **Reference parameters** — `ref` with aliasing and escape safety checks
 - **Arrays & slices** — fixed-size arrays (by value) and open slices (arena-allocated)
-- **String builtins** — split, join, trim, upper, lower, contains, replace, startswith, endswith, char_at
+- **String builtins** — split, join, trim, upper, lower, contains, replace, startswith, endswith, char_at, str_hash
+- **Language ergonomics** — f-string interpolation (`f"x={x}"`), `%` remainder, `match` statement and expression with exhaustive enum checking
+- **Standard library** — `std:text`, `std:io`, `std:math`, `std:collections` (slice helpers, hash maps/sets) shipped with the toolchain via `import "std:";`
 - **Hot regions** — `hot { }` marks a critical path: `hot` function attribute,
   loop vectorize/unroll metadata, cache-line aligned locals, allocation
   prefetch (`epoch` is rejected inside)
 - **Multi-file imports** — with cycle detection, import aliases/namespaces
   (`import "mod" as mod;`), and package support
 - **Package manager** — `aevix-pm` maintains `aevix.toml` / `aevix.lock`; the
-  compiler resolves `package:module` imports against the lock (local `path`
-  dependencies)
+  compiler resolves `package:module` imports against the lock. Supports local
+  `path` and remote `git` dependencies, semver ranges, pinned commits,
+  `install`, `update`, `vendor`, `tree` and `why`
 - **C++ frontend** — 20x faster than the legacy Python frontend
 
 ### Roadmap
 - **Self-Optimizing Semantics (SOS)** — Compiler-driven SIMD and stack promotion
 - **Context Polymorphism** — Function codegen adapts to calling context
 - **Proof-Carrying Safety** — Compile-time invariant proofs to strip runtime checks
+
+### Known boundaries
+- Collections are monomorphic (`int`/`string` variants); generics are not in 0.3.
+- Remote packages come from git tags; a central HTTP registry is planned for 0.4.
+- Functions are top-level only (no closures). This is a deliberate language rule.
 
 ## Documentation
 
@@ -74,7 +82,7 @@ aevix/
 ## Compiler Pipeline
 
 ```text
-main.aev ──► [frontend: C++ (or Python fallback)] ──► ast.json (schema v5)
+main.aev ──► [frontend: C++ (or Python fallback)] ──► ast.json (schema v6)
      ──► [sema: C++] ──► static analysis (types, scopes, epoch safety)
      ──► [backend: C++ + LLVM] ──► output.ll (LLVM IR)
      ──► [opt -O2] ──► output.opt.ll (optimized IR, consumes `hot` metadata)
@@ -176,7 +184,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ### Known limitations
 - `func` declarations are allowed only at the top level of a file.
 - `import` is top-level only. Without `as`, imported declarations merge globally; `import "mod" as mod;` scopes them behind the alias (`mod.fn()`, `mod.Type`, `mod.Color.red`).
-- Package imports (`name:module`) resolve against a project `aevix.lock` authored by `aevix-pm`. Local `path` dependencies are supported; version-based registry fetching is not yet.
+- Package imports (`name:module`) resolve against a project `aevix.lock` authored by `aevix-pm`. Local `path` and remote `git` dependencies are supported; a central HTTP registry is planned for 0.4.
+- Collections are monomorphic (`int`/`string` variants); generics are not in 0.3.
 - The arena grows on demand but is never freed individually; epoch blocks roll the allocation point back.
 - `hot` accelerates loops (cache-line aligned slots, vectorize/unroll
   metadata consumed by the pipeline's `opt -O2` stage, allocation prefetch)

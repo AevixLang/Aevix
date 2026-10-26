@@ -145,3 +145,121 @@ def test_pm_output_resolves_in_compiler(pm_bin):
         assert proc.returncode == 0, proc.stderr
         with open(out) as f:
             assert "add" in f.read()
+
+
+# --- git dependencies (0.3.9) ---
+
+def make_git_pkg(root, name, versions):
+    """Create a git repo with one commit+tag per version."""
+    if shutil.which("git") is None:
+        pytest.skip("git toolchain not available")
+    path = os.path.join(root, name)
+    os.makedirs(path)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Aevix Test"], cwd=path, check=True)
+    for v in versions:
+        with open(os.path.join(path, "lib.aev"), "w") as f:
+            f.write("func dep_val(): int { return 42; }\n")
+        with open(os.path.join(path, "aevix.toml"), "w") as f:
+            f.write(f'[package]\nname = "{name}"\nversion = "{v}"\n')
+        subprocess.run(["git", "add", "."], cwd=path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"release {v}"], cwd=path, check=True)
+        subprocess.run(["git", "tag", f"v{v}"], cwd=path, check=True)
+    return path
+
+
+def test_add_git_picks_newest_tag(pm_bin):
+    with tempfile.TemporaryDirectory() as proj:
+        run_pm(pm_bin, proj, "init", "app")
+        repo = make_git_pkg(proj, "remotedep", ["1.0.0", "1.1.0"])
+        p = run_pm(pm_bin, proj, "add", "remotedep", "--git", repo, "--version", "^1.0")
+        assert p.returncode == 0, p.stderr
+        with open(os.path.join(proj, "aevix.lock")) as f:
+            dep = json.load(f)["dependencies"]["remotedep"]
+        assert dep["version"] == "1.1.0"
+        assert dep["path"] == "lib/remotedep"
+        assert dep["source"] == "git+" + repo
+        assert len(dep["rev"]) == 40
+        assert os.path.exists(os.path.join(proj, "lib", "remotedep", "lib.aev"))
+
+
+def test_install_restores_git_dep(pm_bin):
+    with tempfile.TemporaryDirectory() as proj:
+        run_pm(pm_bin, proj, "init", "app")
+        repo = make_git_pkg(proj, "remotedep", ["1.0.0"])
+        assert run_pm(pm_bin, proj, "add", "remotedep", "--git", repo).returncode == 0
+        shutil.rmtree(os.path.join(proj, "lib", "remotedep"))
+        p = run_pm(pm_bin, proj, "install")
+        assert p.returncode == 0, p.stderr
+        assert os.path.exists(os.path.join(proj, "lib", "remotedep", "lib.aev"))
+
+
+@pytest.mark.skipif(not os.path.exists(CPP_FE), reason="c++ frontend not built")
+def test_git_dep_resolves_in_compiler(pm_bin):
+    with tempfile.TemporaryDirectory() as proj:
+        run_pm(pm_bin, proj, "init", "app")
+        repo = make_git_pkg(proj, "remotedep", ["1.0.0"])
+        assert run_pm(pm_bin, proj, "add", "remotedep", "--git", repo).returncode == 0
+        with open(os.path.join(proj, "main.aev"), "w") as f:
+            f.write('import "remotedep:";\nprint dep_val();\n')
+        out = os.path.join(proj, "ast.json")
+        proc = subprocess.run([CPP_FE, os.path.join(proj, "main.aev"), "-o", out],
+                              cwd=proj, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        with open(out) as f:
+            assert "dep_val" in f.read()
+
+
+# --- vendor hardening (0.3.9) ---
+
+def test_vendor_skips_git_and_rejects_symlinks(pm_bin):
+    with tempfile.TemporaryDirectory() as proj:
+        run_pm(pm_bin, proj, "init", "app")
+        dep = os.path.join(proj, "calc")
+        make_pkg(dep, "calc", "1.0.0")
+        os.makedirs(os.path.join(dep, ".git"))
+        with open(os.path.join(dep, ".git", "config"), "w") as f:
+            f.write("secret\n")
+        assert run_pm(pm_bin, proj, "add", "calc", "--path", "./calc").returncode == 0
+
+        link = os.path.join(dep, "alias.aev")
+        try:
+            os.symlink("lib.aev", link)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        p = run_pm(pm_bin, proj, "vendor")
+        assert p.returncode != 0, "vendor must refuse a symlink"
+        os.unlink(link)
+
+        p = run_pm(pm_bin, proj, "vendor")
+        assert p.returncode == 0, p.stderr
+        vendored = os.path.join(proj, "lib", "vendor", "calc")
+        assert os.path.exists(os.path.join(vendored, "lib.aev"))
+        assert not os.path.exists(os.path.join(vendored, ".git"))
+
+        # A second run must not recurse into or delete its own output.
+        p = run_pm(pm_bin, proj, "vendor")
+        assert p.returncode == 0, p.stderr
+        assert os.path.exists(os.path.join(vendored, "lib.aev"))
+
+
+def add_git_version(repo, name, version):
+    with open(os.path.join(repo, "aevix.toml"), "w") as f:
+        f.write(f'[package]\nname = "{name}"\nversion = "{version}"\n')
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", f"release {version}"], cwd=repo, check=True)
+    subprocess.run(["git", "tag", f"v{version}"], cwd=repo, check=True)
+
+
+def test_update_git_picks_newer_tag(pm_bin):
+    with tempfile.TemporaryDirectory() as proj:
+        run_pm(pm_bin, proj, "init", "app")
+        repo = make_git_pkg(proj, "remotedep", ["1.0.0"])
+        assert run_pm(pm_bin, proj, "add", "remotedep", "--git", repo, "--version", "^1.0").returncode == 0
+        add_git_version(repo, "remotedep", "1.1.0")
+        p = run_pm(pm_bin, proj, "update", "remotedep")
+        assert p.returncode == 0, p.stderr
+        with open(os.path.join(proj, "aevix.lock")) as f:
+            dep = json.load(f)["dependencies"]["remotedep"]
+        assert dep["version"] == "1.1.0"

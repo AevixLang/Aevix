@@ -88,22 +88,49 @@ func sum_int(arr: int[]) : int {
 }
 
 // ============================================================================
-// std:collections — arena-backed monomorphic map/set (v0.3.5)
-//
-// Fixed-capacity maps/sets with linear probing and linear search. Storage
-// lives on the compilation arena and is reclaimed at the next epoch rollback.
-// No generics are available yet, so variants are monomorphic.
 // ============================================================================
+// std:collections — arena-backed monomorphic map/set (v0.3.9)
+//
+// Open-addressing hash tables. Storage lives on the compilation arena and is
+// reclaimed at the next epoch rollback. No generics are available yet, so the
+// variants are monomorphic; string keys use the runtime's stable FNV-1a hash.
+// ============================================================================
+
+// Stable 32-bit hash for integer keys. The multiply is a classic Fibonacci
+// mixing step; taking the absolute value keeps the modulo index non-negative.
+func _collection_hash_int(v: int) : int {
+    let x = v * 2654435761;
+    if (x < 0) { x = -x; }
+    // -INT_MIN overflows back to INT_MIN; clamp that one case so the modulo
+    // index can never be negative.
+    if (x < 0) { x = 1; }
+    return x;
+}
+
+func _collection_hash_str(s: string) : int {
+    return str_hash(s);
+}
 
 // ----------------------------------------------------------------------------
 // map<int,int>
 // ----------------------------------------------------------------------------
 
-struct MapIntInt { keys: int[], vals: int[], size: int, cap: int }
+struct MapIntInt { keys: int[], vals: int[], slots: int[], size: int, cap: int }
 
-func _map_int_int_ensure(m: ref MapIntInt) {
-    if (m.size < m.cap) { return; }
-    let nc = m.cap * 2;
+func _map_int_int_rebuild(m: ref MapIntInt) {
+    m.slots = new int[m.cap];
+    let j = 0;
+    while (j < m.size) {
+        let idx = _collection_hash_int(m.keys[j]) % m.cap;
+        while (m.slots[idx] != 0) {
+            idx = (idx + 1) % m.cap;
+        }
+        m.slots[idx] = j + 1;
+        j = j + 1;
+    }
+}
+
+func _map_int_int_rehash(m: ref MapIntInt, nc: int) {
     let nk = new int[nc];
     let nv = new int[nc];
     let i = 0;
@@ -115,25 +142,35 @@ func _map_int_int_ensure(m: ref MapIntInt) {
     m.keys = nk;
     m.vals = nv;
     m.cap = nc;
+    _map_int_int_rebuild(m);
+}
+
+func _map_int_int_ensure(m: ref MapIntInt) {
+    // Keep the load factor at or below 70%; an empty slot always terminates
+    // the probe loop in put().
+    if ((m.size + 1) * 10 <= m.cap * 7) { return; }
+    _map_int_int_rehash(m, m.cap * 2);
 }
 
 func map_int_int_new() : MapIntInt {
     let c = 8;
-    return MapIntInt { new int[c], new int[c], 0, c };
+    return MapIntInt { new int[c], new int[c], new int[c], 0, c };
 }
 
 func map_int_int_put(m: ref MapIntInt, key: int, val: int) {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) {
-            m.vals[i] = val;
+    _map_int_int_ensure(m);
+    let idx = _collection_hash_int(key) % m.cap;
+    while (m.slots[idx] != 0) {
+        let slot = m.slots[idx];
+        if (m.keys[slot - 1] == key) {
+            m.vals[slot - 1] = val;
             return;
         }
-        i = i + 1;
+        idx = (idx + 1) % m.cap;
     }
-    _map_int_int_ensure(m);
     m.keys[m.size] = key;
     m.vals[m.size] = val;
+    m.slots[idx] = m.size + 1;
     m.size = m.size + 1;
 }
 
@@ -150,10 +187,14 @@ func map_int_int_insert(m: ref MapIntInt, key: int, val: int) {
 }
 
 func map_int_int_get(m: MapIntInt, key: int) : int {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) { return m.vals[i]; }
-        i = i + 1;
+    let idx = _collection_hash_int(key) % m.cap;
+    let steps = 0;
+    while (steps < m.cap) {
+        let slot = m.slots[idx];
+        if (slot == 0) { return 0; }
+        if (m.keys[slot - 1] == key) { return m.vals[slot - 1]; }
+        idx = (idx + 1) % m.cap;
+        steps = steps + 1;
     }
     return 0;
 }
@@ -167,10 +208,14 @@ func map_int_int_find(m: MapIntInt, key: int) : int {
 }
 
 func map_int_int_has(m: MapIntInt, key: int) : bool {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) { return true; }
-        i = i + 1;
+    let idx = _collection_hash_int(key) % m.cap;
+    let steps = 0;
+    while (steps < m.cap) {
+        let slot = m.slots[idx];
+        if (slot == 0) { return false; }
+        if (m.keys[slot - 1] == key) { return true; }
+        idx = (idx + 1) % m.cap;
+        steps = steps + 1;
     }
     return false;
 }
@@ -184,19 +229,25 @@ func map_int_int_contains_key(m: MapIntInt, key: int) : bool {
 }
 
 func map_int_int_remove(m: ref MapIntInt, key: int) {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) {
-            let j = i;
+    let idx = _collection_hash_int(key) % m.cap;
+    let steps = 0;
+    while (steps < m.cap) {
+        let slot = m.slots[idx];
+        if (slot == 0) { return; }
+        let e = slot - 1;
+        if (m.keys[e] == key) {
+            let j = e;
             while (j + 1 < m.size) {
                 m.keys[j] = m.keys[j + 1];
                 m.vals[j] = m.vals[j + 1];
                 j = j + 1;
             }
             m.size = m.size - 1;
+            _map_int_int_rebuild(m);
             return;
         }
-        i = i + 1;
+        idx = (idx + 1) % m.cap;
+        steps = steps + 1;
     }
 }
 
@@ -214,6 +265,7 @@ func map_int_int_erase(m: ref MapIntInt, key: int) {
 
 func map_int_int_clear(m: ref MapIntInt) {
     m.size = 0;
+    m.slots = new int[m.cap];
 }
 
 func map_int_int_size(m: MapIntInt) : int { return m.size; }
@@ -244,11 +296,22 @@ func create_map_int_int() : MapIntInt { return map_int_int_new(); }
 // map<string,int>
 // ----------------------------------------------------------------------------
 
-struct MapStrInt { keys: string[], vals: int[], size: int, cap: int }
+struct MapStrInt { keys: string[], vals: int[], slots: int[], size: int, cap: int }
 
-func _map_str_int_ensure(m: ref MapStrInt) {
-    if (m.size < m.cap) { return; }
-    let nc = m.cap * 2;
+func _map_str_int_rebuild(m: ref MapStrInt) {
+    m.slots = new int[m.cap];
+    let j = 0;
+    while (j < m.size) {
+        let idx = _collection_hash_str(m.keys[j]) % m.cap;
+        while (m.slots[idx] != 0) {
+            idx = (idx + 1) % m.cap;
+        }
+        m.slots[idx] = j + 1;
+        j = j + 1;
+    }
+}
+
+func _map_str_int_rehash(m: ref MapStrInt, nc: int) {
     let nk = new string[nc];
     let nv = new int[nc];
     let i = 0;
@@ -260,25 +323,33 @@ func _map_str_int_ensure(m: ref MapStrInt) {
     m.keys = nk;
     m.vals = nv;
     m.cap = nc;
+    _map_str_int_rebuild(m);
+}
+
+func _map_str_int_ensure(m: ref MapStrInt) {
+    if ((m.size + 1) * 10 <= m.cap * 7) { return; }
+    _map_str_int_rehash(m, m.cap * 2);
 }
 
 func map_str_int_new() : MapStrInt {
     let c = 8;
-    return MapStrInt { new string[c], new int[c], 0, c };
+    return MapStrInt { new string[c], new int[c], new int[c], 0, c };
 }
 
 func map_str_int_put(m: ref MapStrInt, key: string, val: int) {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) {
-            m.vals[i] = val;
+    _map_str_int_ensure(m);
+    let idx = _collection_hash_str(key) % m.cap;
+    while (m.slots[idx] != 0) {
+        let slot = m.slots[idx];
+        if (m.keys[slot - 1] == key) {
+            m.vals[slot - 1] = val;
             return;
         }
-        i = i + 1;
+        idx = (idx + 1) % m.cap;
     }
-    _map_str_int_ensure(m);
     m.keys[m.size] = key;
     m.vals[m.size] = val;
+    m.slots[idx] = m.size + 1;
     m.size = m.size + 1;
 }
 
@@ -295,10 +366,14 @@ func map_str_int_insert(m: ref MapStrInt, key: string, val: int) {
 }
 
 func map_str_int_get(m: MapStrInt, key: string) : int {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) { return m.vals[i]; }
-        i = i + 1;
+    let idx = _collection_hash_str(key) % m.cap;
+    let steps = 0;
+    while (steps < m.cap) {
+        let slot = m.slots[idx];
+        if (slot == 0) { return 0; }
+        if (m.keys[slot - 1] == key) { return m.vals[slot - 1]; }
+        idx = (idx + 1) % m.cap;
+        steps = steps + 1;
     }
     return 0;
 }
@@ -312,10 +387,14 @@ func map_str_int_find(m: MapStrInt, key: string) : int {
 }
 
 func map_str_int_has(m: MapStrInt, key: string) : bool {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) { return true; }
-        i = i + 1;
+    let idx = _collection_hash_str(key) % m.cap;
+    let steps = 0;
+    while (steps < m.cap) {
+        let slot = m.slots[idx];
+        if (slot == 0) { return false; }
+        if (m.keys[slot - 1] == key) { return true; }
+        idx = (idx + 1) % m.cap;
+        steps = steps + 1;
     }
     return false;
 }
@@ -329,19 +408,25 @@ func map_str_int_contains_key(m: MapStrInt, key: string) : bool {
 }
 
 func map_str_int_remove(m: ref MapStrInt, key: string) {
-    let i = 0;
-    while (i < m.size) {
-        if (m.keys[i] == key) {
-            let j = i;
+    let idx = _collection_hash_str(key) % m.cap;
+    let steps = 0;
+    while (steps < m.cap) {
+        let slot = m.slots[idx];
+        if (slot == 0) { return; }
+        let e = slot - 1;
+        if (m.keys[e] == key) {
+            let j = e;
             while (j + 1 < m.size) {
                 m.keys[j] = m.keys[j + 1];
                 m.vals[j] = m.vals[j + 1];
                 j = j + 1;
             }
             m.size = m.size - 1;
+            _map_str_int_rebuild(m);
             return;
         }
-        i = i + 1;
+        idx = (idx + 1) % m.cap;
+        steps = steps + 1;
     }
 }
 
@@ -359,6 +444,7 @@ func map_str_int_erase(m: ref MapStrInt, key: string) {
 
 func map_str_int_clear(m: ref MapStrInt) {
     m.size = 0;
+    m.slots = new int[m.cap];
 }
 
 func map_str_int_size(m: MapStrInt) : int { return m.size; }
@@ -380,6 +466,7 @@ func map_str_int_values(m: MapStrInt) : int[] {
     return out;
 }
 
+// alias constructors
 func map_new_str_int() : MapStrInt { return map_str_int_new(); }
 func new_map_str_int() : MapStrInt { return map_str_int_new(); }
 func create_map_str_int() : MapStrInt { return map_str_int_new(); }
@@ -388,31 +475,53 @@ func create_map_str_int() : MapStrInt { return map_str_int_new(); }
 // set<int>
 // ----------------------------------------------------------------------------
 
-struct SetInt { items: int[], size: int, cap: int }
+struct SetInt { items: int[], slots: int[], size: int, cap: int }
 
-func _set_int_ensure(s: ref SetInt) {
-    if (s.size < s.cap) { return; }
-    let nc = s.cap * 2;
+func _set_int_rebuild(s: ref SetInt) {
+    s.slots = new int[s.cap];
+    let j = 0;
+    while (j < s.size) {
+        let idx = _collection_hash_int(s.items[j]) % s.cap;
+        while (s.slots[idx] != 0) {
+            idx = (idx + 1) % s.cap;
+        }
+        s.slots[idx] = j + 1;
+        j = j + 1;
+    }
+}
+
+func _set_int_rehash(s: ref SetInt, nc: int) {
     let ni = new int[nc];
     let i = 0;
-    while (i < s.size) { ni[i] = s.items[i]; i = i + 1; }
+    while (i < s.size) {
+        ni[i] = s.items[i];
+        i = i + 1;
+    }
     s.items = ni;
     s.cap = nc;
+    _set_int_rebuild(s);
+}
+
+func _set_int_ensure(s: ref SetInt) {
+    if ((s.size + 1) * 10 <= s.cap * 7) { return; }
+    _set_int_rehash(s, s.cap * 2);
 }
 
 func set_int_new() : SetInt {
     let c = 8;
-    return SetInt { new int[c], 0, c };
+    return SetInt { new int[c], new int[c], 0, c };
 }
 
 func set_int_add(s: ref SetInt, value: int) {
-    let i = 0;
-    while (i < s.size) {
-        if (s.items[i] == value) { return; }
-        i = i + 1;
-    }
     _set_int_ensure(s);
+    let idx = _collection_hash_int(value) % s.cap;
+    while (s.slots[idx] != 0) {
+        let slot = s.slots[idx];
+        if (s.items[slot - 1] == value) { return; }
+        idx = (idx + 1) % s.cap;
+    }
     s.items[s.size] = value;
+    s.slots[idx] = s.size + 1;
     s.size = s.size + 1;
 }
 
@@ -421,10 +530,14 @@ func set_int_insert(s: ref SetInt, value: int) {
 }
 
 func set_int_contains(s: SetInt, value: int) : bool {
-    let i = 0;
-    while (i < s.size) {
-        if (s.items[i] == value) { return true; }
-        i = i + 1;
+    let idx = _collection_hash_int(value) % s.cap;
+    let steps = 0;
+    while (steps < s.cap) {
+        let slot = s.slots[idx];
+        if (slot == 0) { return false; }
+        if (s.items[slot - 1] == value) { return true; }
+        idx = (idx + 1) % s.cap;
+        steps = steps + 1;
     }
     return false;
 }
@@ -433,20 +546,25 @@ func set_int_has(s: SetInt, value: int) : bool {
     return set_int_contains(s, value);
 }
 
-
 func set_int_remove(s: ref SetInt, value: int) {
-    let i = 0;
-    while (i < s.size) {
-        if (s.items[i] == value) {
-            let j = i;
+    let idx = _collection_hash_int(value) % s.cap;
+    let steps = 0;
+    while (steps < s.cap) {
+        let slot = s.slots[idx];
+        if (slot == 0) { return; }
+        let e = slot - 1;
+        if (s.items[e] == value) {
+            let j = e;
             while (j + 1 < s.size) {
                 s.items[j] = s.items[j + 1];
                 j = j + 1;
             }
             s.size = s.size - 1;
+            _set_int_rebuild(s);
             return;
         }
-        i = i + 1;
+        idx = (idx + 1) % s.cap;
+        steps = steps + 1;
     }
 }
 
@@ -460,6 +578,7 @@ func set_int_erase(s: ref SetInt, value: int) {
 
 func set_int_clear(s: ref SetInt) {
     s.size = 0;
+    s.slots = new int[s.cap];
 }
 
 func set_int_size(s: SetInt) : int { return s.size; }
@@ -484,31 +603,53 @@ func create_set_int() : SetInt { return set_int_new(); }
 // set<string>
 // ----------------------------------------------------------------------------
 
-struct SetStr { items: string[], size: int, cap: int }
+struct SetStr { items: string[], slots: int[], size: int, cap: int }
 
-func _set_str_ensure(s: ref SetStr) {
-    if (s.size < s.cap) { return; }
-    let nc = s.cap * 2;
+func _set_str_rebuild(s: ref SetStr) {
+    s.slots = new int[s.cap];
+    let j = 0;
+    while (j < s.size) {
+        let idx = _collection_hash_str(s.items[j]) % s.cap;
+        while (s.slots[idx] != 0) {
+            idx = (idx + 1) % s.cap;
+        }
+        s.slots[idx] = j + 1;
+        j = j + 1;
+    }
+}
+
+func _set_str_rehash(s: ref SetStr, nc: int) {
     let ni = new string[nc];
     let i = 0;
-    while (i < s.size) { ni[i] = s.items[i]; i = i + 1; }
+    while (i < s.size) {
+        ni[i] = s.items[i];
+        i = i + 1;
+    }
     s.items = ni;
     s.cap = nc;
+    _set_str_rebuild(s);
+}
+
+func _set_str_ensure(s: ref SetStr) {
+    if ((s.size + 1) * 10 <= s.cap * 7) { return; }
+    _set_str_rehash(s, s.cap * 2);
 }
 
 func set_str_new() : SetStr {
     let c = 8;
-    return SetStr { new string[c], 0, c };
+    return SetStr { new string[c], new int[c], 0, c };
 }
 
 func set_str_add(s: ref SetStr, value: string) {
-    let i = 0;
-    while (i < s.size) {
-        if (s.items[i] == value) { return; }
-        i = i + 1;
-    }
     _set_str_ensure(s);
+    let idx = _collection_hash_str(value) % s.cap;
+    while (s.slots[idx] != 0) {
+        let slot = s.slots[idx];
+        if (s.items[slot - 1] == value) { return; }
+        idx = (idx + 1) % s.cap;
+    }
     s.items[s.size] = value;
+    s.slots[idx] = s.size + 1;
     s.size = s.size + 1;
 }
 
@@ -517,10 +658,14 @@ func set_str_insert(s: ref SetStr, value: string) {
 }
 
 func set_str_contains(s: SetStr, value: string) : bool {
-    let i = 0;
-    while (i < s.size) {
-        if (s.items[i] == value) { return true; }
-        i = i + 1;
+    let idx = _collection_hash_str(value) % s.cap;
+    let steps = 0;
+    while (steps < s.cap) {
+        let slot = s.slots[idx];
+        if (slot == 0) { return false; }
+        if (s.items[slot - 1] == value) { return true; }
+        idx = (idx + 1) % s.cap;
+        steps = steps + 1;
     }
     return false;
 }
@@ -530,18 +675,24 @@ func set_str_has(s: SetStr, value: string) : bool {
 }
 
 func set_str_remove(s: ref SetStr, value: string) {
-    let i = 0;
-    while (i < s.size) {
-        if (s.items[i] == value) {
-            let j = i;
+    let idx = _collection_hash_str(value) % s.cap;
+    let steps = 0;
+    while (steps < s.cap) {
+        let slot = s.slots[idx];
+        if (slot == 0) { return; }
+        let e = slot - 1;
+        if (s.items[e] == value) {
+            let j = e;
             while (j + 1 < s.size) {
                 s.items[j] = s.items[j + 1];
                 j = j + 1;
             }
             s.size = s.size - 1;
+            _set_str_rebuild(s);
             return;
         }
-        i = i + 1;
+        idx = (idx + 1) % s.cap;
+        steps = steps + 1;
     }
 }
 
@@ -555,6 +706,7 @@ func set_str_erase(s: ref SetStr, value: string) {
 
 func set_str_clear(s: ref SetStr) {
     s.size = 0;
+    s.slots = new int[s.cap];
 }
 
 func set_str_size(s: SetStr) : int { return s.size; }

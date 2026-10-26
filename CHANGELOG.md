@@ -6,6 +6,41 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.9] — 2026-10-26
+
+### Added
+- **Git dependencies in `aevix-pm`** — `add <name> --git <url>` resolves the
+  newest semver tag in `--version` (or an explicit `--rev`), materializes it
+  under `lib/<name>/`, and pins the exact commit SHA in `aevix.lock`.
+  `install` reproduces that tree from the lock; `update` re-resolves tags.
+  Lock entries gain `source` and `rev`; the compiler still reads only `path`.
+- **`str_hash` builtin** — stable, non-negative FNV-1a string hash exposed to
+  Aevix and covered by tests.
+- **Hash-backed `std:collections`** — `MapIntInt`, `MapStrInt`, `SetInt` and
+  `SetStr` now use open addressing with a 70% load factor instead of linear
+  search. Growth, overwrite and removal rebuild the probe table; insertion
+  order is preserved. The structs gained a `slots` field.
+- **Collection and package-manager tests** — hash-map/set growth, overwrite,
+  removal, string keys, `str_hash` stability, and git add/install/compiler
+  resolution.
+
+### Fixed
+- **`vendor` now actually skips `.git` metadata and refuses symlinks**, as
+  promised in 0.3.7. It also refuses to copy a tree into itself and is
+  idempotent on a second run (already-vendored deps are left alone).
+- **Documentation caught up with the compiler** — `Syntax.md` now documents
+  `std:`, f-strings, `%`, `str_hash`, the standard library and hash
+  collections; `README.md` and the architecture docs no longer claim schema
+  v5 or "stdlib reserved for the future"; the Russian mirrors are updated.
+- **Committed Go binaries removed** — `tools/cmd/aevix/aevix` and
+  `tools/cmd/aevix-pm/aevix-pm` are no longer tracked and are gitignored;
+  `bootstrap.py` builds both.
+
+### Notes
+- A central HTTP registry and language generics remain out of scope for the
+  0.3 line; remote packages are fetched from git tags, and collections stay
+  monomorphic by design.
+
 ## [0.3.8] — 2026-10-26
 
 ### Added
