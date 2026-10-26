@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -233,5 +234,189 @@ func TestHelpers(t *testing.T) {
 	}
 	if parts[0] != `x = "a,b"` || parts[1] != ` y = "c"` {
 		t.Fatalf("splitTop parts = %#v", parts)
+	}
+}
+
+func TestCopyTreeSkipsGitMetadata(t *testing.T) {
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".git", "config"), []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "lib.aev"), []byte("func f(): int { return 1; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := copyTree(src, dst); err != nil {
+		t.Fatalf("copyTree: %v", err)
+	}
+	if fileExists(filepath.Join(dst, ".git", "config")) {
+		t.Fatal("copyTree copied .git metadata")
+	}
+	if !fileExists(filepath.Join(dst, "lib.aev")) {
+		t.Fatal("copyTree did not copy package source")
+	}
+}
+
+func TestCopyTreeRejectsSymlink(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "lib.aev"), []byte("func f(): int { return 1; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("lib.aev", filepath.Join(src, "link.aev")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := copyTree(src, filepath.Join(t.TempDir(), "copy")); err == nil {
+		t.Fatal("copyTree accepted a symlink")
+	}
+}
+
+func TestCopyTreeRejectsSelfCopy(t *testing.T) {
+	src := t.TempDir()
+	if err := copyTree(src, filepath.Join(src, "lib", "vendor", "self")); err == nil {
+		t.Fatal("copyTree accepted a destination inside the source")
+	}
+}
+
+// makeGitDep creates a git repository with one tag per version, so the remote
+// resolver has a real tag history to choose from.
+func makeGitDep(t *testing.T, root, name string, versions ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitOutput(dir, "init", "-q"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitOutput(dir, "config", "user.email", "test@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitOutput(dir, "config", "user.name", "Aevix Test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range versions {
+		if err := os.WriteFile(filepath.Join(dir, "lib.aev"), []byte("func dep_val(): int { return 42; }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		manifest := "[package]\nname = \"" + name + "\"\nversion = \"" + v + "\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "aevix.toml"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := gitOutput(dir, "add", "."); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := gitOutput(dir, "commit", "-q", "-m", "release "+v); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := gitOutput(dir, "tag", "v"+v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestAddGitPicksNewestTag(t *testing.T) {
+	dir := makeProject(t)
+	if err := cmdInit([]string{"app"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := makeGitDep(t, dir, "remotedep", "1.0.0", "1.1.0")
+	if err := cmdAdd([]string{"remotedep", "--git", repo, "--version", "^1.0"}); err != nil {
+		t.Fatalf("add --git: %v", err)
+	}
+	lock, err := readLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep, ok := lock.Dependencies["remotedep"]
+	if !ok {
+		t.Fatal("lock missing remotedep")
+	}
+	if dep.Version != "1.1.0" {
+		t.Fatalf("resolved version = %q, want 1.1.0", dep.Version)
+	}
+	if dep.Path != "lib/remotedep" {
+		t.Fatalf("resolved path = %q, want lib/remotedep", dep.Path)
+	}
+	if dep.Source != "git+"+repo {
+		t.Fatalf("source = %q, want git+%s", dep.Source, repo)
+	}
+	if len(dep.Rev) != 40 {
+		t.Fatalf("rev = %q, want a 40-char commit", dep.Rev)
+	}
+	if !hasAevSource(filepath.Join(dir, "lib", "remotedep")) {
+		t.Fatal("add --git did not materialize the package")
+	}
+}
+
+func TestInstallRestoresGitDependency(t *testing.T) {
+	dir := makeProject(t)
+	if err := cmdInit([]string{"app"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := makeGitDep(t, dir, "remotedep", "1.0.0", "1.1.0")
+	if err := cmdAdd([]string{"remotedep", "--git", repo, "--version", "^1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "lib", "remotedep")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdInstall(nil); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !hasAevSource(filepath.Join(dir, "lib", "remotedep")) {
+		t.Fatal("install did not restore the git dependency")
+	}
+}
+
+func TestAddGitWithExplicitRev(t *testing.T) {
+	dir := makeProject(t)
+	if err := cmdInit([]string{"app"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := makeGitDep(t, dir, "remotedep", "1.0.0", "1.1.0")
+	rev, err := gitOutput(repo, "rev-parse", "v1.0.0^{commit}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdAdd([]string{"remotedep", "--git", repo, "--rev", rev}); err != nil {
+		t.Fatalf("add --git --rev: %v", err)
+	}
+	lock, _ := readLock(dir)
+	dep := lock.Dependencies["remotedep"]
+	if dep.Rev != rev {
+		t.Fatalf("rev = %q, want %q", dep.Rev, rev)
+	}
+	if dep.Version != "1.0.0" {
+		t.Fatalf("version = %q, want 1.0.0", dep.Version)
+	}
+}
+
+func TestCopyTreeSkipsGitFile(t *testing.T) {
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "nested", ".git"), []byte("gitdir: ../.git/worktrees/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "nested", "lib.aev"), []byte("func f(): int { return 1; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := copyTree(src, dst); err != nil {
+		t.Fatalf("copyTree: %v", err)
+	}
+	if fileExists(filepath.Join(dst, "nested", ".git")) {
+		t.Fatal("copyTree copied a .git file")
+	}
+	if !fileExists(filepath.Join(dst, "nested", "lib.aev")) {
+		t.Fatal("copyTree did not copy nested package source")
 	}
 }

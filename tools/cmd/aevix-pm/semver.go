@@ -193,6 +193,12 @@ func satisfyTilde(v, v0 Version) bool {
 	return v.Patch == v0.Patch
 }
 
+// Package names are part of the compiler's import namespace and of the
+// materialized lib/<name> path, so reject path separators and dots.
+var depNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+func validDepName(s string) bool { return depNameRe.MatchString(s) }
+
 // Range validation helper for `add --version`.
 var rangeRe = regexp.MustCompile(`^[0-9A-Za-z,\-+.\^~<>=* ]+$`)
 

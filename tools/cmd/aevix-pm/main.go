@@ -30,26 +30,31 @@ type Manifest struct {
 	Deps    map[string]Dep
 }
 
-// Dep is one declared dependency. P0 supports local path dependencies only;
-// version-based registry fetching lands with the resolver in a later slice.
+// Dep is one declared dependency: either a local working tree (Path) or a
+// remote git repository (Git), plus an optional semver range and an optional
+// exact revision. The two sources are mutually exclusive.
 type Dep struct {
 	Path    string // directory of the package, relative to the manifest
-	Version string // optional; informational for path deps
+	Git     string // remote git URL (https://, ssh://, or file://)
+	Rev     string // optional exact tag/commit; empty means "newest tag in range"
+	Version string // semver range, or the detected version for path deps
 }
 
 // Lock mirrors aevix.lock: the resolved, reproducible graph the compiler reads.
 // It is JSON to match the format both frontends already parse today.
 type Lock struct {
-	Name         string            `json:"name"`
-	Version      string            `json:"version"`
+	Name         string             `json:"name"`
+	Version      string             `json:"version"`
 	Dependencies map[string]LockDep `json:"dependencies"`
 }
 
-// LockDep is one pinned dependency in the lock. Only one of Path/Version is
-// meaningful: a path dep points at a working tree, a version dep at the cache.
+// LockDep is one pinned dependency in the lock. Path is always the materialized
+// directory the compiler reads; Source/Rev are provenance for remote deps.
 type LockDep struct {
 	Version string `json:"version,omitempty"`
 	Path    string `json:"path,omitempty"`
+	Source  string `json:"source,omitempty"` // "git+<url>" for remote deps
+	Rev     string `json:"rev,omitempty"`    // pinned commit SHA
 }
 
 const manifestName = "aevix.toml"
@@ -69,6 +74,8 @@ func main() {
 		run(cmdRemove(os.Args[2:]))
 	case "list":
 		run(cmdList(os.Args[2:]))
+	case "install":
+		run(cmdInstall(os.Args[2:]))
 	case "vendor":
 		run(cmdVendor(os.Args[2:]))
 	case "update":
@@ -98,10 +105,12 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  init [name]              Create aevix.toml and an empty aevix.lock")
 	fmt.Fprintln(os.Stderr, "  add <name> --path <dir>  Add a local path dependency and update the lock")
+	fmt.Fprintln(os.Stderr, "  add <name> --git <url>   Add a git dependency, newest tag in range")
 	fmt.Fprintln(os.Stderr, "  remove <name>            Remove a dependency and update the lock")
 	fmt.Fprintln(os.Stderr, "  update [name]            Re-resolve deps to match the manifest")
 	fmt.Fprintln(os.Stderr, "  list                     List declared dependencies")
-	fmt.Fprintln(os.Stderr, "  vendor                   Copy dependencies into lib/")
+	fmt.Fprintln(os.Stderr, "  install                  Materialize git deps pinned in aevix.lock")
+	fmt.Fprintln(os.Stderr, "  vendor                   Copy dependencies into lib/vendor/")
 	fmt.Fprintln(os.Stderr, "  tree                     Print the resolved dependency graph")
 	fmt.Fprintln(os.Stderr, "  why <name>               Explain why a package is in the graph")
 }
@@ -141,9 +150,18 @@ func writeManifest(root string, m *Manifest) error {
 	b.WriteString("\n[dependencies]\n")
 	for _, name := range sortedKeys(m.Deps) {
 		d := m.Deps[name]
-		parts := []string{fmt.Sprintf("path = %s", quote(d.Path))}
+		var parts []string
+		if d.Path != "" {
+			parts = append(parts, fmt.Sprintf("path = %s", quote(d.Path)))
+		}
+		if d.Git != "" {
+			parts = append(parts, fmt.Sprintf("git = %s", quote(d.Git)))
+		}
 		if d.Version != "" {
 			parts = append(parts, fmt.Sprintf("version = %s", quote(d.Version)))
+		}
+		if d.Rev != "" {
+			parts = append(parts, fmt.Sprintf("rev = %s", quote(d.Rev)))
 		}
 		b.WriteString(fmt.Sprintf("%s = { %s }\n", name, strings.Join(parts, ", ")))
 	}
@@ -238,11 +256,15 @@ func parseInlineTable(val string) (Dep, bool) {
 		switch k {
 		case "path":
 			d.Path = unquote(v)
+		case "git":
+			d.Git = unquote(v)
 		case "version":
 			d.Version = unquote(v)
+		case "rev":
+			d.Rev = unquote(v)
 		}
 	}
-	if d.Path == "" {
+	if d.Path == "" && d.Git == "" {
 		return Dep{}, false
 	}
 	return d, true
@@ -277,10 +299,13 @@ func cmdInit(args []string) error {
 
 func cmdAdd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: aevix-pm add <name> --path <dir> [--version <v>]")
+		return fmt.Errorf("usage: aevix-pm add <name> (--path <dir> | --git <url>) [--version <range>] [--rev <rev>]")
 	}
 	name := args[0]
-	var path, version string
+	if !validDepName(name) {
+		return fmt.Errorf("invalid package name %q (use [a-z0-9_-])", name)
+	}
+	var path, gitURL, version, rev string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--path":
@@ -288,6 +313,12 @@ func cmdAdd(args []string) error {
 				return fmt.Errorf("--path requires a directory")
 			}
 			path = args[i+1]
+			i++
+		case "--git":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--git requires a URL")
+			}
+			gitURL = args[i+1]
 			i++
 		case "--version":
 			if i+1 >= len(args) {
@@ -298,12 +329,24 @@ func cmdAdd(args []string) error {
 				return fmt.Errorf("invalid version range: %s", version)
 			}
 			i++
+		case "--rev":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--rev requires a tag or commit")
+			}
+			rev = args[i+1]
+			i++
 		default:
 			return fmt.Errorf("unexpected argument %q", args[i])
 		}
 	}
-	if path == "" {
-		return fmt.Errorf("add requires --path <dir> (P0 supports local path dependencies)")
+	if path == "" && gitURL == "" {
+		return fmt.Errorf("add requires --path <dir> or --git <url>")
+	}
+	if path != "" && gitURL != "" {
+		return fmt.Errorf("--path and --git are mutually exclusive")
+	}
+	if rev != "" && gitURL == "" {
+		return fmt.Errorf("--rev is only valid with --git")
 	}
 
 	root, err := findProjectRoot()
@@ -313,6 +356,41 @@ func cmdAdd(args []string) error {
 	m, err := readManifest(root)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", manifestName, err)
+	}
+
+	if gitURL != "" {
+		if version == "" {
+			version = "*"
+		}
+		target := filepath.Join(root, "lib", name)
+		cloneRef := rev
+		if cloneRef == "" {
+			tags := remoteTagVersions(gitURL)
+			if len(tags) == 0 {
+				return fmt.Errorf("no semver tags found in %s (use --rev for a pinned checkout)", gitURL)
+			}
+			best, ok := PickNewest(tags, parseRange(version))
+			if !ok {
+				return fmt.Errorf("no tag of %s satisfies %q", name, version)
+			}
+			tag, err := remoteTagForVersion(gitURL, best)
+			if err != nil {
+				return err
+			}
+			cloneRef = tag
+		}
+		if err := cloneGit(gitURL, target, cloneRef); err != nil {
+			return err
+		}
+		m.Deps[name] = Dep{Git: gitURL, Version: version, Rev: rev}
+		if err := writeManifest(root, m); err != nil {
+			return err
+		}
+		if err := recomputeLock(root, m); err != nil {
+			return err
+		}
+		fmt.Printf("Added %s (%s) from %s -> lib/%s\n", name, version, gitURL, name)
+		return nil
 	}
 
 	abs, err := resolveDepDir(root, path)
@@ -409,6 +487,14 @@ func recomputeLock(root string, m *Manifest) error {
 	l := &Lock{Name: m.Name, Version: m.Version, Dependencies: map[string]LockDep{}}
 	for _, name := range sortedKeys(m.Deps) {
 		d := m.Deps[name]
+		if d.Git != "" {
+			ld, err := resolveGitLock(root, name, d)
+			if err != nil {
+				return err
+			}
+			l.Dependencies[name] = ld
+			continue
+		}
 		l.Dependencies[name] = LockDep{
 			Version: resolveLockVersion(root, d),
 			Path:    d.Path,
@@ -459,11 +545,64 @@ func cmdList(args []string) error {
 	}
 	for _, name := range sortedKeys(m.Deps) {
 		d := m.Deps[name]
-		if d.Version != "" {
-			fmt.Printf("%s %s -> %s\n", name, d.Version, d.Path)
-		} else {
-			fmt.Printf("%s -> %s\n", name, d.Path)
+		src := d.Path
+		if d.Git != "" {
+			src = d.Git
 		}
+		if d.Version != "" {
+			fmt.Printf("%s %s -> %s\n", name, d.Version, src)
+		} else {
+			fmt.Printf("%s -> %s\n", name, src)
+		}
+	}
+	return nil
+}
+
+// cmdInstall materializes every git dependency pinned in aevix.lock. It never
+// re-resolves versions: the lock is the contract, so an install on another
+// machine produces the same source tree.
+func cmdInstall(args []string) error {
+	root, err := findProjectRoot()
+	if err != nil {
+		return err
+	}
+	l, err := readLock(root)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", lockName, err)
+	}
+	installed := 0
+	for _, name := range sortedLockKeys(l.Dependencies) {
+		if !validDepName(name) {
+			return fmt.Errorf("invalid package name %q in %s", name, lockName)
+		}
+		dep := l.Dependencies[name]
+		if dep.Source == "" {
+			continue
+		}
+		if !strings.HasPrefix(dep.Source, "git+") {
+			return fmt.Errorf("unsupported source for %s: %s", name, dep.Source)
+		}
+		url := strings.TrimPrefix(dep.Source, "git+")
+		target := dep.Path
+		if target == "" {
+			target = filepath.ToSlash(filepath.Join("lib", name))
+		}
+		abs := target
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, abs)
+		}
+		ref := dep.Rev
+		if ref == "" {
+			ref = dep.Version
+		}
+		if err := cloneGit(url, abs, ref); err != nil {
+			return fmt.Errorf("install %s: %w", name, err)
+		}
+		fmt.Printf("installed %s (%s) -> %s\n", name, dep.Version, target)
+		installed++
+	}
+	if installed == 0 {
+		fmt.Println("no remote dependencies to install")
 	}
 	return nil
 }
@@ -482,15 +621,21 @@ func cmdVendor(args []string) error {
 		return nil
 	}
 	vendorDir := filepath.Join(root, "lib", "vendor")
-	if err := os.RemoveAll(vendorDir); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(vendorDir, 0o755); err != nil {
 		return err
 	}
 	for _, name := range sortedLockKeys(l.Dependencies) {
+		if !validDepName(name) {
+			return fmt.Errorf("invalid package name %q in %s", name, lockName)
+		}
 		dep := l.Dependencies[name]
 		if dep.Path == "" {
+			continue
+		}
+		// A second `vendor` run must not delete or recurse into the copy it
+		// produced the first time.
+		if strings.HasPrefix(filepath.ToSlash(dep.Path), "lib/vendor/") {
+			fmt.Printf("already vendored %s\n", name)
 			continue
 		}
 		srcPath := dep.Path
@@ -498,6 +643,9 @@ func cmdVendor(args []string) error {
 			srcPath = filepath.Join(root, srcPath)
 		}
 		target := filepath.Join(vendorDir, name)
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
 		if err := copyTree(srcPath, target); err != nil {
 			return fmt.Errorf("vendor %s: %w", name, err)
 		}
@@ -518,9 +666,34 @@ func copyTree(src, dst string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory: %s", src)
 	}
+	absSrc, err := filepath.Abs(src)
+	if err != nil {
+		return err
+	}
+	absDst, err := filepath.Abs(dst)
+	if err != nil {
+		return err
+	}
+	// Vendoring a project into its own lib/vendor tree would recurse forever.
+	if absDst == absSrc || strings.HasPrefix(absDst, absSrc+string(os.PathSeparator)) {
+		return fmt.Errorf("refusing to copy %s into itself", src)
+	}
 	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		// WalkDir does not follow symlinks, so this catches both a symlinked
+		// file and a symlinked directory before any bytes are copied.
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to copy symlink: %s", p)
+		}
+		// A submodule stores .git as a file, a normal repository as a
+		// directory; neither is package source.
+		if d.Name() == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		rel, err := filepath.Rel(src, p)
 		if err != nil {
@@ -529,6 +702,10 @@ func copyTree(src, dst string) error {
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
+		}
+		// Device nodes, sockets, and FIFOs cannot be reproduced reproducibly.
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("refusing to copy non-regular file: %s", p)
 		}
 		_, err = os.Stat(target)
 		if err != nil && !os.IsNotExist(err) {
@@ -567,14 +744,35 @@ func cmdUpdate(args []string) error {
 			return fmt.Errorf("dependency %q is not declared in %s", only, manifestName)
 		}
 	}
-	// Resolve each (possibly range-limited) dependency to the newest available
-	// *local* version before re-locking: if the dependency directory carries
-	// git tags that satisfy the declared range, pick the highest one.
+	// Re-materialize git dependencies at the newest tag in their declared
+	// range, then rebuild the lock. Path deps are re-resolved from their local
+	// git tags by recomputeLock.
 	for name, d := range m.Deps {
 		if only != "" && name != only {
 			continue
 		}
-		m.Deps[name] = d
+		if d.Git == "" {
+			continue
+		}
+		ref := d.Rev
+		if ref == "" {
+			tags := remoteTagVersions(d.Git)
+			if len(tags) == 0 {
+				return fmt.Errorf("no semver tags found in %s", d.Git)
+			}
+			best, ok := PickNewest(tags, parseRange(d.Version))
+			if !ok {
+				return fmt.Errorf("no tag of %s satisfies %q", name, d.Version)
+			}
+			tag, err := remoteTagForVersion(d.Git, best)
+			if err != nil {
+				return err
+			}
+			ref = tag
+		}
+		if err := cloneGit(d.Git, filepath.Join(root, "lib", name), ref); err != nil {
+			return fmt.Errorf("update %s: %w", name, err)
+		}
 	}
 	if err := recomputeLock(root, m); err != nil {
 		return err
@@ -633,11 +831,17 @@ func printDepTree(baseDir, name string, dep LockDep, depth int, visited map[stri
 	}
 	for _, childName := range sortedKeys(m.Deps) {
 		child := m.Deps[childName]
+		childDir := childPath(depDir, child.Path)
+		childLockPath := child.Path
+		if child.Path == "" && child.Git != "" {
+			childDir = filepath.Join(depDir, "lib", childName)
+			childLockPath = filepath.ToSlash(filepath.Join("lib", childName))
+		}
 		v := child.Version
 		if v == "" {
-			v = detectVersion(childPath(depDir, child.Path))
+			v = detectVersion(childDir)
 		}
-		childDep := LockDep{Path: child.Path, Version: v}
+		childDep := LockDep{Path: childLockPath, Version: v}
 		printDepTree(depDir, childName, childDep, depth+1, visited)
 	}
 }
@@ -689,6 +893,9 @@ func findDepChain(deps map[string]Dep, baseDir, target string, chain []string, v
 				return append([]string{}, append(chain, name)...), true
 			}
 			depDir := d.Path
+			if depDir == "" && d.Git != "" {
+				depDir = filepath.Join("lib", name)
+			}
 			if depDir == "" {
 				continue
 			}
@@ -716,7 +923,6 @@ func findDepChain(deps map[string]Dep, baseDir, target string, chain []string, v
 	}
 	return helper(deps, baseDir, target, chain, visited)
 }
-
 
 func sortedKeys(m map[string]Dep) []string {
 	keys := make([]string, 0, len(m))
@@ -775,8 +981,9 @@ func splitTop(s string, sep byte) []string {
 	return parts
 }
 
-
 func childPath(base, p string) string {
-	if filepath.IsAbs(p) { return p }
+	if filepath.IsAbs(p) {
+		return p
+	}
 	return filepath.Join(base, p)
 }
