@@ -431,6 +431,16 @@ void __aevix_char_at(const uint8_t* s, int32_t slen, int32_t idx, uint8_t** out_
     *out_len = 1;
 }
 
+/* str_hash(s, len): stable FNV-1a hash, masked to a non-negative i32 */
+int32_t __aevix_str_hash(const uint8_t* s, int32_t slen) {
+    uint32_t h = 2166136261u;
+    for (int32_t i = 0; i < slen; ++i) {
+        h ^= (uint32_t)s[i];
+        h *= 16777619u;
+    }
+    return (int32_t)(h & 0x7fffffffu);
+}
+
 /* join(sep, arr, count, out_ptr, out_len): join string array with separator */
 /* arr is a pointer to aevix_str structs { uint8_t* ptr; int32_t len; } */
 typedef struct { uint8_t* ptr; int32_t len; } aevix_str_ref;

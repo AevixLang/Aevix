@@ -265,6 +265,7 @@ private:
             {"startswith", "bool"},
             {"endswith", "bool"},
             {"char_at", "string"},
+            {"str_hash", "int"},
             {"join",   "string"},
             {"assert", ""},
             {"exit",   ""},
@@ -857,6 +858,8 @@ std::string Checker::check_call(Call* c) {
             error("lower() expects one argument", c->line, c->col);
         else if (name == "char_at" && c->args.size() != 2)
             error("char_at() expects two arguments", c->line, c->col);
+        else if (name == "str_hash" && c->args.size() != 1)
+            error("str_hash() expects one argument", c->line, c->col);
         else if ((name == "min" || name == "max") && c->args.size() != 2)
             error(name + "() expects two arguments", c->line, c->col);
         else if (name == "write" && c->args.size() != 2)
@@ -885,7 +888,7 @@ std::string Checker::check_call(Call* c) {
                 error(name + "() expects an integer argument", c->line, c->col);
             if (name == "assert" && !(is_int_type(infer(c->args[0].get())) || infer(c->args[0].get()) == "bool"))
                 error("assert() expects an integer or boolean argument", c->line, c->col);
-            if ((name == "trim" || name == "upper" || name == "lower" || name == "read") && infer(c->args[0].get()) != "string")
+            if ((name == "trim" || name == "upper" || name == "lower" || name == "read" || name == "str_hash") && infer(c->args[0].get()) != "string")
                 error(name + "() expects a string argument", c->line, c->col);
             if (name == "len" && !is_slice(infer(c->args[0].get())) && !is_fixed_array(infer(c->args[0].get())) && infer(c->args[0].get()) != "string")
                 error("len() expects an array or string", c->line, c->col);

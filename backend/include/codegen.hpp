@@ -99,6 +99,7 @@ private:
     llvm::Function* startswith_func;
     llvm::Function* endswith_func;
     llvm::Function* char_at_func;
+    llvm::Function* str_hash_func;
     llvm::Function* join_func;
     llvm::Function* assert_func;
     void build_conv_runtime();
