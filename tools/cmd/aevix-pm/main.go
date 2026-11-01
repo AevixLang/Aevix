@@ -359,6 +359,12 @@ func cmdAdd(args []string) error {
 	}
 
 	if gitURL != "" {
+		if !filepath.IsAbs(gitURL) {
+			absGit, err := filepath.Abs(gitURL)
+			if err == nil {
+				gitURL = filepath.ToSlash(filepath.Clean(absGit))
+			}
+		}
 		if version == "" {
 			version = "*"
 		}
@@ -382,7 +388,14 @@ func cmdAdd(args []string) error {
 		if err := cloneGit(gitURL, target, cloneRef); err != nil {
 			return err
 		}
-		m.Deps[name] = Dep{Git: gitURL, Version: version, Rev: rev}
+		absGit, err := filepath.Abs(gitURL)
+if err == nil {
+    absGit = filepath.ToSlash(filepath.Clean(absGit))
+}
+if err == nil {
+    gitURL = absGit
+}
+m.Deps[name] = Dep{Git: gitURL, Version: version, Rev: rev}
 		if err := writeManifest(root, m); err != nil {
 			return err
 		}
@@ -437,7 +450,7 @@ func resolveDepDir(root, path string) (string, error) {
 // hasAevSource reports whether a package directory has an entry point (lib.aev)
 // or any top-level .aev file — the minimum for the compiler to import it.
 func hasAevSource(dir string) bool {
-	if fileExists(filepath.Join(dir, "lib.aev")) {
+	if fileExists(filepath.Join(dir, "lib.aev")) || fileExists(filepath.Join(dir, "lib", "lib.aev")) {
 		return true
 	}
 	entries, err := os.ReadDir(dir)
