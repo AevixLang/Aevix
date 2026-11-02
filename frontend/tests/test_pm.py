@@ -263,3 +263,66 @@ def test_update_git_picks_newer_tag(pm_bin):
         with open(os.path.join(proj, "aevix.lock")) as f:
             dep = json.load(f)["dependencies"]["remotedep"]
         assert dep["version"] == "1.1.0"
+
+
+# --- 0.4 registry + cache ---
+
+def publish_repo(registry, repo_name, repo_path):
+    if shutil.which("git") is None:
+        pytest.skip("git unavailable")
+    p = run_pm(pm_bin if False else None, None) if False else None  # placeholder, ignored
+    return None
+
+
+def create_reg_pkg(root, name, version):
+    repo = make_git_pkg(root, name, [version])
+    return repo
+
+
+def publish_version(pm_bin, repo, version, registry):
+    # bump version in repo working tree to requested tag and publish
+    import subprocess as _sp
+    with open(os.path.join(repo, "aevix.toml"), "w") as f:
+        f.write(f'[package]\nname = "regpkg"\nversion = "{version}"\n')
+    os.makedirs(os.path.join(repo, "lib"), exist_ok=True)
+    with open(os.path.join(repo, "lib" if False else ".", "lib.aev"), "w") as f:
+        f.write(f'func reg_val(): int {{ return {version.split(".")[1]}; }}\n')
+    _sp.run(["git", "add", "."], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", f"release {version}"], cwd=repo, check=True)
+    _sp.run(["git", "tag", f"v{version}"], cwd=repo, check=True)
+    # actually use publish with separate registry via fresh project
+    return repo
+
+
+def test_registry_publish_and_add(pm_bin):
+    with tempfile.TemporaryDirectory() as proj:
+        reg = os.path.join(proj, "registry")
+        # build a project to publish
+        pub = os.path.join(proj, "libsrc")
+        os.makedirs(pub, exist_ok=True)
+        with open(os.path.join(pub, "aevix.toml"), "w") as f:
+            f.write('[package]\nname = "regpkg"\nversion = "1.0.0"\n')
+        with open(os.path.join(pub, "lib.aev"), "w") as f:
+            f.write("func reg_val(): int { return 7; }\n")
+        # init project inside pub just to publish (publish needs aevix.toml)
+        d = os.getcwd()
+        pinit = run_pm(pm_bin, pub, "init", "regpkg")
+        # remove generated then write manifest manually
+        # rewrite manifest name/version
+        with open(os.path.join(pub, "aevix.toml"), "w") as f:
+            f.write('[package]\nname = "regpkg"\nversion = "1.0.0"\n')
+        ppub = run_pm(pm_bin, pub, "publish", "--registry", reg)
+        assert ppub.returncode == 0, ppub.stderr
+        # consumer
+        os.makedirs(os.path.join(proj, "consumer"), exist_ok=True)
+        run_pm(pm_bin, os.path.join(proj, "consumer"), "init", "consumer")
+        p = run_pm(pm_bin, os.path.join(proj, "consumer"), "add", "regpkg",
+                   "--registry", reg, "--version", "^1.0")
+        assert p.returncode == 0, p.stderr
+        lock = json.load(open(os.path.join(proj, "consumer", "aevix.lock")))
+        dep = lock["dependencies"]["regpkg"]
+        assert dep["version"] == "1.0.0"
+        assert dep["source"].startswith("registry+file+")
+        assert os.path.exists(os.path.join(proj, "consumer", "lib", "regpkg", "lib.aev"))
+        with open(os.path.join(proj, "consumer", "lib", "regpkg", "lib.aev")) as f:
+            assert "reg_val" in f.read()
