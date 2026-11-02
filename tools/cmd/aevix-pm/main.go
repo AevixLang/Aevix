@@ -81,6 +81,8 @@ func main() {
 		run(cmdCache(os.Args[2:]))
 	case "publish":
 		run(cmdPublish(os.Args[2:]))
+	case "serve":
+		run(cmdServe(os.Args[2:]))
 	case "vendor":
 		run(cmdVendor(os.Args[2:]))
 	case "update":
@@ -360,9 +362,15 @@ func cmdAdd(args []string) error {
 		return fmt.Errorf("add requires --path, --git, or --registry")
 	}
 	count := 0
-	if path != "" { count++ }
-	if gitURL != "" { count++ }
-	if registry != "" { count++ }
+	if path != "" {
+		count++
+	}
+	if gitURL != "" {
+		count++
+	}
+	if registry != "" {
+		count++
+	}
 	if count > 1 {
 		return fmt.Errorf("--path, --git, --registry are mutually exclusive")
 	}
@@ -439,7 +447,68 @@ func cmdAdd(args []string) error {
 		if !validRange(version) {
 			return fmt.Errorf("invalid version range: %s", version)
 		}
+		if strings.HasPrefix(registry, "http://") || strings.HasPrefix(registry, "https://") {
+			// ---- HTTP registry ----
+			idx, err := httpRegistryIndex(registry, name)
+			if err != nil {
+				return fmt.Errorf("read registry index: %w", err)
+			}
+			raw, _ := idx["versions"].([]interface{})
+			cands := []Version{}
+			for _, v := range raw {
+				if ps, ok := v.(string); ok {
+					if pv, err := parseVersion(ps); err == nil {
+						cands = append(cands, pv)
+					}
+				}
+			}
+			if len(cands) == 0 {
+				return fmt.Errorf("registry package %s has no versions", name)
+			}
+			best, ok := PickNewest(cands, parseRange(version))
+			if !ok {
+				return fmt.Errorf("no registry version of %s satisfies %q", name, version)
+			}
+			bestStr := best.String()
+			target := filepath.Join(root, "lib", name)
+			if err := os.RemoveAll(target); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			if err := httpFetchTarball(registry, name, bestStr, target); err != nil {
+				return fmt.Errorf("fetch registry package: %w", err)
+			}
+			finalVer := bestStr
+			if dv := detectVersion(target); dv != "0.0.0" {
+				finalVer = dv
+			}
+			m.Deps[name] = Dep{Path: filepath.ToSlash(filepath.Join("lib", name)), Registry: registry, Version: version}
+			if err := writeManifest(root, m); err != nil {
+				return err
+			}
+			l := &Lock{Name: m.Name, Version: m.Version, Dependencies: map[string]LockDep{}}
+			for _, n := range sortedKeys(m.Deps) {
+				d := m.Deps[n]
+				ld := LockDep{Version: d.Version, Path: d.Path}
+				if d.Registry != "" {
+					ld.Version = finalVer
+					ld.Source = "registry+" + registryScheme(registry) + "+" + registry
+					ld.Rev = bestStr
+				}
+				l.Dependencies[n] = ld
+			}
+			if err := writeLock(root, l); err != nil {
+				return err
+			}
+			fmt.Printf("Added %s (%s) from registry %s -> lib/%s\n", name, bestStr, registry, name)
+			return nil
+		}
 		absReg, err := filepath.Abs(registry)
+		if err != nil {
+			return err
+		}
 		if err != nil {
 			return err
 		}
@@ -750,6 +819,32 @@ func cmdInstall(args []string) error {
 			}
 			if err := copyTree(src, abs); err != nil {
 				return fmt.Errorf("install %s from registry: %w", name, err)
+			}
+			if cached := materializeToCache(name, version, dep.Rev, abs); cached != "" {
+				fmt.Printf("cached %s -> %s\n", name, cached)
+			}
+			fmt.Printf("installed %s (%s) from registry -> %s\n", name, version, target)
+			installed++
+			continue
+		}
+		if strings.HasPrefix(dep.Source, "registry+http+") || strings.HasPrefix(dep.Source, "registry+https+") {
+			regprefix := "registry+http+"
+			if strings.HasPrefix(dep.Source, "registry+https+") {
+				regprefix = "registry+https+"
+			}
+			regRoot := strings.TrimPrefix(dep.Source, regprefix)
+			version := dep.Rev
+			if version == "" {
+				version = dep.Version
+			}
+			if os.RemoveAll(abs) != nil {
+				return fmt.Errorf("install %s: remove failed", name)
+			}
+			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+				return fmt.Errorf("install %s: %w", name, err)
+			}
+			if err := httpFetchTarball(regRoot, name, version, abs); err != nil {
+				return fmt.Errorf("install %s from http registry: %w", name, err)
 			}
 			if cached := materializeToCache(name, version, dep.Rev, abs); cached != "" {
 				fmt.Printf("cached %s -> %s\n", name, cached)

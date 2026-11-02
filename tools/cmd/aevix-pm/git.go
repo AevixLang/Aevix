@@ -187,4 +187,3 @@ func remoteTagCommit(url, tag string) string {
 }
 
 // gitTagVersions lists tags in a local clone.
-
