@@ -34,10 +34,11 @@ type Manifest struct {
 // remote git repository (Git), plus an optional semver range and an optional
 // exact revision. The two sources are mutually exclusive.
 type Dep struct {
-	Path    string // directory of the package, relative to the manifest
-	Git     string // remote git URL (https://, ssh://, or file://)
-	Rev     string // optional exact tag/commit; empty means "newest tag in range"
-	Version string // semver range, or the detected version for path deps
+	Path     string // directory of the package, relative to the manifest
+	Git      string // remote git URL (https://, ssh://, or file://)
+	Registry string // registry path or URL (source=registry+...)
+	Rev      string // optional exact tag/commit; empty means "newest tag in range"
+	Version  string // semver range, or the detected version for path deps
 }
 
 // Lock mirrors aevix.lock: the resolved, reproducible graph the compiler reads.
@@ -78,6 +79,8 @@ func main() {
 		run(cmdInstall(os.Args[2:]))
 	case "cache":
 		run(cmdCache(os.Args[2:]))
+	case "publish":
+		run(cmdPublish(os.Args[2:]))
 	case "vendor":
 		run(cmdVendor(os.Args[2:]))
 	case "update":
@@ -113,6 +116,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  list                     List declared dependencies")
 	fmt.Fprintln(os.Stderr, "  install                  Materialize git deps pinned in aevix.lock")
 	fmt.Fprintln(os.Stderr, "  vendor                   Copy dependencies into lib/vendor/")
+	fmt.Fprintln(os.Stderr, "  publish [--registry <dir>]  Pack + index to a directory registry")
 	fmt.Fprintln(os.Stderr, "  tree                     Print the resolved dependency graph")
 	fmt.Fprintln(os.Stderr, "  why <name>               Explain why a package is in the graph")
 }
@@ -158,6 +162,9 @@ func writeManifest(root string, m *Manifest) error {
 		}
 		if d.Git != "" {
 			parts = append(parts, fmt.Sprintf("git = %s", quote(d.Git)))
+		}
+		if d.Registry != "" {
+			parts = append(parts, fmt.Sprintf("registry = %s", quote(d.Registry)))
 		}
 		if d.Version != "" {
 			parts = append(parts, fmt.Sprintf("version = %s", quote(d.Version)))
@@ -260,6 +267,8 @@ func parseInlineTable(val string) (Dep, bool) {
 			d.Path = unquote(v)
 		case "git":
 			d.Git = unquote(v)
+		case "registry":
+			d.Registry = unquote(v)
 		case "version":
 			d.Version = unquote(v)
 		case "rev":
@@ -307,7 +316,7 @@ func cmdAdd(args []string) error {
 	if !validDepName(name) {
 		return fmt.Errorf("invalid package name %q (use [a-z0-9_-])", name)
 	}
-	var path, gitURL, version, rev string
+	var path, gitURL, registry, version, rev string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--path":
@@ -321,6 +330,12 @@ func cmdAdd(args []string) error {
 				return fmt.Errorf("--git requires a URL")
 			}
 			gitURL = args[i+1]
+			i++
+		case "--registry":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--registry requires a path")
+			}
+			registry = args[i+1]
 			i++
 		case "--version":
 			if i+1 >= len(args) {
@@ -341,11 +356,15 @@ func cmdAdd(args []string) error {
 			return fmt.Errorf("unexpected argument %q", args[i])
 		}
 	}
-	if path == "" && gitURL == "" {
-		return fmt.Errorf("add requires --path <dir> or --git <url>")
+	if path == "" && gitURL == "" && registry == "" {
+		return fmt.Errorf("add requires --path, --git, or --registry")
 	}
-	if path != "" && gitURL != "" {
-		return fmt.Errorf("--path and --git are mutually exclusive")
+	count := 0
+	if path != "" { count++ }
+	if gitURL != "" { count++ }
+	if registry != "" { count++ }
+	if count > 1 {
+		return fmt.Errorf("--path, --git, --registry are mutually exclusive")
 	}
 	if rev != "" && gitURL == "" {
 		return fmt.Errorf("--rev is only valid with --git")
@@ -413,7 +432,87 @@ func cmdAdd(args []string) error {
 		return nil
 	}
 
+	if registry != "" {
+		if version == "" {
+			version = "*"
+		}
+		if !validRange(version) {
+			return fmt.Errorf("invalid version range: %s", version)
+		}
+		absReg, err := filepath.Abs(registry)
+		if err != nil {
+			return err
+		}
+		absReg = filepath.ToSlash(filepath.Clean(absReg))
+		pkgRoot := filepath.Join(absReg, name)
+		fi, err := os.Stat(pkgRoot)
+		if err != nil || !fi.IsDir() {
+			return fmt.Errorf("registry package %s not found at %s", name, pkgRoot)
+		}
+		idx, err := registryReadIndex(pkgRoot)
+		if err != nil {
+			return fmt.Errorf("read registry index: %w", err)
+		}
+		cands := []Version{}
+		for _, v := range idx["versions"] {
+			if pv, err := parseVersion(v); err == nil {
+				cands = append(cands, pv)
+			}
+		}
+		if len(cands) == 0 {
+			return fmt.Errorf("registry package %s has no versions", name)
+		}
+		best, ok := PickNewest(cands, parseRange(version))
+		if !ok {
+			return fmt.Errorf("no registry version of %s satisfies %q", name, version)
+		}
+		bestStr := best.String()
+		versionDir := filepath.Join(pkgRoot, "versions", bestStr)
+		// if no versions subdir, treat package root itself as source
+		if info, err := os.Stat(versionDir); err != nil || !info.IsDir() {
+			versionDir = pkgRoot
+		}
+		target := filepath.Join(root, "lib", name)
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := copyTree(versionDir, target); err != nil {
+			return fmt.Errorf("materialize registry package: %w", err)
+		}
+		finalVer := bestStr
+		if dv := detectVersion(versionDir); dv != "0.0.0" {
+			finalVer = dv
+		}
+		m.Deps[name] = Dep{Path: filepath.ToSlash(filepath.Join("lib", name)), Registry: absReg, Version: version}
+		if err := writeManifest(root, m); err != nil {
+			return err
+		}
+		// lock entry
+		l := &Lock{Name: m.Name, Version: m.Version, Dependencies: map[string]LockDep{}}
+		for _, n := range sortedKeys(m.Deps) {
+			d := m.Deps[n]
+			ld := LockDep{Version: d.Version, Path: d.Path}
+			if d.Registry != "" {
+				ld.Version = finalVer
+				ld.Source = "registry+file+" + absReg
+				ld.Rev = bestStr
+			}
+			l.Dependencies[n] = ld
+		}
+		if err := writeLock(root, l); err != nil {
+			return err
+		}
+		fmt.Printf("Added %s (%s) from registry %s -> lib/%s\n", name, bestStr, absReg, name)
+		return nil
+	}
+
 	abs, err := resolveDepDir(root, path)
+	if err != nil {
+		return err
+	}
 	if err != nil {
 		return err
 	}
@@ -599,10 +698,6 @@ func cmdInstall(args []string) error {
 		if dep.Source == "" {
 			continue
 		}
-		if !strings.HasPrefix(dep.Source, "git+") {
-			return fmt.Errorf("unsupported source for %s: %s", name, dep.Source)
-		}
-		url := strings.TrimPrefix(dep.Source, "git+")
 		target := dep.Path
 		if target == "" {
 			target = filepath.ToSlash(filepath.Join("lib", name))
@@ -611,27 +706,60 @@ func cmdInstall(args []string) error {
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(root, abs)
 		}
-		ref := dep.Rev
-		if ref == "" {
-			ref = dep.Version
-		}
-		// Prefer shared cache when available; refresh cache after (re)fetch.
-		usedCache := false
-		if cacheContains(name, dep.Version, ref) {
-			if err := materializeFromCache(name, dep.Version, ref, abs); err == nil {
-				usedCache = true
-				fmt.Printf("installed %s (%s) from cache -> %s\n", name, dep.Version, target)
+		if strings.HasPrefix(dep.Source, "git+") {
+			url := strings.TrimPrefix(dep.Source, "git+")
+			ref := dep.Rev
+			if ref == "" {
+				ref = dep.Version
 			}
+			usedCache := false
+			if cacheContains(name, dep.Version, ref) {
+				if err := materializeFromCache(name, dep.Version, ref, abs); err == nil {
+					usedCache = true
+					fmt.Printf("installed %s (%s) from cache -> %s\n", name, dep.Version, target)
+				}
+			}
+			if !usedCache {
+				if err := cloneGit(url, abs, ref); err != nil {
+					return fmt.Errorf("install %s: %w", name, err)
+				}
+				if cached := materializeToCache(name, dep.Version, ref, abs); cached != "" {
+					fmt.Printf("cached %s -> %s\n", name, cached)
+				}
+				fmt.Printf("installed %s (%s) -> %s\n", name, dep.Version, target)
+			}
+			installed++
+			continue
 		}
-		if !usedCache {
-			if err := cloneGit(url, abs, ref); err != nil {
+		if strings.HasPrefix(dep.Source, "registry+file+") {
+			regRoot := strings.TrimPrefix(dep.Source, "registry+file+")
+			version := dep.Rev
+			if version == "" {
+				version = dep.Version
+			}
+			src := filepath.Join(regRoot, name, "versions", version)
+			if info, err := os.Stat(src); err != nil || !info.IsDir() {
+				src = filepath.Join(regRoot, name)
+				// fallback
+			}
+			if err := os.RemoveAll(abs); err != nil {
 				return fmt.Errorf("install %s: %w", name, err)
 			}
-			if cached := materializeToCache(name, dep.Version, ref, abs); cached != "" {
+			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+				return fmt.Errorf("install %s: %w", name, err)
+			}
+			if err := copyTree(src, abs); err != nil {
+				return fmt.Errorf("install %s from registry: %w", name, err)
+			}
+			if cached := materializeToCache(name, version, dep.Rev, abs); cached != "" {
 				fmt.Printf("cached %s -> %s\n", name, cached)
 			}
-			fmt.Printf("installed %s (%s) -> %s\n", name, dep.Version, target)
+			fmt.Printf("installed %s (%s) from registry -> %s\n", name, version, target)
+			installed++
+			continue
 		}
+		return fmt.Errorf("unsupported source for %s: %s", name, dep.Source)
+
 		installed++
 	}
 	if installed == 0 {
