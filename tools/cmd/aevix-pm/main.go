@@ -76,6 +76,8 @@ func main() {
 		run(cmdList(os.Args[2:]))
 	case "install":
 		run(cmdInstall(os.Args[2:]))
+	case "cache":
+		run(cmdCache(os.Args[2:]))
 	case "vendor":
 		run(cmdVendor(os.Args[2:]))
 	case "update":
@@ -388,19 +390,24 @@ func cmdAdd(args []string) error {
 		if err := cloneGit(gitURL, target, cloneRef); err != nil {
 			return err
 		}
-		absGit, err := filepath.Abs(gitURL)
-if err == nil {
-    absGit = filepath.ToSlash(filepath.Clean(absGit))
-}
-if err == nil {
-    gitURL = absGit
-}
-m.Deps[name] = Dep{Git: gitURL, Version: version, Rev: rev}
+		m.Deps[name] = Dep{Git: gitURL, Version: version, Rev: rev}
 		if err := writeManifest(root, m); err != nil {
 			return err
 		}
 		if err := recomputeLock(root, m); err != nil {
 			return err
+		}
+		// populate shared cache (best-effort)
+		if rl, err := readLock(root); err == nil {
+			if ld, ok := rl.Dependencies[name]; ok && ld.Source != "" {
+				tgt := target
+				if !filepath.IsAbs(tgt) {
+					tgt = filepath.Join(root, tgt)
+				}
+				if cached := materializeToCache(name, ld.Version, ld.Rev, tgt); cached != "" {
+					fmt.Printf("cached %s -> %s\n", name, cached)
+				}
+			}
 		}
 		fmt.Printf("Added %s (%s) from %s -> lib/%s\n", name, version, gitURL, name)
 		return nil
@@ -608,10 +615,23 @@ func cmdInstall(args []string) error {
 		if ref == "" {
 			ref = dep.Version
 		}
-		if err := cloneGit(url, abs, ref); err != nil {
-			return fmt.Errorf("install %s: %w", name, err)
+		// Prefer shared cache when available; refresh cache after (re)fetch.
+		usedCache := false
+		if cacheContains(name, dep.Version, ref) {
+			if err := materializeFromCache(name, dep.Version, ref, abs); err == nil {
+				usedCache = true
+				fmt.Printf("installed %s (%s) from cache -> %s\n", name, dep.Version, target)
+			}
 		}
-		fmt.Printf("installed %s (%s) -> %s\n", name, dep.Version, target)
+		if !usedCache {
+			if err := cloneGit(url, abs, ref); err != nil {
+				return fmt.Errorf("install %s: %w", name, err)
+			}
+			if cached := materializeToCache(name, dep.Version, ref, abs); cached != "" {
+				fmt.Printf("cached %s -> %s\n", name, cached)
+			}
+			fmt.Printf("installed %s (%s) -> %s\n", name, dep.Version, target)
+		}
 		installed++
 	}
 	if installed == 0 {
