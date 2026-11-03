@@ -6,6 +6,21 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.10] — 2026-11-03
+
+### Added
+
+- Shared package cache under `~/.cache/aevix/pkg` (`AEVIX_CACHE_DIR` / `XDG_CACHE_HOME`); `aevix-pm cache info/list/clean/path`.
+- Directory registry: `aevix-pm publish --registry <dir>` and `aevix-pm add <name> --registry <dir>`.
+- HTTP registry transport: `aevix-pm serve --root <dir> --addr :PORT`; `publish --registry http://...`; `add --registry http://...` fetches tarball and unpacks to `lib/`.
+- `install` reads cache first; falls back to fetch (git clone + cache warm-up; registry materialize + cache warm-up).
+
+### Fixed
+
+- Package manager: explicit `--rev` is now pinned instead of being overwritten by the newest tag in the range.
+- Relative `git` URLs are resolved to absolute paths before materialization.
+- Restored `tools/cmd/aevix-pm/tags.go`.
+
 ### Added
 - Shared package cache (~/.cache/aevix/pkg, `cache info<|message|>clean|list<|message|>path`); `install` reads cache first.
 - Directory registry: `publish --registry <dir>` (pack + index.json); `add <name> --registry <dir> [--version <range>]`; `install` fetches/materializes and verifies.

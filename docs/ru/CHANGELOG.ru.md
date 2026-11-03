@@ -4,6 +4,21 @@
 
 ## [Не выпущено]
 
+## [0.3.10] — 2026-11-03
+
+### Добавлено
+
+- Общий кэш пакетов `~/.cache/aevix/pkg` (`AEVIX_CACHE_DIR` / `XDG_CACHE_HOME`); `aevix-pm cache info/list/clean/path`.
+- Реестр в папке: `aevix-pm publish --registry <dir>` и `aevix-pm add <name> --registry <dir>`.
+- HTTP-транспорт реестра: `aevix-pm serve --root <dir> --addr :PORT`; `publish --registry http://...`; `add --registry http://...` скачивает и распаковывает tarball в `lib/`.
+- `install` сначала читает кэш, затем fetch (git clone + cache warm-up; реестр materialize + cache warm-up).
+
+### Исправлено
+
+- Менеджер пакетов: явный `--rev` теперь фиксируется, а не перезаписывается новейшим тегом из диапазона.
+- Относительные `git` URL разрешаются в абсолютные до materialize.
+- Восстановлен `tools/cmd/aevix-pm/tags.go`.
+
 ### Добавлено
 - Shared package cache (~/.cache/aevix/pkg, `cache info<|message|>clean|list<|message|>path`); `install` reads cache first.
 - Directory registry: `publish --registry <dir>` (pack + index.json); `add <name> --registry <dir> [--version <range>]`; `install` fetches/materializes and verifies.
