@@ -52,10 +52,11 @@ type Lock struct {
 // LockDep is one pinned dependency in the lock. Path is always the materialized
 // directory the compiler reads; Source/Rev are provenance for remote deps.
 type LockDep struct {
-	Version string `json:"version,omitempty"`
-	Path    string `json:"path,omitempty"`
-	Source  string `json:"source,omitempty"` // "git+<url>" for remote deps
-	Rev     string `json:"rev,omitempty"`    // pinned commit SHA
+	Version  string `json:"version,omitempty"`  // pinned version
+	Path     string `json:"path,omitempty"`     // materialized dir relative to project
+	Source   string `json:"source,omitempty"`   // git+..., registry+file+..., registry+http+...
+	Rev      string `json:"rev,omitempty"`      // pinned commit/tag
+	Checksum string `json:"checksum,omitempty"` // sha256:... for registry
 }
 
 const manifestName = "aevix.toml"
@@ -496,6 +497,9 @@ func cmdAdd(args []string) error {
 					ld.Version = finalVer
 					ld.Source = "registry+" + registryScheme(registry) + "+" + registry
 					ld.Rev = bestStr
+					if cs, err := checksumDir(target); err == nil {
+						ld.Checksum = cs
+					}
 				}
 				l.Dependencies[n] = ld
 			}
@@ -568,6 +572,9 @@ func cmdAdd(args []string) error {
 				ld.Version = finalVer
 				ld.Source = "registry+file+" + absReg
 				ld.Rev = bestStr
+				if cs, err := checksumDir(versionDir); err == nil {
+					ld.Checksum = cs
+				}
 			}
 			l.Dependencies[n] = ld
 		}
@@ -823,6 +830,13 @@ func cmdInstall(args []string) error {
 			if cached := materializeToCache(name, version, dep.Rev, abs); cached != "" {
 				fmt.Printf("cached %s -> %s\n", name, cached)
 			}
+			if dep.Checksum != "" {
+				got, err := checksumDir(abs)
+				if err != nil || got != dep.Checksum {
+					os.RemoveAll(abs)
+					return fmt.Errorf("install %s: checksum mismatch (want %s got %s)", name, dep.Checksum, got)
+				}
+			}
 			fmt.Printf("installed %s (%s) from registry -> %s\n", name, version, target)
 			installed++
 			continue
@@ -845,6 +859,13 @@ func cmdInstall(args []string) error {
 			}
 			if err := httpFetchTarball(regRoot, name, version, abs); err != nil {
 				return fmt.Errorf("install %s from http registry: %w", name, err)
+			}
+			if dep.Checksum != "" {
+				got, err := checksumDir(abs)
+				if err != nil || got != dep.Checksum {
+					os.RemoveAll(abs)
+					return fmt.Errorf("install %s: checksum mismatch (want %s got %s)", name, dep.Checksum, got)
+				}
 			}
 			if cached := materializeToCache(name, version, dep.Rev, abs); cached != "" {
 				fmt.Printf("cached %s -> %s\n", name, cached)
