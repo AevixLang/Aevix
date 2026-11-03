@@ -1,11 +1,3 @@
-// ============================================================================
-// git.go — remote dependency support for aevix-pm.
-//
-// A git dependency is fetched by tag (or by an explicit rev) into lib/<name>
-// and then pinned in aevix.lock as a commit SHA. The compiler never touches
-// git; it only reads the lock's materialized path. This keeps the consumer
-// half offline and read-only.
-// ============================================================================
 package main
 
 import (
@@ -17,8 +9,7 @@ import (
 	"strings"
 )
 
-// gitOutput runs git with an optional working directory and returns trimmed
-// stdout. Stderr is folded into the error so a failed clone is diagnosable.
+// gitOutput runs git with optional working directory and returns trimmed stdout.
 func gitOutput(dir string, args ...string) (string, error) {
 	full := args
 	if dir != "" {
@@ -52,8 +43,7 @@ func remoteTagVersions(url string) []Version {
 	return versions
 }
 
-// remoteTagForVersion returns the actual tag name whose parsed version equals
-// want. Tags are sorted so `1.2.3` and `v1.2.3` choose deterministically.
+// remoteTagForVersion returns the actual tag name whose parsed version equals want.
 func remoteTagForVersion(url string, want Version) (string, error) {
 	out, err := gitOutput("", "ls-remote", "--tags", "--refs", url)
 	if err != nil {
@@ -77,73 +67,19 @@ func remoteTagForVersion(url string, want Version) (string, error) {
 	return tags[0], nil
 }
 
-// remoteTagCommit resolves a tag to the commit it points at. The peeled
-// ref (^{}) is preferred because annotated tags point at a tag object.
-func remoteTagCommit(url, tag string) string {
-	out, err := gitOutput("", "ls-remote", url, "refs/tags/"+tag, "refs/tags/"+tag+"^{}")
-	if err != nil {
-		return ""
-	}
-	var direct string
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-		if strings.HasSuffix(fields[1], "^{}") {
-			return fields[0]
-		}
-		direct = fields[0]
-	}
-	return direct
-}
-
 // gitRevParse resolves a ref in a local clone to a commit SHA.
-func gitRevParse(dir, ref string) string {
-	if ref == "" {
+func gitRevParse(dir, rev string) string {
+	if rev == "" {
 		return ""
 	}
-	out, err := gitOutput(dir, "rev-parse", ref+"^{commit}")
+	out, err := gitOutput(dir, "rev-parse", rev+"^{commit}")
 	if err != nil {
 		return ""
 	}
-	return out
+	return strings.TrimSpace(out)
 }
 
-// cloneGit materializes url at target, checking out rev when given. A plain
-// ref (tag/branch) uses a shallow clone; an arbitrary commit falls back to a
-// full clone followed by checkout. The .git directory is kept so update can
-// inspect tags and so the lock can pin the exact commit.
-func cloneGit(url, target, rev string) error {
-	if err := os.RemoveAll(target); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	if rev != "" {
-		if _, err := gitOutput("", "clone", "--quiet", "--depth", "1", "--branch", rev, url, target); err != nil {
-			if _, err2 := gitOutput("", "clone", "--quiet", url, target); err2 != nil {
-				return err2
-			}
-			if _, err2 := gitOutput(target, "checkout", "--quiet", rev); err2 != nil {
-				return err2
-			}
-		}
-	} else {
-		if _, err := gitOutput("", "clone", "--quiet", url, target); err != nil {
-			return err
-		}
-	}
-	if !hasAevSource(target) {
-		os.RemoveAll(target)
-		return fmt.Errorf("repository %s has no .aev source at its root", url)
-	}
-	return nil
-}
-
-// resolveGitLock derives the pinned lock entry for a git dependency. A clone
-// in lib/<name> is authoritative; a missing clone falls back to remote tags.
+// cloneGit materializes url at target, checking out rev when given.
 func resolveGitLock(root, name string, d Dep) (LockDep, error) {
 	target := filepath.Join(root, "lib", name)
 	rel := filepath.ToSlash(filepath.Join("lib", name))
@@ -200,3 +136,54 @@ func resolveGitLock(root, name string, d Dep) (LockDep, error) {
 		Rev:     rev,
 	}, nil
 }
+
+func cloneGit(url, target, rev string) error {
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	if rev != "" {
+		// Try shallow clone with branch/tag first
+		if _, err := gitOutput("", "clone", "--quiet", "--depth", "1", "--branch", rev, url, target); err != nil {
+			// Fall back to full clone + checkout
+			if _, err := gitOutput("", "clone", "--quiet", url, target); err != nil {
+				return err
+			}
+			if _, err := gitOutput(target, "checkout", "--quiet", rev); err != nil {
+				return err
+			}
+		}
+	} else {
+		if _, err := gitOutput("", "clone", "--quiet", url, target); err != nil {
+			return err
+		}
+	}
+	if !hasAevSource(target) {
+		os.RemoveAll(target)
+		return fmt.Errorf("repository %s has no .aev source at its root", url)
+	}
+	return nil
+}
+
+// remoteTagCommit resolves a tag to its commit SHA from the remote.
+func remoteTagCommit(url, tag string) string {
+	out, err := gitOutput("", "ls-remote", url, "refs/tags/"+tag, "refs/tags/"+tag+"^{}")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		// Prefer the peeled ref for annotated tags
+		if strings.HasSuffix(fields[1], "^{}") {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+// gitTagVersions lists tags in a local clone.
