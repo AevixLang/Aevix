@@ -4,8 +4,6 @@
 
 ## [Не выпущено]
 
-## [0.4.0]
-
 ### Добавлено
 - Shared package cache (~/.cache/aevix/pkg, `cache info<|message|>clean|list<|message|>path`); `install` reads cache first.
 - Directory registry: `publish --registry <dir>` (pack + index.json); `add <name> --registry <dir> [--version <range>]`; `install` fetches/materializes and verifies.
