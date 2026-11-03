@@ -22,11 +22,22 @@ struct SemaFn {
     std::vector<Param> params;
     std::string return_type; // "" for void functions
     std::set<int> escaping_params; // indices of params that escape to outer scope
+    int line = 0;                  // first declaration site (collision reporting)
+    int col = 0;
 };
 
 struct SemaStruct {
     std::vector<StructField> fields;
+    int line = 0;
+    int col = 0;
 };
+
+struct SemaEnum {
+    std::vector<std::string> variants;
+    int line = 0;
+    int col = 0;
+};
+
 
 // ---------------------------------------------------------------------------
 // Type classification for fixed-width types
@@ -1224,20 +1235,36 @@ bool Checker::run() {
             for (const Param& p : s->func_decl->params)
                 if (p.is_ref && is_slice(p.var_type))
                     error("open array parameters cannot be passed by reference", s->line, s->col);
-            if (!funcs_.emplace(s->func_decl->name,
-                        SemaFn{s->func_decl->params, s->func_decl->return_type}).second)
-                error("redeclaration of function", s->line, s->col);
+            {
+                auto result = funcs_.emplace(s->func_decl->name,
+                            SemaFn{s->func_decl->params, s->func_decl->return_type, {}, s->line, s->col});
+                if (!result.second) {
+                    std::string msg = "redeclaration of function '" + s->func_decl->name + "'";
+                    if (result.first->second.line > 0)
+                        msg += " (first declared at " + std::to_string(result.first->second.line) + ":" +
+                                std::to_string(result.first->second.col) + ")";
+                    error(msg, s->line, s->col);
+                }
+            }
             break;
         case Stmt::Kind::StructDecl:
-            if (!structs_.emplace(s->struct_decl->name,
-                        SemaStruct{s->struct_decl->fields}).second)
-                error("redeclaration of struct", s->line, s->col);
+            {
+                auto result = structs_.emplace(s->struct_decl->name,
+                            SemaStruct{s->struct_decl->fields, s->line, s->col});
+                if (!result.second) {
+                    std::string msg = "redeclaration of struct '" + s->struct_decl->name + "'";
+                    if (result.first->second.line > 0)
+                        msg += " (first declared at " + std::to_string(result.first->second.line) + ":" +
+                                std::to_string(result.first->second.col) + ")";
+                    error(msg, s->line, s->col);
+                }
+            }
             break;
         case Stmt::Kind::EnumDecl: {
             if (!s->enum_decl) break;
             const EnumDecl* e = s->enum_decl.get();
             if (!enums_.emplace(e->name, e->variants).second) {
-                error("redeclaration of enum", s->line, s->col);
+                error("redeclaration of enum '" + e->name + "'", s->line, s->col);
                 break;
             }
             std::set<std::string> seen;
